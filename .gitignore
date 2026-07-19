@@ -13,9 +13,6 @@ dist/
 build/
 *.log
 
-# Ausnahme: Bauphasen-Ticket-Ordner ist Doku (kollidiert nur namentlich mit build/)
-!.scratch/draw-race/build/
-
 # Env / Secrets
 .env
 .env.*
