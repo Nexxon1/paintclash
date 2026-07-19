@@ -8,6 +8,7 @@ Diese Datei entsteht lazy. Erstbefüllung aus [Ticket 02 — Spielregeln](.scrat
 
 - **Arena** — der Spielraum. In der Grundversion **endlos** (dauerhaft laufend, jederzeit joinen, kein Siegmoment) und **quadratisch mit festen Wänden**. Code: `arena`.
 - **Gebiet** (engl. *territory*) — die einem Spieler gehörende gefärbte Fläche. Safespace gegen Trail-Angriffe. Verliert ein Spieler sein *gesamtes* Gebiet, stirbt er (**Totalverlust-Tod**).
+- **Welteinheit** (engl. *world unit*, Abk. und Code-Bezeichner **WU**) — Basis-Längeneinheit der kontinuierlichen Welt (Positionen, Distanzen, Grössen). Ersetzt das grid-behaftete „Zelle"; der Render-Zoom (px pro WU) ist davon unabhängig. Konkrete Balance-Startwerte in WU: [Ticket 11](.scratch/draw-race/issues/11-balance-parameter.md).
 - **Trail** — der Weg eines Spielers **ausserhalb** seines eigenen Gebiets (seit dem Verlassen). Wird der Trail geschnitten, stirbt der Spieler. Beim Schliessen der Schleife zurückgesetzt. Kein Balance-Parameter der Länge — er endet mit dem Loop.
 - **Loop schliessen** — mit dem Trail ins eigene Gebiet zurückkehren; löst das **Fill** aus.
 - **Fill** (Flächeneroberung) — Färben der vom Loop **eingeschlossenen Fläche**. **Polygonbasiert** (kontinuierliche Bewegung), nicht der zellbasierte Flood-Fill aus splix. Eingeschlossenes **fremdes Gebiet wird überfärbt/gestohlen**; eingeschlossene Gegner**köpfe überleben**.
@@ -17,7 +18,7 @@ Diese Datei entsteht lazy. Erstbefüllung aus [Ticket 02 — Spielregeln](.scrat
 - **Spawn-Mindestabstand** — garantierter Abstand zu Gegnern/Gebiet beim Einsetzen (Schutz vor Spawn-Kill). Es gibt **keinen** Unverwundbarkeits-Timer.
 - **Sanfte Barriere** — Randverhalten: der Kopf gleitet an der Wand entlang / dreht ab, kein Rand-Tod (Paper.io-Stil).
 - **Leaderboard** — globale, für alle sichtbare Rangliste. Metrik ausschliesslich **% der Karte**; Top 5 + eigener Rang; Farb-Swatch pro Zeile.
-- **Score** — persönliche Leistungszahl, beim **Tod** berechnet und **live** auf dem eigenen HUD geschätzt. Faktoren: Peak-Fläche × Überlebenszeit × **Konkurrenz-Multiplikator** (Ø **menschliche** Mitspieler; Bots zählen nicht). Nicht Teil des globalen Leaderboards. Formel/Gewichte = Balance ([Ticket 11](.scratch/draw-race/issues/11-balance-parameter.md)).
+- **Score** — persönliche Leistungszahl, beim **Tod** berechnet und **live** auf dem eigenen HUD geschätzt. Faktoren: Peak-Fläche × Überlebenszeit × **Konkurrenz-Multiplikator** (Ø **menschliche** Mitspieler; Bots zählen nicht). Nicht Teil des globalen Leaderboards. Konkrete Formel ([Ticket 11](.scratch/draw-race/issues/11-balance-parameter.md)): `round(peakPct × √überlebenSek × (1 + 0,25 × ØandereMenschen) × 10)`.
 - **Rekord** — lokal gespeichert (ohne Account): Max-%, längste Überlebenszeit, Highscore.
 - **Bot** — heuristik­gesteuerter Nicht-Menschen-Spieler; füllt die öffentliche Arena, in privaten Räumen per Lobby-Toggle. Zählt **nicht** für den Konkurrenz-Multiplikator.
 - **Privater Raum** — nur per **Code/Link** zugänglich, nicht öffentlich gelistet. Mit **Lobby** (Host-Start); Host stellt Kartengrösse, Bots, Spielerlimit (2–16) und Nachjoin ein.
