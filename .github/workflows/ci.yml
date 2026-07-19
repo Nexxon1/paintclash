@@ -98,4 +98,5 @@ jobs:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: packages/server
-          command: deploy
+          # Stamp the deployed commit SHA into the Worker (surfaced at /api/health).
+          command: deploy --var COMMIT_SHA:${{ github.sha }}

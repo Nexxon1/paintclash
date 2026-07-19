@@ -9,6 +9,11 @@
     "directory": "./public",
     "binding": "ASSETS",
   },
+  "vars": {
+    // Overridden per deploy with the real git SHA via `--var COMMIT_SHA:<sha>`;
+    // `dev` is the fallback for `wrangler dev` / dry-runs.
+    "COMMIT_SHA": "dev",
+  },
   "observability": {
     "enabled": true,
   },
