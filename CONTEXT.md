@@ -44,6 +44,15 @@ Ergänzt seit [Ticket 08](.scratch/draw-race/issues/08-architektur-erweiterbarke
 - **Regelwerk** (Strategie) — austauschbare Spielregeln; Grundversion = Strategie „endlose Arena". Naht für weitere Spielmodi.
 - **appearance** (Erscheinungsbild) — sim-neutraler Kosmetik-Deskriptor (heute Farbindex, später Skin-ID); nur der Client rendert ihn.
 
+## Glossar — Test & Qualität
+
+Ergänzt seit [Ticket 09](.scratch/draw-race/issues/09-teststrategie-qualitaet.md).
+
+- **Sim-Client** — ein **headless** Client, der `sim-core` fährt und das echte Binär-Protokoll spricht, aber **nicht** rendert. Testwerkzeug: mehrere Sim-Clients treiben in einem Szenario-Test einen echten Server über die Leitung. Code: `sim-client`.
+- **Szenario-Test** — stack-durchgreifender Integrationstest: echter Server (via `@cloudflare/vitest-pool-workers`) + zwei/mehr **Sim-Clients** über das echte Protokoll, **ohne Browser/Rendering**. Arbeitsgaul der Kern-Mechanik-Regression („Änderungen zerstören keine Core-Konzepte"). Abgegrenzt gegen **Unit-Test** (`sim-core` allein) und **E2E** (echter Browser via Playwright).
+- **Replay-Determinismus** — die getestete Eigenschaft, dass *dieselbe* Input-Sequenz + *derselbe* RNG-Seed nach N Ticks einen **bit-identischen Zustands-Hash** ergibt (fixes `dt`, keine Uhr — ADR-0003). Eigene Test-Gattung; Grundlage, auf der Prediction/Reconciliation überhaupt funktioniert.
+- **Golden-Fixture** — eingecheckter Regressions-Anker: für `sim-core` ein aufgezeichnetes **Input-Log + erwarteter End-Hash** (Replay), für `protocol` erwartete **Bytes** (Wire-Format festnageln).
+
 ## Verworfen / Erweiterungspunkte
 
 - **Wrap-around / Torus-Arena** — für die Grundversion verworfen (mehrdeutige „innen/aussen"-Fill-Definition); vorgemerkt als künftiger Spielmodus.
