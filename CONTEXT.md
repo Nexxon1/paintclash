@@ -2,7 +2,7 @@
 
 Ubiquitäre Sprache des Spiels. Begriffe hier sind verbindlich — in Spec, Tickets, ADRs und Code denselben Term verwenden, keine Synonyme. Sprache der Effort-Dokumente: Deutsch (Code-Bezeichner dürfen englisch sein, dann pro Term unten notiert).
 
-Diese Datei entsteht lazy. Erstbefüllung aus [Ticket 02 — Spielregeln](.scratch/draw-race/issues/02-spielregeln-im-detail.md); Architektur-/Netcode-Begriffe folgen aus Ticket 08.
+Diese Datei entsteht lazy. Erstbefüllung aus [Ticket 02 — Spielregeln](.scratch/draw-race/issues/02-spielregeln-im-detail.md); Architektur-/Netcode-Begriffe seit Ticket 08 ergänzt (Details in den ADRs unter [docs/adr/](docs/adr/)).
 
 ## Glossar — Spielregeln
 
@@ -24,6 +24,25 @@ Diese Datei entsteht lazy. Erstbefüllung aus [Ticket 02 — Spielregeln](.scrat
 - **Lobby** — Warteraum eines privaten Raums vor dem Host-Start.
 - **Nickname** — Gast-Anzeigename (1–16 Zeichen, Unicode gefiltert, Blockliste client+server). **Nicht eindeutig** — Unterscheidung über Farbe/Spieler-ID.
 - **Spieler-ID** — stabile ID pro Gerät (localStorage), trägt lokale Rekorde; Platzhalter für spätere Accounts.
+
+## Glossar — Architektur & Netcode
+
+Ergänzt seit [Ticket 08](.scratch/draw-race/issues/08-architektur-erweiterbarkeit.md); Details in den ADRs unter [docs/adr/](docs/adr/).
+
+- **Sim-Core** — reiner, deterministischer Spiel-Kern (Bewegung, Trail, Fill, Kollision, Regeln), geteilt zwischen Server und Client. Kein Netz, kein Rendering, keine Uhr/Zufall von aussen. Code: `sim-core`.
+- **Autoritativer Server** — der Server hält die verbindliche Wahrheit; Client-Eingaben werden validiert, Fill und Tode server-seitig entschieden.
+- **Prediction** (Vorhersage) — der Client rechnet die *eigene* Bewegung sofort voraus, damit sie sich flüssig anfühlt.
+- **Reconciliation** (Abgleich) — der Server korrigiert; der Client spielt seine Eingaben ab der Korrektur neu ab und zieht die Differenz weich.
+- **Interpolation** — Gegner werden zwischen Server-Snapshots geglättet dargestellt (kleiner Verzögerungspuffer).
+- **Rewind** (Rückspulen) — der Server beurteilt Tode/Schnitte aus der Sicht des handelnden Spielers anhand einer Positions-Historie (Kill-Fairness).
+- **Tick** — fester Simulationsschritt; Grundversion **20 Hz** (einstellbar, liegt in `shared`).
+- **Arena-DO** — ein Durable Object = eine Arena.
+- **Router-Worker** — zustandsloser Einstieg; liefert den Client aus und leitet WebSocket-Verbindungen an das richtige Arena-DO (öffentlich/privat).
+- **Raum-Registry** — SQLite-Ablage im DO für Code → Konfiguration privater Räume (fast die einzige server-seitige Persistenz).
+- **Input-Batching** — mehrere Eingaben pro WebSocket-Nachricht bündeln (erzwungen durch das Free-Request-Budget).
+- **Effekt** — modifizierender Zustand auf einer Entity (Tempo, Schild …); Naht für Items/Upgrades, Grundversion leer.
+- **Regelwerk** (Strategie) — austauschbare Spielregeln; Grundversion = Strategie „endlose Arena". Naht für weitere Spielmodi.
+- **appearance** (Erscheinungsbild) — sim-neutraler Kosmetik-Deskriptor (heute Farbindex, später Skin-ID); nur der Client rendert ihn.
 
 ## Verworfen / Erweiterungspunkte
 

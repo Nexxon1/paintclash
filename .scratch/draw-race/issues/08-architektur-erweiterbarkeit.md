@@ -1,7 +1,7 @@
 # 08 — Architektur & Erweiterbarkeit
 
 Type: grilling
-Status: open
+Status: resolved
 Blocked by: 02, 03, 04, 05
 
 ## Question
@@ -29,3 +29,16 @@ Entscheidungs-Ausgang: ADRs + Architektur-Kapitel der Spec.
 - **Hosting-Konflikt (mit Ticket 03):** die in 05 leicht bevorzugte Bibliothek Colyseus läuft nicht auf Cloudflare Workers/Durable Objects. Zu entscheiden: Netcode selbst auf Workers/DO bauen **oder** Hosting neu bewerten (Fallback Oracle-Always-Free-VM aus Ticket 03).
 - **Fill:** polygonbasierte Flächeneroberung (Paper.io-Stil), nicht der zellbasierte Uint8-Flood-Fill aus splix (Ticket 04); splix bleibt Referenz nur für Server-Autorität, 20-Hz-Tick und Binärprotokoll.
 - **Sim-Core:** deterministischer, headless testbarer TS-Kern mit Float-Positionen/Winkeln + Polygon-Fill — Floating-Point-Determinismus zwischen Client und Server beachten (Fixed-Point/Integer-Erwägung).
+
+## Answer
+
+Vollständig durchgegrillt (HITL, 2026-07-19). Ergebnisse als 6 ADRs unter [docs/adr/](../../../docs/adr/) und Glossar-Erweiterung in [CONTEXT.md](../../../CONTEXT.md). Kern:
+
+- **Runtime/Hosting (ADR-0001):** bei Cloudflare Workers + Durable Objects bleiben, Netcode selbst bauen, Transport-Abstraktion hält die Wahl reversibel. Bestätigt durch Ticket 13 (gratis + abbuchungssicher auf Free ohne Karte; DO-CPU pro Arena ist das Risiko → Benchmark Ticket 14).
+- **Modulschnitt (ADR-0002):** Monorepo, Pakete `sim-core` / `protocol` / `shared` / `server` / `client`; `sim-core` rein & deterministisch.
+- **Netcode & Determinismus (ADR-0003):** autoritativer Server + Prediction/Reconciliation/Interpolation; Float + interner Determinismus, kein Festkomma-Lockstep; 20-Hz-Tick (einstellbar); Server-Rewind für Kill-Fairness; WebSocket + Binärprotokoll + Input-Batching.
+- **Arena/Prozess/Persistenz (ADR-0004):** 1 DO = 1 Arena, Router-Worker davor, private Räume = DO pro Code + Hibernation; Live-Zustand flüchtig (Neustart = Reset), SQLite nur für Raum-Registry, Rekorde lokal.
+- **Bots (ADR-0005):** server-interne Entities über geteilte Eingabe-Schnittstelle, begrenzte Sicht.
+- **Erweiterbarkeit (ADR-0006):** Effekt-Feld / Regel-Strategie / `appearance` / `playerId`-Indirektion / DO-Snapshot-Naht — 1–4 als geplante Evolution, 5 (persistenter Canvas) spekulativ.
+
+**Neue Tickets:** 14 (DO-CPU-Benchmark, blockiert durch Spec 10 → erster Implementierungs-Spike) und 15 (Abuse-/Cheat-Schutz, graduiert aus dem Nebel). **Ticket 09** (Teststrategie) ist damit entblockt.
