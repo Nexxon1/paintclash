@@ -23,8 +23,8 @@ import {
   type InputItem,
   type SnapshotPlayer,
 } from '@paintclash/protocol';
-import { LIMITS } from '@paintclash/shared';
-import { createSimState, step, type SimState } from '@paintclash/sim-core';
+import { LIMITS, type TurnSignal } from '@paintclash/shared';
+import { advancePlayer, createSimState, step, type SimState } from '@paintclash/sim-core';
 
 /** What ArenaCore needs from a transport — a DO WebSocket satisfies this. */
 export interface ArenaSocket {
@@ -132,7 +132,8 @@ export class ArenaCore {
 
   /** One authoritative 20 Hz tick: apply one intent per player, snapshot all. */
   tick(dtSec: number): void {
-    const turns: { id: number; turn: InputItem['turn'] }[] = [];
+    const turns: { id: number; turn: TurnSignal }[] = [];
+    const catchUps: { connection: Connection; id: number; input: InputItem }[] = [];
     for (const [id, connection] of this.connections) {
       // Dead-socket sweep: transports don't always deliver a close event
       // (half-open TCP after an abrupt browser kill) — without this, ghost
@@ -160,12 +161,28 @@ export class ArenaCore {
       if (input) {
         connection.ackSeq = input.seq;
         turns.push({ id, turn: input.turn });
+        // Catch-up drain: after a client-side stall the client fast-forwards
+        // several ticks at once and its inputs arrive as a burst. Consume a
+        // second intent this tick (as one extra sim advance below) so the
+        // backlog shrinks instead of being dropped — a dropped turn would
+        // permanently bend the head's path away from what the player saw.
+        if (queue.length > LIMITS.inputBacklogTarget) {
+          const extra = queue.shift();
+          if (extra) catchUps.push({ connection, id, input: extra });
+        }
       } else {
         connection.buffering = true;
         connection.bufferWait = 0;
       }
     }
     step(this.state, { joins: this.pendingJoins, leaves: this.pendingLeaves, turns }, dtSec);
+    for (const { connection, id, input } of catchUps) {
+      const player = this.state.players.find((p) => p.id === id);
+      if (!player) continue;
+      player.turn = input.turn;
+      advancePlayer(player, this.state.arenaSizeWU, dtSec);
+      connection.ackSeq = input.seq;
+    }
     this.pendingJoins = [];
     this.pendingLeaves = [];
 

@@ -52,3 +52,12 @@ Vier Ursachen, vier Fixes:
 4. **Teleports/Popps:** Jede Server-Korrektur sprang mitten im Tick um `(1−α)·Δ`. Fix: Reconciliation verschiebt das Interpolations-Segment mit (Kontinuität am Tauschzeitpunkt); Korrekturen fließen nur noch über den abklingenden Fehler-Offset ein. Diagnose-Endstand: Reconciliation-Fehler dauerhaft 0,000 bei stabiler pending-Queue.
 
 Absicherung: neuer kuratierter **E2E-Smoothness-Test** (misst die tatsächlich gerenderte Geschwindigkeit beider Spieler über 3 s, schlägt bei Geistern/Doppelschritten/Stalls aus), Unit-Tests für Jitter-Puffer, Flood-Deckel und Idle-Sweep. Neue Begriffe in CONTEXT.md (Jitter-Puffer, Idle-Timeout, Render-Uhr).
+
+**2026-07-19 (Agent, Nachbesserung 2 — Dreh-Umlenker):** User-Report: nach Drehungen wird die Richtung kurz „umgelenkt". Mit Stress-Sonde (künstlicher Main-Thread-Jank, 150–300 ms) reproduziert: Client-Bursts nach Browser-Stalls ließen die Input-Queue über das 8er-Limit laufen → **Dreh-Inputs wurden verworfen** → Server drehte nie → Korrektur bog den Pfad zurück (Fehler-Peak 1,8–2 WU). Fixes:
+
+1. **Catch-up-Drain statt Verwerfen:** Queue-Cap 8→20 (~1 s); Backlog > 6 wird mit 2 Inputs/Tick abgearbeitet (spiegelt das Burst-Nachholen des Clients — Rekonstruktion bleibt exakt). Drain-Schwelle bewusst über der normalen Queue-Oszillation (Batch 3 + Puffer 2), sonst erzeugt der Drain selbst die Leerläufe (gemessen: Clean-Fehler 0,01→0,29 bei Schwelle 4, zurück auf 0,01 bei 6).
+2. **Sofort-Flush bei Richtungswechsel:** Dreh-Onsets warten nicht mehr bis zu 150 ms auf den Batch (selten genug fürs 20:1-Budget) — spürbar direktere Lenkung, kleineres Übergangsfenster.
+
+Endstand Sonden: Clean-Fehler-Peak **0,01 WU** (keine Umlenker), unter Kunst-Jank 1,8 WU *echte* Stall-Bewegung (Welt läuft während des eigenen Stalls weiter — Spielregel), die weich über den Fehler-Abbau gleitet; **kein Input geht mehr verloren**. Neue Unit-Tests: Burst-Drain ohne Drop, Catch-up-Doppelschritt, Flood-Cap nur noch als harte Grenze, Sofort-Flush.
+
+**Architektur-Frage des Users** („Müssen wir Tools/Libraries umdecken?"): Nein — begründet in der Antwort; Kurzfassung: Das Gambetta-Modell ist der Industriestandard, die Nacharbeit ist der übliche Netcode-Feinschliff (den Engines sonst fertig mitbringen), Colyseus & Co. laufen nicht auf Workers (ADR-0001), und die Transport-Abstraktion hält den Umzugspfad offen. Messwerte sind jetzt auf Zielniveau.

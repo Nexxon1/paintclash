@@ -62,6 +62,8 @@ export class ClientSession {
   private selfBlock: { cx: number; cy: number } | null = null;
   /** Local sim ticks since start — the smooth clock everything renders on. */
   private clientTicks = 0;
+  /** Turn value of the last flushed tick — direction changes flush eagerly. */
+  private lastSentTurn: TurnSignal = 0;
   /** EMA of (server tick − local tick); null until the first snapshot. */
   private serverOffset: number | null = null;
 
@@ -115,7 +117,11 @@ export class ClientSession {
     this.predictor.applyLocalInput(seq, turn, TICK_DT_SEC);
     this.predictor.decayError();
     this.ticksSinceFlush += 1;
-    if (this.ticksSinceFlush >= INPUT_FLUSH_TICKS) this.flush();
+    // Flush on the batch cadence — or immediately when the steer direction
+    // changes: turn onsets are what latency is felt on, and they are rare
+    // enough to stay well inside the 20:1 message budget (spec §6.3).
+    if (this.ticksSinceFlush >= INPUT_FLUSH_TICKS || turn !== this.lastSentTurn) this.flush();
+    this.lastSentTurn = turn;
   }
 
   /** Everything the renderer needs, at inter-tick blend factor `alpha`. */

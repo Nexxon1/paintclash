@@ -143,19 +143,54 @@ describe('authoritative movement', () => {
     expect(snapshot.players.find((p) => p.id === id)?.turn).toBe(0);
   });
 
-  it('drops the oldest backlog beyond the flood cap (spec §8.3)', () => {
+  it('drains a legitimate burst at two intents per tick instead of dropping', () => {
+    // A browser stall makes the client fast-forward and burst-send. Every
+    // one of those intents must be applied — a dropped turn permanently
+    // bends the head away from what the player saw.
     const arena = new ArenaCore(1);
     const { socket, id } = joinedPlayer(arena);
     arena.tick(TICK_DT_SEC);
-    const flood = Array.from({ length: LIMITS.maxPendingInputs + 4 }, (_, i) => ({
-      seq: i + 1,
-      turn: 1 as const,
-    }));
-    arena.handleFrame(id, encodeInput(flood.slice(0, 20)));
+    const burst = Array.from({ length: 12 }, (_, i) => ({ seq: i + 1, turn: 1 as const }));
+    arena.handleFrame(id, encodeInput(burst));
+    // 12 queued, target backlog 4: consume 2/tick until ≤ target, then 1/tick.
     arena.tick(TICK_DT_SEC);
-    // The first applied intent is the oldest *surviving* one — everything
-    // before it was dropped as flood.
-    expect(socket.lastSnapshot().ackSeq).toBe(flood.length - LIMITS.maxPendingInputs + 1);
+    expect(socket.lastSnapshot().ackSeq).toBe(2);
+    arena.tick(TICK_DT_SEC);
+    expect(socket.lastSnapshot().ackSeq).toBe(4);
+    let guard = 0;
+    while (socket.lastSnapshot().ackSeq < 12 && guard++ < 20) arena.tick(TICK_DT_SEC);
+    // Nothing was dropped: the very last seq got applied.
+    expect(socket.lastSnapshot().ackSeq).toBe(12);
+  });
+
+  it('a catch-up tick moves the head two steps (mirroring the client burst)', () => {
+    const arena = new ArenaCore(1);
+    const { socket, id } = joinedPlayer(arena);
+    arena.tick(TICK_DT_SEC);
+    const before = socket.lastSnapshot().players.find((p) => p.id === id);
+    const burst = Array.from({ length: 12 }, (_, i) => ({ seq: i + 1, turn: 0 as const }));
+    arena.handleFrame(id, encodeInput(burst));
+    arena.tick(TICK_DT_SEC);
+    const after = socket.lastSnapshot().players.find((p) => p.id === id);
+    if (!before || !after) throw new Error('missing snapshot player');
+    const dist = Math.hypot(after.x - before.x, after.y - before.y);
+    expect(dist).toBeGreaterThan(0.8); // two 0.45-WU steps (f32 tolerance)
+    expect(dist).toBeLessThan(1.0);
+  });
+
+  it('drops the oldest backlog only beyond the hard flood cap (spec §8.3)', () => {
+    const arena = new ArenaCore(1);
+    const { socket, id } = joinedPlayer(arena);
+    arena.tick(TICK_DT_SEC);
+    // Two frames of 20 = 40 fresh seqs, way past maxPendingInputs.
+    const flood = Array.from({ length: 40 }, (_, i) => ({ seq: i + 1, turn: 1 as const }));
+    arena.handleFrame(id, encodeInput(flood.slice(0, 20)));
+    arena.handleFrame(id, encodeInput(flood.slice(20, 40)));
+    arena.tick(TICK_DT_SEC);
+    // Queue was capped to the newest maxPendingInputs entries. The first
+    // tick consumes the oldest survivor plus one catch-up intent, so the ack
+    // lands two past the drop line — everything before it was flood-dropped.
+    expect(socket.lastSnapshot().ackSeq).toBe(40 - LIMITS.maxPendingInputs + 2);
   });
 
   it('drops non-monotonic sequence numbers (server-limited, spec §6.4)', () => {

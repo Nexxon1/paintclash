@@ -47,7 +47,8 @@ describe('sim ticks (input → prediction → batched send)', () => {
     const { session, sent } = harness();
     joined(session);
     sent.length = 0;
-    for (let i = 0; i < INPUT_FLUSH_TICKS; i++) session.simTick(1);
+    // Steering straight (no direction change) exercises the pure cadence.
+    for (let i = 0; i < INPUT_FLUSH_TICKS; i++) session.simTick(0);
     expect(sent).toHaveLength(1);
     const frame = sent[0];
     if (!frame) throw new Error('nothing sent');
@@ -55,7 +56,26 @@ describe('sim ticks (input → prediction → batched send)', () => {
     if (decoded?.type !== 'input') throw new Error('expected an input batch');
     expect(decoded.inputs).toHaveLength(INPUT_FLUSH_TICKS);
     expect(decoded.inputs[0]?.seq).toBe(1);
-    expect(decoded.inputs.every((i) => i.turn === 1)).toBe(true);
+    expect(decoded.inputs.every((i) => i.turn === 0)).toBe(true);
+  });
+
+  it('flushes immediately when the steer direction changes (turn-onset latency)', () => {
+    const { session, sent } = harness();
+    joined(session);
+    sent.length = 0;
+    session.simTick(1); // direction change 0 → 1: flush now, not at tick 3
+    expect(sent).toHaveLength(1);
+    const frame = sent[0];
+    if (!frame) throw new Error('nothing sent');
+    const decoded = decodeClientMessage(frame);
+    if (decoded?.type !== 'input') throw new Error('expected an input batch');
+    expect(decoded.inputs).toEqual([{ seq: 1, turn: 1 }]);
+    // Holding the same direction returns to the batch cadence.
+    session.simTick(1);
+    session.simTick(1);
+    expect(sent).toHaveLength(1);
+    session.simTick(1);
+    expect(sent).toHaveLength(2);
   });
 
   it('predicts the own head forward on every tick', () => {
