@@ -19,3 +19,13 @@ Begründung gegen den VM/Colyseus-Weg: Colyseus liefert nur Raum-Modell + State-
 - **Free-Grenzen (bestätigt in Ticket 13):** 100'000 Requests/Tag, eingehende WS-Messages zählen 20:1 → **Input-Batching ist Pflicht**; Duration ≈ **genau eine** 24/7-Arena; DO **single-threaded** (kein Web-Worker wie splix) → CPU pro Arena-Tick ist der Engpass → **Benchmark nötig** (Ticket 14, bestimmt die Shard-Grösse).
 - **Abbuchungssicherheit:** auf Free bleiben, **keine Karte hinterlegen** (dann strukturell keine Belastung möglich). Der $5-Paid-Plan hat **keinen** harten Spend-Cap → ein Upgrade ist eine bewusste Kosten-Entscheidung.
 - DOs sind auf Free nur **SQLite-backed** verfügbar — passt (ADR-0004).
+
+## Nachtrag (2026-07-19) — DO-CPU-Benchmark: GO
+
+Der Benchmark aus Ticket 14 (Bau-Ticket 02) ist gelaufen:
+[Findings](../benchmarks/do-cpu-benchmark.md). **GO** — CPU/Tick ist bei realistischen
+Populationen kein Engpass (128 Entities ≈ 3,5 ms/Tick p95 lokal selbst unmitigiert;
+mit 4×-Hardware-Sicherheitsfaktor ~28 % des 50-ms-Budgets).
+Provisorische Arena-Populationsgrenze: Startwert **16**
+(gameplay-motiviert), CPU-Deckel **64**; Bot-Ziel 8 bestätigt. Re-Konfirmation gegen
+den echten Build in Bau-Ticket 16.

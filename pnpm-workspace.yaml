@@ -1,2 +1,5 @@
 packages:
   - 'packages/*'
+  # Benchmarks/Spikes: own workspace root so their (slow) runs & deps stay out
+  # of the packages/* test- and coverage-gates (spec §9.3).
+  - 'bench/*'

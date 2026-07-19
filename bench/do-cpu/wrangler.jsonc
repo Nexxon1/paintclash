@@ -1,0 +1,24 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  // Benchmark-only Worker (ticket 02, spike). Never part of the production
+  // deploy — it exists so the synthetic load runs in a *real* Durable Object,
+  // either via @cloudflare/vitest-pool-workers (default) or `wrangler dev`.
+  "name": "paintclash-bench-do-cpu",
+  "main": "src/worker.ts",
+  "compatibility_date": "2026-07-01",
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "BENCH_ARENA",
+        "class_name": "BenchArena",
+      },
+    ],
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      // SQLite-backed: the only DO flavor available on the Free plan (ADR-0001).
+      "new_sqlite_classes": ["BenchArena"],
+    },
+  ],
+}

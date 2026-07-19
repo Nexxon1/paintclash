@@ -18,7 +18,7 @@ export default tseslint.config(
       '**/dist/**',
       '**/node_modules/**',
       'coverage/**',
-      '.wrangler/**',
+      '**/.wrangler/**',
       'playwright-report/**',
       'test-results/**',
       '.scratch/**',
@@ -26,9 +26,9 @@ export default tseslint.config(
     ],
   },
 
-  // Typed linting for all package source (spec §5.1).
+  // Typed linting for all package source (spec §5.1) — benches/spikes included.
   {
-    files: ['packages/**/*.ts'],
+    files: ['packages/**/*.ts', 'bench/**/*.ts'],
     extends: [
       js.configs.recommended,
       ...tseslint.configs.strictTypeChecked,
@@ -62,9 +62,20 @@ export default tseslint.config(
     },
   },
 
+  // Bench code indexes flat number arrays in hot loops; under
+  // `noUncheckedIndexedAccess` the `arr[i]!` idiom is the readable form there
+  // (the stylistic non-nullable-type-assertion-style rule even rewrites the
+  // `as` alternative into `!`). Production packages keep the strict ban.
+  {
+    files: ['bench/**/*.ts'],
+    rules: {
+      '@typescript-eslint/no-non-null-assertion': 'off',
+    },
+  },
+
   // No focused/skipped-without-reason tests — `forbidOnly` enforced at lint time.
   {
-    files: ['packages/**/*.test.ts'],
+    files: ['packages/**/*.test.ts', 'bench/**/*.test.ts'],
     plugins: { vitest },
     rules: {
       'vitest/no-focused-tests': 'error',

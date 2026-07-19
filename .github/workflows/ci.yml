@@ -51,6 +51,8 @@ jobs:
       - run: pnpm install --frozen-lockfile
       # Coverage gates (per package, spec §9.3) fail the job below their floor.
       - run: pnpm test:coverage
+      # Bench smoke/unit tests (fast; the slow sweep stays manual via `pnpm bench`).
+      - run: pnpm --filter @paintclash/bench-do-cpu test
 
   build:
     runs-on: ubuntu-latest
