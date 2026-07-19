@@ -1,6 +1,7 @@
-# Spec — draw-race (Grundversion / Phase 1)
+# Spec — paintclash (Grundversion / Phase 1)
 
-Status: **Entwurf zur Abnahme** (konsolidiert aus der Wayfinder-Map, 2026-07-19)
+Status: **Abgenommen / gelockt (2026-07-19)** — konsolidiert aus der Wayfinder-Map
+Projektname: **`paintclash`** (ein Name für Code + Repo + Marke; `paintclash.io` frei & register-sauber — siehe Kap. 1.3)
 Sprache: Deutsch (Code-Bezeichner englisch, je Term im Glossar notiert)
 
 Diese Spec ist die **implementierungsreife** Zusammenführung aller Entscheidungen der
@@ -71,8 +72,16 @@ Accounts/Progression (`playerId`-Indirektion), persistenter Canvas (DO-Snapshot-
 - **Persistenter Canvas** (Gebiet bleibt offline bestehen) — eigenes späteres Vorhaben.
 - **Native Apps** (App Stores, Capacitor) — widerspricht dem Kostenlos-Ziel.
 - **Accounts/Progression** (Login, geräteübergreifende Rekorde) — Gast-only.
-- **Namensfindung / Markenprüfung** — Arbeitstitel „draw race" kollidiert mit Ubisofts
-  Marke *DrawRace*; Umbenennung nötig **vor Veröffentlichung**, nicht vor der Spec.
+- **Name (gewählt): `paintclash`** — ersetzt den ursprünglichen Arbeitstitel „draw race"
+  (Kollision mit Ubisofts *DrawRace*). **Ein Name für Code + Repo + Marke** (User-Wunsch:
+  gleicher Name im Code). `paintclash.io` frei (Standard-.io ~$28 im 1. Jahr / ~$52/Jahr
+  Verlängerung). **Registerprüfung (2026-07-19, TMview): null Treffer weltweit** in allen
+  Klassen → sauberste Ausgangslage für eine eigene Marke; „paint" + „clash" je ein
+  Grundschulwort (keine Schreibfalle), sofort als kompetitives Multiplayer lesbar.
+  **Verworfen:** `sprawlr` (identische EU-Wortmarke Klasse 9, 4CF sp. z o.o.), `inkzone`
+  (Klasse-9-Marke registriert). **Vor Launch verbleibend (kein Repo-Gate):** Social-Handles
+  sichern (Konvention `@paintclashgame` / `@playpaintclash`, falls `@paintclash` belegt),
+  Domain-Kauf, finale anwaltliche Marken-Clearance.
 - **Volle Sound-Palette** (Musik, UI-Sounds, räumlicher Umgebungston, Slider) —
   Ausbaustufe über den minimalen SFX-Kern hinaus (Ticket 12).
 - **Erweiterter Abuse-Schutz** (Turnstile/PoW vor Join, Melde-/Mute-Funktion,
