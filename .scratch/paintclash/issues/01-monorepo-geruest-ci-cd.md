@@ -12,7 +12,7 @@
 - [x] Vitest (v8-Coverage) eingerichtet; Coverage-Gate-Mechanik **pro Paket** vorhanden (Schwellen §9.3, auf den Stubs erfüllt — 100 %).
 - [x] husky + lint-staged (Format/Lint/Typecheck auf staged Dateien) + commit-msg-Hook (commitlint, Conventional Commits).
 - [~] GitHub-Remote eingerichtet (Repo hat aktuell **keins**, §11) + Actions-Pipeline: typecheck → lint + format:check → tests + Coverage-Gate → build, plus Playwright-E2E-Job-Skelett (Pflicht-Check). — **Pipeline-Datei fertig** (`.github/workflows/ci.yml`); **Remote fehlt** (kein `gh`/Auth in dieser Umgebung → User-Schritt).
-- [~] CD-Tor: Deploy-Job hängt via `needs:` an **allen** grünen Jobs; deployt einen Platzhalter-Worker (Workers + Static Assets) nach Cloudflare; ein roter `main`-Push rollt **nichts** aus (§9.5). — **Gate-Logik + wrangler-Config fertig & dry-run-validiert**; **Deploy nicht mit echtem CF-Account verdrahtet** (Secrets → User-Schritt).
+- [~] CD-Tor: Deploy-Job hängt via `needs:` an **allen** grünen Jobs; deployt einen Platzhalter-Worker (Workers + Static Assets) nach Cloudflare; ein roter `main`-Push rollt **nichts** aus (§9.5). — **Gate-Logik + wrangler-Config fertig**; Platzhalter **live deployt** (manuell via bestehender wrangler-Auth) auf `https://paintclash.secure-data.workers.dev`. Offen bleibt nur der **automatische** CI-Deploy (braucht GitHub-Secrets → nach Remote).
 - [x] Läuft auf Cloudflare **Free-Plan, keine Kreditkarte hinterlegt** (Abbuchungssicherheit, ADR-0001 / §7.3). — `wrangler.jsonc` nutzt nur Free-sichere Features (Static Assets + observability, keine bezahlten Bindings).
 
 _Referenz: spec §5.1, §9.3–9.6, §11; ADR-0001, ADR-0002._
@@ -33,9 +33,17 @@ das `env.ASSETS`-Binding korrekt.
    `gh repo create paintclash --private --source=. --remote=origin --push`
    (oder Remote manuell hinzufügen und pushen). Erst danach läuft die CI-Pipeline überhaupt,
    und der E2E-Job kann als **Required Check** (Branch-Protection) gesetzt werden.
-2. **Cloudflare-Deploy** — Repo-Secrets `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ACCOUNT_ID`
-   setzen (Free-Plan, **keine Kreditkarte** hinterlegen). Dann deployt der `deploy`-Job den
-   Platzhalter-Worker beim nächsten grünen `main`-Push.
+2. **Cloudflare-Deploy (automatisch)** — der Worker ist bereits **manuell** live (s. u.);
+   für den **CI-Auto-Deploy** noch Repo-Secrets `CLOUDFLARE_API_TOKEN` +
+   `CLOUDFLARE_ACCOUNT_ID` setzen (Free-Plan, **keine Kreditkarte**). Der lokale wrangler-
+   OAuth-Token gilt nicht in GitHub Actions → dort braucht es einen eigenen API-Token.
+
+**Manueller Deploy erledigt (2026-07-19):** Platzhalter live auf
+`https://paintclash.secure-data.workers.dev` (verifiziert: `/api/health` → JSON,
+`/` → statische Seite). `secure-data` ist die **accountweite** workers.dev-Subdomain
+(geteilt mit `beam`), keine Projekt-Config — bewusst **beibehalten** als frühe Test-URL
+(Freundes-Test) bis `paintclash.io` als Custom Domain kommt (Spec §1.3); danach fällt die
+workers.dev-URL für paintclash weg.
 
 Danach ist Ticket 01 vollständig; nächste Frontier: **02** (DO-CPU-Benchmark) und **03**
 (Walking Skeleton).
