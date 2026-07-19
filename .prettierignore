@@ -1,0 +1,17 @@
+# Generated / vendored
+node_modules
+**/dist
+coverage
+.wrangler
+playwright-report
+test-results
+pnpm-lock.yaml
+
+# Tooling / not our source
+.claude
+
+# Prose owned by the wayfinding effort — not code, keep hand-formatted
+.scratch
+docs
+CONTEXT.md
+CLAUDE.md

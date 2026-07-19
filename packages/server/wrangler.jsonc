@@ -1,0 +1,15 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "paintclash",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-01",
+  // Static Assets serve the built client; the Worker sits in front for the API
+  // and (later) WebSocket routing to the Arena Durable Object.
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+  },
+  "observability": {
+    "enabled": true,
+  },
+}

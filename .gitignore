@@ -7,11 +7,18 @@
 # Claude Code (nur lokale, nicht geteilte Einstellungen)
 .claude/settings.local.json
 
-# Node / Build (für die spätere Umsetzung)
+# Node / Build
 node_modules/
 dist/
 build/
 *.log
+*.tsbuildinfo
+
+# Test / Coverage / Tooling
+coverage/
+playwright-report/
+test-results/
+.wrangler/
 
 # Env / Secrets
 .env

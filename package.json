@@ -1,0 +1,47 @@
+{
+  "name": "paintclash",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Browser multiplayer area-painting game (splix.io / Paper.io-adjacent). Phase 1 base version.",
+  "packageManager": "pnpm@10.18.0",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "pnpm -r run build",
+    "typecheck": "pnpm -r run typecheck",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "test:e2e": "playwright test",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "prepare": "husky"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild",
+      "workerd"
+    ]
+  },
+  "devDependencies": {
+    "@commitlint/cli": "^19.6.1",
+    "@commitlint/config-conventional": "^19.6.0",
+    "@eslint-community/eslint-plugin-eslint-comments": "^4.4.1",
+    "@eslint/js": "^9.18.0",
+    "@playwright/test": "^1.49.1",
+    "@types/node": "^22.10.7",
+    "@vitest/coverage-v8": "^3.0.5",
+    "@vitest/eslint-plugin": "^1.1.25",
+    "eslint": "^9.18.0",
+    "eslint-config-prettier": "^9.1.0",
+    "husky": "^9.1.7",
+    "lint-staged": "^15.4.1",
+    "prettier": "^3.4.2",
+    "typescript": "^5.7.3",
+    "typescript-eslint": "^8.21.0",
+    "vitest": "^3.0.5",
+    "wrangler": "^4.0.0"
+  }
+}
