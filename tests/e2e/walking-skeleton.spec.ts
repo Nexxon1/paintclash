@@ -52,6 +52,75 @@ test('a player joins and steers the head with the keyboard', async ({ page }) =>
   await expect(canvas).toBeVisible();
 });
 
+test('movement renders smoothly — no reconciliation jerks, no frozen enemies', async ({
+  browser,
+}) => {
+  const pageA = await (await browser.newContext()).newPage();
+  const pageB = await (await browser.newContext()).newPage();
+  await join(pageA, 'Smooth-A');
+  await join(pageB, 'Smooth-B');
+  // Circling (radius 1.6 WU) keeps both heads clear of the wall slide.
+  await pageA.keyboard.down('ArrowRight');
+  await pageB.keyboard.down('ArrowRight');
+  await pageA.waitForTimeout(1000);
+
+  // Sample the actually-rendered pose every frame for 3 s and measure the
+  // speed per ~50 ms bucket. Sim speed is 9 WU/s; jerks (double-steps,
+  // stalls, pops) blow up the standard deviation, a ghost/frozen enemy
+  // collapses the mean.
+  const stats = await pageA.evaluate(
+    () =>
+      new Promise<{ self: { mean: number; sd: number }; other: { mean: number; sd: number } }>(
+        (resolve) => {
+          const samples: { t: number; sx: number; sy: number; ox: number; oy: number }[] = [];
+          const t0 = performance.now();
+          function frame(now: number): void {
+            const state = window.__paintclash?.lastRender;
+            const self = state?.self;
+            const other = state?.others[0];
+            if (self && other)
+              samples.push({ t: now, sx: self.x, sy: self.y, ox: other.x, oy: other.y });
+            if (now - t0 < 3000) requestAnimationFrame(frame);
+            else {
+              const speeds = (px: 'sx' | 'ox', py: 'sy' | 'oy'): { mean: number; sd: number } => {
+                const values: number[] = [];
+                let last = samples[0];
+                if (!last) return { mean: 0, sd: 99 };
+                for (const s of samples) {
+                  if (s.t - last.t >= 50) {
+                    values.push(
+                      (Math.hypot(s[px] - last[px], s[py] - last[py]) / (s.t - last.t)) * 1000,
+                    );
+                    last = s;
+                  }
+                }
+                const mean = values.reduce((a, b) => a + b, 0) / values.length;
+                const sd = Math.sqrt(
+                  values.reduce((a, b) => a + (b - mean) ** 2, 0) / values.length,
+                );
+                return { mean, sd };
+              };
+              resolve({ self: speeds('sx', 'sy'), other: speeds('ox', 'oy') });
+            }
+          }
+          requestAnimationFrame(frame);
+        },
+      ),
+  );
+
+  // Wide margins so CI-runner jank never flakes this; the guarded regressions
+  // (frozen ghost ≈ 0 mean, double-step jerks ≈ sd > 2) still trip loudly.
+  expect(stats.self.mean).toBeGreaterThan(7);
+  expect(stats.self.mean).toBeLessThan(11);
+  expect(stats.self.sd).toBeLessThan(1.5);
+  expect(stats.other.mean).toBeGreaterThan(7);
+  expect(stats.other.mean).toBeLessThan(11.5);
+  expect(stats.other.sd).toBeLessThan(2);
+
+  await pageA.close();
+  await pageB.close();
+});
+
 test('two browsers share one arena', async ({ browser }) => {
   const pageA = await (await browser.newContext()).newPage();
   const pageB = await (await browser.newContext()).newPage();

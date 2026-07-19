@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { handleFetch, healthPayload, type Env } from './index.js';
+import { handleFetch, healthPayload, type Env } from './router.js';
 
 function fakeEnv(overrides: Partial<Env> = {}): Env & { forwarded: Request[] } {
   const forwarded: Request[] = [];

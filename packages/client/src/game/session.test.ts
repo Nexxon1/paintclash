@@ -107,6 +107,31 @@ describe('snapshots feed reconciliation + interpolation', () => {
     expect(pose.others.some((o) => o.id === 1)).toBe(false);
   });
 
+  it('keeps enemies moving on the local clock even when no snapshot arrives', () => {
+    // The enemy timeline must NOT be driven by snapshot arrival — network
+    // jitter would become visible time jumps. It advances with simTick.
+    const { session } = harness();
+    session.receive(encodeWelcome(1, BALANCE.arena.sizeWU));
+    session.receive(encodeSnapshot(1, 0, [selfPlayer(), selfPlayer({ id: 2, x: 49 })]));
+    session.receive(encodeSnapshot(2, 0, [selfPlayer(), selfPlayer({ id: 2, x: 50 })]));
+    session.receive(encodeSnapshot(3, 0, [selfPlayer(), selfPlayer({ id: 2, x: 51 })]));
+    const positions: number[] = [];
+    for (let i = 0; i < 4; i++) {
+      const other = session.renderSample(0).others.find((o) => o.id === 2);
+      if (other) positions.push(other.x);
+      session.simTick(0); // local clock advances, no new snapshots
+    }
+    for (let i = 1; i < positions.length; i++) {
+      const prev = positions[i - 1];
+      const curr = positions[i];
+      if (prev === undefined || curr === undefined) throw new Error('missing sample');
+      expect(curr).toBeGreaterThanOrEqual(prev);
+    }
+    // It really moved somewhere within the buffered range.
+    expect(positions[positions.length - 1]).toBeGreaterThan(positions[0] ?? Infinity);
+    expect(positions[positions.length - 1]).toBeLessThanOrEqual(51);
+  });
+
   it('ignores malformed server frames', () => {
     const { session } = harness();
     joined(session);

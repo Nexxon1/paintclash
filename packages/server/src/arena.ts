@@ -43,8 +43,14 @@ interface Connection {
   ackSeq: number;
   /** Fresh intents waiting to be applied, one per tick, oldest first. */
   pendingInputs: InputItem[];
+  /** Jitter buffer: while true, queued intents are held, not consumed. */
+  buffering: boolean;
+  /** Ticks the oldest queued intent has waited while buffering. */
+  bufferWait: number;
   /** Consecutive malformed frames; a valid frame resets it. */
   garbage: number;
+  /** Ticks since the last valid frame — dead-socket detection. */
+  idleTicks: number;
 }
 
 export class ArenaCore {
@@ -72,7 +78,10 @@ export class ArenaCore {
       highestSeq: 0,
       ackSeq: 0,
       pendingInputs: [],
+      buffering: true,
+      bufferWait: 0,
       garbage: 0,
+      idleTicks: 0,
     });
     return id;
   }
@@ -101,6 +110,7 @@ export class ArenaCore {
       return;
     }
     connection.garbage = 0;
+    connection.idleTicks = 0;
     if (message.type === 'join') {
       if (!connection.joined) {
         connection.joined = true;
@@ -124,10 +134,35 @@ export class ArenaCore {
   tick(dtSec: number): void {
     const turns: { id: number; turn: InputItem['turn'] }[] = [];
     for (const [id, connection] of this.connections) {
-      const input = connection.pendingInputs.shift();
+      // Dead-socket sweep: transports don't always deliver a close event
+      // (half-open TCP after an abrupt browser kill) — without this, ghost
+      // players circle the arena forever.
+      connection.idleTicks += 1;
+      if (connection.idleTicks > LIMITS.idleTimeoutTicks) {
+        connection.socket.close(1001, 'idle timeout');
+        this.disconnect(id);
+        continue;
+      }
+      const queue = connection.pendingInputs;
+      // Jitter buffer: hold until a batch is in (or the lone intent waited
+      // long enough), so a slightly late batch never dries the queue out.
+      if (connection.buffering && queue.length > 0) {
+        connection.bufferWait += 1;
+        if (
+          queue.length >= LIMITS.inputBufferTicks ||
+          connection.bufferWait >= LIMITS.inputBufferTicks
+        ) {
+          connection.buffering = false;
+        }
+      }
+      if (connection.buffering) continue;
+      const input = queue.shift();
       if (input) {
         connection.ackSeq = input.seq;
         turns.push({ id, turn: input.turn });
+      } else {
+        connection.buffering = true;
+        connection.bufferWait = 0;
       }
     }
     step(this.state, { joins: this.pendingJoins, leaves: this.pendingLeaves, turns }, dtSec);

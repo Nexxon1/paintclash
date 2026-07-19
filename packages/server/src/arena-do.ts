@@ -4,68 +4,86 @@
  * end-to-end by the scenario tests (`tests/scenario/`), not unit-tested —
  * there is deliberately no logic here.
  *
+ * Uses the WebSocket Hibernation API: its `webSocketClose`/`webSocketError`
+ * handlers are delivered reliably (the classic `addEventListener('close')`
+ * path is not under `wrangler dev`, which left ghost players in the arena).
+ * As a backstop, a failing `send` also drops the connection.
+ *
  * Live state is memory-only (ADR-0004): an eviction resets the arena. The
  * ticker only runs while sockets exist — an empty arena costs nothing
- * (spec §7.2: "nur ticken, wenn ein Spiel mit Spielern läuft").
+ * (spec §7.2: "nur ticken, wenn ein Spiel mit Spielern läuft"). While the
+ * ticker runs the DO cannot hibernate, so the in-memory arena and the
+ * socket→player map never outlive each other.
  */
 
+import { DurableObject } from 'cloudflare:workers';
 import { TICK_DT_MS, TICK_DT_SEC } from '@paintclash/shared';
 
 import { ArenaCore } from './arena.js';
 
-export class ArenaDO {
+export class ArenaDO extends DurableObject {
   private arena: ArenaCore | null = null;
   private readonly socketIds = new Map<WebSocket, number>();
   private ticking = false;
 
-  fetch(request: Request): Response {
+  override fetch(request: Request): Response {
     if (request.headers.get('Upgrade')?.toLowerCase() !== 'websocket') {
       return new Response('expected a WebSocket upgrade', { status: 426 });
     }
     const pair = new WebSocketPair();
     const [client, server] = [pair[0], pair[1]];
-    server.accept();
+    this.ctx.acceptWebSocket(server);
 
     this.arena ??= new ArenaCore(crypto.getRandomValues(new Uint32Array(1))[0] ?? 1);
     const arena = this.arena;
     const playerId = arena.connect({
       send: (frame) => {
-        server.send(frame);
+        try {
+          server.send(frame);
+        } catch {
+          // Socket died without a close event — drop the player.
+          this.drop(server);
+        }
       },
       close: (code, reason) => {
-        server.close(code, reason);
+        try {
+          server.close(code, reason);
+        } catch {
+          this.drop(server);
+        }
       },
     });
     this.socketIds.set(server, playerId);
 
-    server.addEventListener('message', (event) => {
-      const data: unknown = event.data;
-      // Text frames are protocol violations — run them through the same
-      // malformed-frame accounting as binary garbage (spec §8.3).
-      if (typeof data === 'string') {
-        arena.handleFrame(playerId, new Uint8Array([0xff]));
-        return;
-      }
-      if (data instanceof ArrayBuffer) {
-        arena.handleFrame(playerId, new Uint8Array(data));
-        return;
-      }
-      // Recent compat dates deliver binary frames as Blob (browser-style).
-      if (data instanceof Blob) {
-        void data.arrayBuffer().then((buffer) => {
-          arena.handleFrame(playerId, new Uint8Array(buffer));
-        });
-      }
-    });
-    const drop = (): void => {
-      this.socketIds.delete(server);
-      arena.disconnect(playerId);
-    };
-    server.addEventListener('close', drop);
-    server.addEventListener('error', drop);
-
     this.startTicker(arena);
     return new Response(null, { status: 101, webSocket: client });
+  }
+
+  override webSocketMessage(ws: WebSocket, message: ArrayBuffer | string): void {
+    const playerId = this.socketIds.get(ws);
+    if (playerId === undefined || !this.arena) {
+      // Socket from before an arena reset/eviction — force a clean rejoin.
+      ws.close(1012, 'arena reset');
+      return;
+    }
+    // Text frames are protocol violations — run them through the same
+    // malformed-frame accounting as binary garbage (spec §8.3).
+    const bytes = typeof message === 'string' ? new Uint8Array([0xff]) : new Uint8Array(message);
+    this.arena.handleFrame(playerId, bytes);
+  }
+
+  override webSocketClose(ws: WebSocket): void {
+    this.drop(ws);
+  }
+
+  override webSocketError(ws: WebSocket): void {
+    this.drop(ws);
+  }
+
+  private drop(ws: WebSocket): void {
+    const playerId = this.socketIds.get(ws);
+    this.socketIds.delete(ws);
+    if (playerId !== undefined) this.arena?.disconnect(playerId);
   }
 
   /** Self-rescheduling 50 ms cadence against a fixed schedule; stops when empty. */
@@ -77,6 +95,7 @@ export class ArenaDO {
       if (arena.connectionCount === 0) {
         this.ticking = false;
         this.arena = null; // empty arena resets (ADR-0004)
+        this.socketIds.clear();
         return;
       }
       arena.tick(TICK_DT_SEC);

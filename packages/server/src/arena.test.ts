@@ -83,15 +83,36 @@ describe('authoritative movement', () => {
     expect(dist).toBeLessThan(0.5);
   });
 
-  it('applies a steer intent and echoes the processed seq as ack', () => {
+  it('applies a steer intent (after the jitter window) and echoes its seq as ack', () => {
     const arena = new ArenaCore(1);
     const { socket, id } = joinedPlayer(arena);
     arena.tick(TICK_DT_SEC);
     arena.handleFrame(id, encodeInput([{ seq: 5, turn: 1 }]));
+    // A lone intent is held LIMITS.inputBufferTicks ticks (jitter buffer) …
+    arena.tick(TICK_DT_SEC);
+    expect(socket.lastSnapshot().ackSeq).toBe(0);
+    // … then applied.
     arena.tick(TICK_DT_SEC);
     const snapshot = socket.lastSnapshot();
     expect(snapshot.ackSeq).toBe(5);
     expect(snapshot.players.find((p) => p.id === id)?.turn).toBe(1);
+  });
+
+  it('a full batch releases the jitter buffer immediately', () => {
+    const arena = new ArenaCore(1);
+    const { socket, id } = joinedPlayer(arena);
+    arena.tick(TICK_DT_SEC);
+    arena.handleFrame(
+      id,
+      encodeInput(
+        Array.from({ length: LIMITS.inputBufferTicks }, (_, i) => ({
+          seq: i + 1,
+          turn: 1 as const,
+        })),
+      ),
+    );
+    arena.tick(TICK_DT_SEC);
+    expect(socket.lastSnapshot().ackSeq).toBe(1);
   });
 
   it('replays a batched frame one intent per tick — a short tap is never lost', () => {
@@ -143,7 +164,9 @@ describe('authoritative movement', () => {
     arena.tick(TICK_DT_SEC);
     arena.handleFrame(id, encodeInput([{ seq: 10, turn: 1 }]));
     arena.tick(TICK_DT_SEC);
+    arena.tick(TICK_DT_SEC); // jitter window over — seq 10 applied
     arena.handleFrame(id, encodeInput([{ seq: 3, turn: -1 }])); // replay/stale
+    arena.tick(TICK_DT_SEC);
     arena.tick(TICK_DT_SEC);
     const snapshot = socket.lastSnapshot();
     expect(snapshot.ackSeq).toBe(10);
@@ -198,9 +221,27 @@ describe('intent-only validation at the protocol boundary (spec §8.2/8.3)', () 
     arena.tick(TICK_DT_SEC);
     arena.handleFrame(a.id, encodeInput([{ seq: 1, turn: 1 }]));
     arena.tick(TICK_DT_SEC);
+    arena.tick(TICK_DT_SEC); // jitter window
     const snapshot = a.socket.lastSnapshot();
     expect(snapshot.players.find((p) => p.id === a.id)?.turn).toBe(1);
     expect(snapshot.players.find((p) => p.id === b.id)?.turn).toBe(0);
+  });
+});
+
+describe('dead-socket sweep', () => {
+  it('drops a connection that stops sending frames (half-open socket)', () => {
+    const arena = new ArenaCore(1);
+    const a = joinedPlayer(arena, 'ghost');
+    const b = joinedPlayer(arena, 'alive');
+    for (let i = 0; i <= LIMITS.idleTimeoutTicks; i++) {
+      arena.tick(TICK_DT_SEC);
+      // Only b keeps talking, like a real client does every few ticks.
+      arena.handleFrame(b.id, encodeInput([{ seq: i + 1, turn: 0 }]));
+    }
+    arena.tick(TICK_DT_SEC);
+    expect(a.socket.closed).not.toBeNull();
+    expect(b.socket.closed).toBeNull();
+    expect(b.socket.lastSnapshot().players.map((p) => p.id)).toEqual([b.id]);
   });
 });
 

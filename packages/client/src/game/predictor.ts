@@ -17,6 +17,14 @@ const ERROR_DECAY = 0.65;
 /** Corrections larger than this snap instead of gliding (teleport-grade). */
 const MAX_GLIDE_WU = 8;
 
+/** Signed shortest-arc difference b − a in (−π, π]. */
+function angleDiff(a: number, b: number): number {
+  let diff = (b - a) % (2 * Math.PI);
+  if (diff > Math.PI) diff -= 2 * Math.PI;
+  if (diff < -Math.PI) diff += 2 * Math.PI;
+  return diff;
+}
+
 export interface RenderPose {
   x: number;
   y: number;
@@ -62,14 +70,23 @@ export class Predictor {
       advancePlayer(replayed, this.arenaSizeWU, dtSec);
     }
     this.curr = replayed;
-    this.prev ??= { ...replayed };
+    const prev = (this.prev ??= { ...replayed });
     if (before) {
       const dx = before.x + this.errorX - replayed.x;
       const dy = before.y + this.errorY - replayed.y;
       if (Math.hypot(dx, dy) <= MAX_GLIDE_WU) {
+        // Shift the interpolation segment along with the correction so the
+        // rendered pose is CONTINUOUS at this very moment (whatever alpha the
+        // renderer is at) — the correction then surfaces only through the
+        // decaying error offset, never as a mid-tick pop.
+        prev.x += replayed.x - before.x;
+        prev.y += replayed.y - before.y;
+        prev.heading += angleDiff(before.heading, replayed.heading);
         this.errorX = dx;
         this.errorY = dy;
       } else {
+        // Teleport-grade divergence: snap hard, no glide.
+        this.prev = { ...replayed };
         this.errorX = 0;
         this.errorY = 0;
       }

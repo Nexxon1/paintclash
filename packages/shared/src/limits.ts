@@ -18,4 +18,17 @@ export const LIMITS = Object.freeze({
    * (spec §8.3: one effective input per player per tick).
    */
   maxPendingInputs: 8,
+  /**
+   * Ticks without a single valid frame before a connection counts as dead
+   * (a connected client sends an input batch every few ticks, so only
+   * half-open/vanished sockets ever reach this).
+   */
+  idleTimeoutTicks: 200,
+  /**
+   * Jitter buffer: ticks the server holds a player's first queued intent
+   * before starting to consume, so a batch arriving slightly late never
+   * drains the queue dry (a dry-out shifts the whole input timeline by one
+   * tick and surfaces as a reconciliation jerk on the client).
+   */
+  inputBufferTicks: 2,
 });

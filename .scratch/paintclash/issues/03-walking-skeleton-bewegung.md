@@ -37,3 +37,18 @@ _Referenz: spec §2.3–2.4, §3, §5, §6, §8.2, §10; ADR-0002/0003/0004._
 - Bewusst nicht umgesetzt: Spawn bleibt 16-Kandidaten-best-effort (§2.3-konform); Seq-Obergrenze („server-begrenzt" nach oben) = Selbstschaden, → Ticket 15; SimClient/ClientSession-Ähnlichkeit bleibt (Testwerkzeug bewusst entkoppelt); Blob-Zweig im DO ist nachweislich der Live-Pfad unter aktuellem compat-Date (kein toter Code).
 
 Endstand aller Gates: typecheck ✓ lint ✓ format ✓ 119 Unit/Property/Replay ✓ (Coverage-Gates erfüllt, sim-core/protocol/sim-client 100 %) 5 Szenario ✓ Build ✓ 2 E2E ✓.
+
+**2026-07-19 (Agent, Nachbesserung Ruckeln):** User-Report: Ruckler ~alle 0,5 s, gelegentliche Teleports, fremde Spieler deutlich schlimmer. Mit einer Headless-Browser-Sonde reproduziert und quantifiziert (Soll: konstant 9 WU/s gerenderte Geschwindigkeit):
+
+| Messung | vorher | nachher |
+|---|---|---|
+| Eigener Kopf | 0,45–0,9-WU-Doppelschritte (sd 0,15) | **8,94 ± 0,03 WU/s** |
+| Fremder Spieler | **komplett eingefroren** (Geist) | **8,96 ± 0,05 WU/s** |
+
+Vier Ursachen, vier Fixes:
+1. **Geister-Spieler:** Close-Events des klassischen `accept()`-WebSocket kommen unter `wrangler dev` nicht zuverlässig an → tote Spieler blieben ewig in der Arena (bei (0,0) in der Ecke geparkt bzw. ewig kreisend). Fix: **WebSocket-Hibernation-API** (`webSocketClose`/`webSocketError`) + Backstop bei `send`-Fehler + **Idle-Timeout-Sweep** (`LIMITS.idleTimeoutTicks`, 10 s — deckt halb-offene TCP-Verbindungen, die gar kein Event liefern).
+2. **Fremde ruckeln/stehen:** Die Interpolations-Zeitachse hing an Snapshot-*Ankunftszeiten* → Netz-Jitter wurde 1:1 zu Zeitsprüngen. Fix: **Render-Uhr** = lokale Tick-Uhr + EMA-geglätteter Server-Offset − 3 Ticks Verzögerungspuffer.
+3. **Eigene Doppelschritte:** Input-Batches (alle 3 Ticks) liefen der 1-Intent-pro-Tick-Queue phasenweise leer → Input-Zeitachse verschob sich um einen Tick → Reconciliation-Sprung. Fix: **Jitter-Puffer** (`LIMITS.inputBufferTicks`, 2 Ticks Vorhaltung).
+4. **Teleports/Popps:** Jede Server-Korrektur sprang mitten im Tick um `(1−α)·Δ`. Fix: Reconciliation verschiebt das Interpolations-Segment mit (Kontinuität am Tauschzeitpunkt); Korrekturen fließen nur noch über den abklingenden Fehler-Offset ein. Diagnose-Endstand: Reconciliation-Fehler dauerhaft 0,000 bei stabiler pending-Queue.
+
+Absicherung: neuer kuratierter **E2E-Smoothness-Test** (misst die tatsächlich gerenderte Geschwindigkeit beider Spieler über 3 s, schlägt bei Geistern/Doppelschritten/Stalls aus), Unit-Tests für Jitter-Puffer, Flood-Deckel und Idle-Sweep. Neue Begriffe in CONTEXT.md (Jitter-Puffer, Idle-Timeout, Render-Uhr).

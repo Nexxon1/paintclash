@@ -15,3 +15,7 @@
 - [ ] CI grün inkl. Coverage (§9.7).
 
 _Referenz: spec §2.1, §10.4; CONTEXT „Tod"._
+
+## Comments
+
+**2026-07-19 (User-Bedenken, via Agent aus Ticket 03 übertragen):** Sorge zur Kollisionserkennung: Wenn Client-Sichten und Server-Wahrheit nicht synchron sind, stirbt man ggf. an Kollisionen, die auf dem eigenen Bildschirm nie stattfanden — schlechte Spielerfahrung. **Einordnung:** Genau dafür ist die Rewind-Kill-Fairness (ADR-0003, Ticket 07) vorgesehen: der Server beurteilt Schnitte aus der Sicht des *handelnden* Spielers anhand der Positions-Historie. Die in Ticket 03 nachgerüstete Infrastruktur (Ack = angewendete Input-Seq, Render-Uhr mit Server-Offset, Interpolations-Verzögerung von exakt 3 Ticks) liefert die Daten, um beim Rewind die *tatsächliche Client-Sicht* zu rekonstruieren (Gegner-Positionen zum Zeitpunkt „Server-Tick − Interp-Delay"). Bei der Umsetzung von 05/07 unbedingt gegen diese Sicht testen (Szenario-Test: Spieler weicht auf seinem Schirm aus → darf nicht sterben). Restfall bleibt genretypisch (ADR-0003).

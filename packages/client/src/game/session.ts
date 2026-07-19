@@ -21,8 +21,24 @@ import { Predictor, type RenderPose } from './predictor.js';
 /** Sim ticks per batched input frame — the shared §6.3 batching cadence. */
 export const INPUT_FLUSH_TICKS = LIMITS.inputFlushTicks;
 
-/** Enemies render this many ticks behind the freshest snapshot (spec §6.1). */
-const INTERP_DELAY_TICKS = 2;
+/**
+ * Enemies render this many ticks behind estimated server time (spec §6.1).
+ * 3 ticks = 150 ms: enough headroom that clock-estimate noise never pushes
+ * the sample past the newest snapshot (which would stall-and-jump); well
+ * inside the genre's latency tolerance (spec §6.3: ~500 ms).
+ */
+const INTERP_DELAY_TICKS = 3;
+
+/**
+ * EMA weight for the server-clock offset. The enemy timeline must advance on
+ * the *local* tick clock — pinning it to snapshot arrival times would turn
+ * every bit of network jitter into a visible time jump. Samples are
+ * quantized to whole ticks, so the weight stays small.
+ */
+const OFFSET_SMOOTHING = 0.05;
+
+/** An offset this many ticks off is a real clock break — resync hard. */
+const OFFSET_RESYNC_TICKS = 10;
 
 export interface RenderState {
   self: RenderPose | null;
@@ -44,6 +60,10 @@ export class ClientSession {
   private nextSeq = 1; // server acks 0 = "nothing yet"
   private ticksSinceFlush = 0;
   private selfBlock: { cx: number; cy: number } | null = null;
+  /** Local sim ticks since start — the smooth clock everything renders on. */
+  private clientTicks = 0;
+  /** EMA of (server tick − local tick); null until the first snapshot. */
+  private serverOffset: number | null = null;
 
   constructor(send: (frame: Uint8Array) => void, name: string) {
     this.send = send;
@@ -73,6 +93,11 @@ export class ClientSession {
     const latest = this.interpolator.latestTick();
     if (latest !== null && message.tick <= latest) return;
     this.interpolator.add(message.tick, message.players);
+    const offsetSample = message.tick - this.clientTicks;
+    this.serverOffset =
+      this.serverOffset === null || Math.abs(offsetSample - this.serverOffset) > OFFSET_RESYNC_TICKS
+        ? offsetSample
+        : this.serverOffset + OFFSET_SMOOTHING * (offsetSample - this.serverOffset);
     const self =
       this.playerId === null ? undefined : message.players.find((p) => p.id === this.playerId);
     if (self && this.predictor) {
@@ -84,6 +109,7 @@ export class ClientSession {
   /** One fixed 20 Hz tick: sample input, predict, batch, maybe flush. */
   simTick(turn: TurnSignal): void {
     if (!this.predictor || !this.ready()) return;
+    this.clientTicks += 1;
     const seq = this.nextSeq++;
     this.queued.push({ seq, turn });
     this.predictor.applyLocalInput(seq, turn, TICK_DT_SEC);
@@ -94,11 +120,15 @@ export class ClientSession {
 
   /** Everything the renderer needs, at inter-tick blend factor `alpha`. */
   renderSample(alpha: number): RenderState {
-    const latest = this.interpolator.latestTick();
+    // Enemy timeline = smooth local clock + smoothed offset − delay. It
+    // advances every local tick even when a snapshot arrives late.
     const others =
-      latest === null
+      this.serverOffset === null
         ? []
-        : this.interpolator.sample(latest - INTERP_DELAY_TICKS + alpha, this.playerId ?? undefined);
+        : this.interpolator.sample(
+            this.clientTicks + alpha + this.serverOffset - INTERP_DELAY_TICKS,
+            this.playerId ?? undefined,
+          );
     return {
       self: this.predictor?.sample(alpha) ?? null,
       selfBlock: this.selfBlock,

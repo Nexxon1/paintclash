@@ -77,6 +77,33 @@ describe('reconciliation (server corrects, client replays, spec §6.1)', () => {
     expect(halfway.x).toBeCloseTo(full.x - 0.225, 5);
   });
 
+  it('a mid-tick server correction never jumps the rendered pose', () => {
+    const predictor = new Predictor(ARENA);
+    predictor.reconcile(serverSelf(), 0, TICK_DT_SEC);
+    predictor.applyLocalInput(1, 0, TICK_DT_SEC);
+    const before = predictor.sample(0.4);
+    if (!before) throw new Error('nothing to sample');
+    // Server disagrees by 2 WU sideways and a few degrees.
+    predictor.reconcile(serverSelf({ x: 100.45, y: 102, heading: 0.1 }), 1, TICK_DT_SEC);
+    const after = predictor.sample(0.4);
+    if (!after) throw new Error('nothing to sample');
+    // Continuity at the swap instant — the correction only flows in later
+    // via the decaying error offset.
+    expect(after.x).toBeCloseTo(before.x, 6);
+    expect(after.y).toBeCloseTo(before.y, 6);
+  });
+
+  it('a teleport-grade divergence snaps instead of gliding', () => {
+    const predictor = new Predictor(ARENA);
+    predictor.reconcile(serverSelf(), 0, TICK_DT_SEC);
+    predictor.applyLocalInput(1, 0, TICK_DT_SEC);
+    predictor.reconcile(serverSelf({ x: 150, y: 150 }), 1, TICK_DT_SEC);
+    const pose = predictor.sample(1);
+    // Everything acked, nothing to replay: land exactly on the server state.
+    expect(pose?.x).toBeCloseTo(150, 6);
+    expect(pose?.y).toBeCloseTo(150, 6);
+  });
+
   it('interpolates the heading between ticks too (render interpolation, §4.3)', () => {
     const predictor = new Predictor(ARENA);
     predictor.reconcile(serverSelf(), 0, TICK_DT_SEC);

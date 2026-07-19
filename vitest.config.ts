@@ -25,6 +25,9 @@ export default defineConfig({
         // (tests/scenario/), which run in workerd and don't count toward %
         // (spec §9.3: hibernation/transport justifiably exempt).
         'packages/server/src/arena-do.ts',
+        // Worker entry re-export (imports cloudflare:workers via the DO) —
+        // wiring only, exercised by the scenario tests.
+        'packages/server/src/index.ts',
         // Rendering + DOM/WS bootstrap are excluded per spec §9.3 ("client
         // logic ≥ 80%, Render ausgenommen"); the Playwright E2E covers them.
         'packages/client/src/render/**',

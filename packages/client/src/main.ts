@@ -10,10 +10,12 @@ import { KeyTracker } from './game/input.js';
 import { ClientSession } from './game/session.js';
 import { ArenaScene } from './render/scene.js';
 
+import type { RenderState } from './game/session.js';
+
 declare global {
   interface Window {
-    /** Debug/E2E hook: read-only view into the running session. */
-    __paintclash?: { session: ClientSession };
+    /** Debug/E2E hook: the running session + the pose actually drawn. */
+    __paintclash?: { session: ClientSession; lastRender?: RenderState };
   }
 }
 
@@ -78,7 +80,9 @@ function start(name: string): void {
       hidden = true;
       overlay.style.display = 'none';
     }
-    scene.update(session.renderSample(accumulator / TICK_DT_MS));
+    const renderState = session.renderSample(accumulator / TICK_DT_MS);
+    if (window.__paintclash) window.__paintclash.lastRender = renderState;
+    scene.update(renderState);
     requestAnimationFrame(frame);
   };
   requestAnimationFrame(frame);
