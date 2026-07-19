@@ -41,6 +41,11 @@ Ergänzt seit [Ticket 08](.scratch/draw-race/issues/08-architektur-erweiterbarke
 - **Router-Worker** — zustandsloser Einstieg; liefert den Client aus und leitet WebSocket-Verbindungen an das richtige Arena-DO (öffentlich/privat).
 - **Raum-Registry** — SQLite-Ablage im DO für Code → Konfiguration privater Räume (fast die einzige server-seitige Persistenz).
 - **Input-Batching** — mehrere Eingaben pro WebSocket-Nachricht bündeln (erzwungen durch das Free-Request-Budget).
+- **Welcome** — erste Server-Antwort auf den Join-Wunsch: eigene `playerId` + Arena-Grösse. Erst danach ist der Client der Arena zugeordnet. Code: `welcome`-Opcode in `protocol`.
+- **Ack** (engl. *acknowledged sequence*, Code `ackSeq`) — die Input-Sequenznummer des zuletzt **angewendeten** Steuer-Intents, vom Server in jedem Snapshot pro Empfänger zurückgemeldet; Anker der Reconciliation (der Client spielt nur Inputs > Ack neu ab). Sequenznummern starten bei 1; Ack 0 = „noch nichts verarbeitet".
+- **Input-Queue** — server-seitige Warteschlange frischer Steuer-Intents pro Spieler; pro Tick wird **genau einer** angewendet (rekonstruiert die Client-Zeitachse eines Input-Batches). Backlog über `LIMITS.maxPendingInputs` = Flood, älteste Einträge fallen weg.
+- **Garbage-Toleranzfenster** — Zahl aufeinanderfolgender malformer Frames, die ein Socket überlebt, bevor er getrennt wird (`LIMITS.garbageKillThreshold`); ein gültiger Frame setzt den Zähler zurück.
+- **`LIMITS`** — eingefrorene Schutz-/Budget-Schwellen neben `BALANCE` in `shared` (Garbage-Kill, Input-Flush-Kadenz, Input-Queue-Deckel).
 - **Effekt** — modifizierender Zustand auf einer Entity (Tempo, Schild …); Naht für Items/Upgrades, Grundversion leer.
 - **Regelwerk** (Strategie) — austauschbare Spielregeln; Grundversion = Strategie „endlose Arena". Naht für weitere Spielmodi.
 - **appearance** (Erscheinungsbild) — sim-neutraler Kosmetik-Deskriptor (heute Farbindex, später Skin-ID); nur der Client rendert ihn.

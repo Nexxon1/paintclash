@@ -1,39 +1,41 @@
 /**
- * Placeholder Cloudflare Worker (spec §5.2, §7.1). Serves the static client via
- * Workers Static Assets and answers a health probe that reports the deployed
- * commit SHA. The real Router-Worker plus Arena Durable Object land in later
- * build tickets (02+).
+ * Router-Worker (spec §5.2, ADR-0004): stateless entry — serves the static
+ * client via Workers Static Assets, answers the health probe, and routes
+ * WebSocket connections to the one public Arena-DO. Seam for the later
+ * matchmaker / private rooms (ticket 14).
  *
- * Free-plan / no-credit-card safe: no bindings that require a paid plan.
- *
- * @see ADR-0001, ADR-0004
+ * Free-plan / no-credit-card safe: SQLite-backed DO only (ADR-0001).
  */
 
-/**
- * Bindings declared in `wrangler.jsonc`. `ASSETS` serves the static client;
- * `COMMIT_SHA` is the deployed git commit (a plain-text var; defaults to `dev`
- * locally and is overridden per deploy via `--var COMMIT_SHA:<sha>`).
- */
+export { ArenaDO } from './arena-do.js';
+
+/** Bindings declared in `wrangler.jsonc`. */
 export interface Env {
   readonly ASSETS: { fetch(request: Request): Promise<Response> };
   readonly COMMIT_SHA: string;
+  readonly ARENA: DurableObjectNamespace;
 }
 
 /** Health-probe payload — small, dependency-free, trivially assertable. */
 export function healthPayload(commit: string): {
   status: 'ok';
   service: 'paintclash';
-  phase: 'placeholder';
+  phase: 'walking-skeleton';
   commit: string;
 } {
-  return { status: 'ok', service: 'paintclash', phase: 'placeholder', commit };
+  return { status: 'ok', service: 'paintclash', phase: 'walking-skeleton', commit };
 }
 
-/** Route health checks to JSON; delegate everything else to Static Assets. */
+/** Route health → JSON, /ws → public Arena-DO, everything else → assets. */
 export function handleFetch(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
   if (url.pathname === '/api/health') {
     return Promise.resolve(Response.json(healthPayload(env.COMMIT_SHA)));
+  }
+  if (url.pathname === '/ws') {
+    // Phase 1: exactly one public arena at a fixed address (ADR-0004).
+    const stub = env.ARENA.get(env.ARENA.idFromName('public'));
+    return stub.fetch(request);
   }
   return env.ASSETS.fetch(request);
 }

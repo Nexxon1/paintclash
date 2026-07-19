@@ -2,7 +2,10 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "outDir": "dist",
-    "rootDir": "src"
+    "rootDir": "src",
+    // TextEncoder/TextDecoder globals (universal, but absent from the bare
+    // ES lib) — node's types cover the shape used in every target runtime.
+    "types": ["node"]
   },
   "include": ["src/**/*.ts"]
 }

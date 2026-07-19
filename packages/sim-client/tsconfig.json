@@ -2,7 +2,10 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "outDir": "dist",
-    "rootDir": "src"
+    "rootDir": "src",
+    // Re-checks `protocol` sources (workspace exports point at src), which
+    // use the TextEncoder/TextDecoder globals — node's types provide them.
+    "types": ["node"]
   },
   "include": ["src/**/*.ts"]
 }

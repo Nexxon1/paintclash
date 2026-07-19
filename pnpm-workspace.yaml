@@ -3,3 +3,6 @@ packages:
   # Benchmarks/Spikes: own workspace root so their (slow) runs & deps stay out
   # of the packages/* test- and coverage-gates (spec §9.3).
   - 'bench/*'
+  # Stack-crossing scenario tests (spec §9.1): real server + sim-clients in
+  # workerd; own package so they stay out of the root run/coverage (§9.3).
+  - 'tests/scenario'

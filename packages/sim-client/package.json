@@ -9,5 +9,10 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@paintclash/protocol": "workspace:*",
+    "@paintclash/shared": "workspace:*",
+    "@paintclash/sim-core": "workspace:*"
   }
 }

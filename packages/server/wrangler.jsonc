@@ -3,12 +3,28 @@
   "name": "paintclash",
   "main": "src/index.ts",
   "compatibility_date": "2026-07-01",
-  // Static Assets serve the built client; the Worker sits in front for the API
-  // and (later) WebSocket routing to the Arena Durable Object.
+  // Static Assets serve the built client (run `pnpm --filter @paintclash/client
+  // build` first); the Worker sits in front for the API and routes WebSockets
+  // to the Arena Durable Object.
   "assets": {
-    "directory": "./public",
+    "directory": "../client/dist",
     "binding": "ASSETS",
   },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "ARENA",
+        "class_name": "ArenaDO",
+      },
+    ],
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      // SQLite-backed: the only DO flavor available on the Free plan (ADR-0001).
+      "new_sqlite_classes": ["ArenaDO"],
+    },
+  ],
   "vars": {
     // Overridden per deploy with the real git SHA via `--var COMMIT_SHA:<sha>`;
     // `dev` is the fallback for `wrangler dev` / dry-runs.

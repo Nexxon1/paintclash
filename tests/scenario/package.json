@@ -1,0 +1,22 @@
+{
+  "name": "@paintclash/scenario-tests",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@paintclash/server": "workspace:*",
+    "@paintclash/shared": "workspace:*",
+    "@paintclash/sim-client": "workspace:*"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.12.0",
+    "@cloudflare/workers-types": "^5.20260714.1",
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.5",
+    "wrangler": "^4.0.0"
+  }
+}

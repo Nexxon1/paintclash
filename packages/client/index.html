@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>paintclash</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        overflow: hidden;
+        font-family: system-ui, sans-serif;
+      }
+      #game {
+        display: block;
+        width: 100vw;
+        height: 100vh;
+      }
+      #overlay {
+        position: fixed;
+        inset: 0;
+        display: grid;
+        place-items: center;
+        background: rgba(20, 28, 38, 0.55);
+      }
+      #overlay .card {
+        background: #fff;
+        border-radius: 12px;
+        padding: 2rem 2.5rem;
+        box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25);
+        text-align: center;
+      }
+      #overlay h1 {
+        margin: 0 0 1rem;
+        font-size: 1.6rem;
+      }
+      #overlay input {
+        font-size: 1rem;
+        padding: 0.5rem 0.75rem;
+        border: 1px solid #c6ced8;
+        border-radius: 8px;
+        margin-right: 0.5rem;
+      }
+      #overlay button {
+        font-size: 1rem;
+        padding: 0.5rem 1.25rem;
+        border: 0;
+        border-radius: 8px;
+        background: #2f7fe8;
+        color: #fff;
+        cursor: pointer;
+      }
+      #status {
+        min-height: 1.2em;
+        color: #5b6672;
+        margin: 0.75rem 0 0;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="game"></canvas>
+    <div id="overlay">
+      <div class="card">
+        <h1>paintclash</h1>
+        <form id="join-form">
+          <input id="name" maxlength="16" placeholder="Dein Name" autocomplete="off" />
+          <button type="submit">Spielen</button>
+        </form>
+        <p id="status"></p>
+      </div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

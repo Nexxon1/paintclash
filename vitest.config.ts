@@ -17,7 +17,20 @@ export default defineConfig({
       provider: 'v8',
       all: true,
       include: ['packages/*/src/**/*.ts'],
-      exclude: ['**/*.test.ts', '**/dist/**', 'packages/shared/**'],
+      exclude: [
+        '**/*.test.ts',
+        '**/dist/**',
+        'packages/shared/**',
+        // Transport/DO shell without logic — exercised by the scenario tests
+        // (tests/scenario/), which run in workerd and don't count toward %
+        // (spec §9.3: hibernation/transport justifiably exempt).
+        'packages/server/src/arena-do.ts',
+        // Rendering + DOM/WS bootstrap are excluded per spec §9.3 ("client
+        // logic ≥ 80%, Render ausgenommen"); the Playwright E2E covers them.
+        'packages/client/src/render/**',
+        'packages/client/src/main.ts',
+        'packages/client/vite.config.ts',
+      ],
       reporter: ['text', 'json-summary', 'lcov'],
       thresholds: {
         'packages/sim-core/src/**/*.ts': {

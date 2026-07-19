@@ -1,0 +1,27 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  // Scenario-test-only view of the server (spec §9.1): same Worker + Arena-DO,
+  // but without the static-assets binding, so the tests are hermetic — they
+  // never depend on a built client. Never deployed.
+  "name": "paintclash-scenario",
+  "main": "../../packages/server/src/index.ts",
+  "compatibility_date": "2026-07-01",
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "ARENA",
+        "class_name": "ArenaDO",
+      },
+    ],
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      // SQLite-backed: the only DO flavor available on the Free plan (ADR-0001).
+      "new_sqlite_classes": ["ArenaDO"],
+    },
+  ],
+  "vars": {
+    "COMMIT_SHA": "scenario",
+  },
+}
