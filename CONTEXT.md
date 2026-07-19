@@ -54,6 +54,14 @@ Ergänzt seit [Ticket 09](.scratch/draw-race/issues/09-teststrategie-qualitaet.m
 - **Replay-Determinismus** — die getestete Eigenschaft, dass *dieselbe* Input-Sequenz + *derselbe* RNG-Seed nach N Ticks einen **bit-identischen Zustands-Hash** ergibt (fixes `dt`, keine Uhr — ADR-0003). Eigene Test-Gattung; Grundlage, auf der Prediction/Reconciliation überhaupt funktioniert.
 - **Golden-Fixture** — eingecheckter Regressions-Anker: für `sim-core` ein aufgezeichnetes **Input-Log + erwarteter End-Hash** (Replay), für `protocol` erwartete **Bytes** (Wire-Format festnageln).
 
+## Glossar — Sound
+
+Ergänzt seit [Ticket 12](.scratch/draw-race/issues/12-sound-design.md). Grundversion = **minimaler SFX-Kern**; die volle Palette (Musik, UI-Sounds, räumlicher Umgebungston) ist Ausbaustufe.
+
+- **SFX-Kern** — der Sound-Umfang der Grundversion: sechs kurze Effekt-Sounds, **keine Musik, keine UI-Sounds**. Events: Fill, Kill, eigener Tod, Respawn/Join, Rang-Aufstieg (One-Shots) und „Fressen" (Loop).
+- **„Fress"-Sound** — kontinuierlicher, leiser Loop, der spielt, *solange sich der Trail durch **fremdes** Gebiet frisst* (nicht über neutralem Boden oder eigenem Gebiet); sanft ein-/ausgeblendet.
+- **Egozentrischer Ton** — es klingen **ausschliesslich die eigenen** Aktionen des lokalen Spielers, nie fremde Events. Räumlicher Umgebungston fremder Spieler ist Ausbaustufe.
+
 ## Verworfen / Erweiterungspunkte
 
 - **Wrap-around / Torus-Arena** — für die Grundversion verworfen (mehrdeutige „innen/aussen"-Fill-Definition); vorgemerkt als künftiger Spielmodus.
