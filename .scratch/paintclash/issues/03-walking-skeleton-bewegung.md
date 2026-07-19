@@ -61,3 +61,16 @@ Absicherung: neuer kuratierter **E2E-Smoothness-Test** (misst die tatsächlich g
 Endstand Sonden: Clean-Fehler-Peak **0,01 WU** (keine Umlenker), unter Kunst-Jank 1,8 WU *echte* Stall-Bewegung (Welt läuft während des eigenen Stalls weiter — Spielregel), die weich über den Fehler-Abbau gleitet; **kein Input geht mehr verloren**. Neue Unit-Tests: Burst-Drain ohne Drop, Catch-up-Doppelschritt, Flood-Cap nur noch als harte Grenze, Sofort-Flush.
 
 **Architektur-Frage des Users** („Müssen wir Tools/Libraries umdecken?"): Nein — begründet in der Antwort; Kurzfassung: Das Gambetta-Modell ist der Industriestandard, die Nacharbeit ist der übliche Netcode-Feinschliff (den Engines sonst fertig mitbringen), Colyseus & Co. laufen nicht auf Workers (ADR-0001), und die Transport-Abstraktion hält den Umzugspfad offen. Messwerte sind jetzt auf Zielniveau.
+
+**2026-07-19 (User-Feedback, offen für nächste Session):** Deutlich stabiler, aber zwei Restsymptome:
+1. **Andere Spieler sichtbar rucklige** als der eigene.
+2. **Gelegentliche harte Resets beim eigenen Spieler** — Neuausrichtung, plötzlich „ein paar cm daneben" oder anderer Blickwinkel.
+3. **Wunsch:** die bisherigen Fixes durch Tests (ideal E2E) absichern, damit nichts zurückrutscht. (Teilweise da: E2E-Smoothness-Test wacht über Doppelschritte/Geister/Stalls.)
+
+**Schnell-Repro-Befund (Sonde `repro.mjs`, Repo-Root, untracked):** Unter mildem Jank (80–200 ms Stalls) + Dreh-Taps: eigener Spieler sauber (Tempo-sd 0,44, **null** Reset-Events bei Schwelle >3× Frame-Budget). ⇒ Resets brauchen härtere Trigger.
+
+**Arbeits-Hypothesen für morgen:**
+- *Resets selbst:* Lange rAF-Freezes (Tab-Wechsel/Fenster-Drag, >500 ms) → Divergenz > `MAX_GLIDE_WU` (8) → harter Snap; **Heading hat keinerlei Fehler-Glättung** (nur Positions-Offset) → „Blickrichtung springt". Ansatz: Heading-Glide analog Position; Glide-Grenze/Stall-Sonderpfad (nach erkannt langem Freeze bewusst hart neu ankern, aber Kamera weich nachziehen).
+- *Andere rucklige:* (a) Catch-up-Drain erzeugt echte 0,9-WU-Doppelschritte des Gegners in einem Server-Tick → Interpolation zeigt Tempo-Spikes; ggf. Drain sanfter (nur jeden 2. Tick doppelt). (b) Gegner-Turn-Onsets tragen Batch+Queue-Latenz. (c) Offset-EMA-Atmung prüfen.
+- *Mess-Falle:* Für Fremd-Spieler-Sonden zwei getrennte Browser-**Kontexte** nutzen (zweite Seite im selben Kontext wird headless gethrottlet — deshalb war die Fremd-Messung im Schnell-Repro leer).
+- *Test-Ausbau (User-Wunsch):* E2E-Reset-Detektor (max. Frame-zu-Frame-Sprung/-Drehung des Selbst), Fremd-vs-Selbst-Glätte-Verhältnis, optional Jank-injizierter E2E; Sonden-Logik aus `repro.mjs` wiederverwenden.
