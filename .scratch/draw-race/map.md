@@ -2,10 +2,13 @@
 
 Label: wayfinder:map
 Erstellt: 2026-07-18
+Status: **✅ Destination erreicht — Map geschlossen (2026-07-19)**
 
 ## Destination
 
 Eine implementierungsreife Spec (`spec.md`) für die Grundversion des Browser-Multiplayer-Flächenfärbe-Spiels: Spielmechanik, Steuerung, Look, Tech-Stack, Architektur, Netcode, Hosting (kostenlos in Phase 1) und Teststrategie sind entschieden und dokumentiert. Die Implementierung startet danach als eigenes Vorhaben.
+
+> **Erreicht (2026-07-19):** [`spec.md`](spec.md) ist geschrieben und vom User abgenommen (Ticket 10). Alle Entscheidungs-Tickets sind resolved. Der einzige noch offene Child ist [Ticket 14 (DO-CPU-Benchmark)](issues/14-do-cpu-benchmark.md) — **jenseits der Destination**, erster Implementierungs-Spike beim Übergang in die Umsetzung (eigenes Vorhaben).
 
 ## Notes
 
@@ -40,6 +43,7 @@ Eine implementierungsreife Spec (`spec.md`) für die Grundversion des Browser-Mu
 - [Balance-Parameter & Startwerte](issues/11-balance-parameter.md) — begründete Startwerte (in der Implementierung nachzujustieren): Einheit **Welteinheit/WU**; öffentliche Arena **200×200 WU**; Bewegung **9 WU/s konstant** + 320°/s; Startblock 6×6 WU / Spawn-Abstand 25 WU; Trail 1,0 WU / Kopf 0,5 WU / Min-Fill 1 WU²; Bots **Ziel 8 / max 8**, phasen mit Menschen aus (CPU-Vorbehalt → Ticket 14); private Räume `√(Spieler×5000)` WU, Limit 8, Gnadenfrist 90 s, Bots aus; Score `round(peakPct × √t × (1+0,25·ØMenschen) × 10)`; alle Werte in einem eingefrorenen `BALANCE`-Modul in `shared` (ADR-0002/0003). Kein neuer Nebel.
 - [Abuse- & Cheat-Schutz](issues/15-abuse-cheat-schutz.md) — **verfügbarkeits-zuerst**: die Server-Autorität (Fill/Kills server-only) erledigt Integritäts-Cheating strukturell; fragil ist die *eine Gratis-Arena* (DoS/Budget). **Autoritäts-Decke:** Client sendet nur **Steuer-Intent**, Server re-derived Position/Tempo/Drehung geklemmt, malforme Frames → drop/disconnect. **Gebaut:** Last-Intent-per-Tick + Frame-Grössen-Cap + Flood-Kill; grosszügige Pro-IP-Deckel (concurrent ~16 CGNAT-tolerant + Join-Rate); harte **Arena-Populationsgrenze** (Wert ← Ticket 14) mit „Arena voll"-Abweisung; statische Nickname-Blockliste (Server erzwingt, Namen flüchtig/kosmetisch); private Räume hoch-entropische ~6-Zeichen-Codes + Erstellungs-Rate-Limit. **Betrieb:** Verfügbarkeit = best effort, harter Tages-Stopp = gewollte Abbuchungssicherheit. **Verschoben (mit Auslöser):** Turnstile/PoW ← Schwarm, Melde-/Mute + Homoglyph ← Beschwerden, verteilte-Schwarm-Abwehr ← Skalierung. **Entblockt Ticket 10.** Neue Glossar-Begriffe Steuer-Intent/Arena-Populationsgrenze/best-effort-Verfügbarkeit.
 - [Sound-Design der Grundversion](issues/12-sound-design.md) — **minimaler SFX-Kern** (keine Musik/UI-Sounds), **strikt egozentrisch** (nur eigene Aktionen klingen): 6 Events Fill / Kill / eigener Tod / Respawn-Join / Rang-Aufstieg (One-Shots) + **„Fress"-Loop** (nur über fremdem Gebiet, leise, sanft ein-/ausgeblendet). Quelle **prozedural-first (Web Audio)** + CC0-Fallback (v.a. Fressen), alles frei/CC0. Default **AN**, entsperrt beim Play-Klick (deckt Autoplay-Policy), **HUD-Mute-Toggle** binär, in localStorage persistiert. Budget ~0 Bytes (Sample-Rückfälle ≤50 KB, lazy nach Join), **vom `sim-core` entkoppelt** (kein Determinismus-Einfluss, ADR-0002/0003). Volle Palette (Musik/UI/Umgebungston/Slider) → out of scope. Ticket 10 verliert einen Blocker.
+- [Spec konsolidieren](issues/10-spec-konsolidieren.md) — **🎯 Destination erreicht:** die implementierungsreife [`spec.md`](spec.md) ist geschrieben und vom User abgenommen. 11 Kapitel, konsolidiert aus 13 Tickets + 6 ADRs + Glossar; Sicherheit/Abuse als eigenes Kapitel 8, ADRs referenziert statt dupliziert. Widerspruchs-Scan: keine echten Konflikte (vier bewusste Supersessions je zugunsten der späteren Autorität aufgelöst — u.a. Zelle→WU, Gnadenfrist 90 s), **kein neues Ticket**. Übergang in die Umsetzung: [Ticket 14](issues/14-do-cpu-benchmark.md) entblockt (erster Implementierungs-Spike, jenseits der Destination).
 
 ## Not yet specified
 
