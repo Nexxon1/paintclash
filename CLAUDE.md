@@ -1,4 +1,4 @@
-# draw-io-race
+# paintclash
 
 ## Agent skills
 
