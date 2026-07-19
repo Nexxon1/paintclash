@@ -1,0 +1,619 @@
+<!--
+  PROTOTYPE — WEGWERFCODE — Ticket 01 (Bewegungsmodell) der draw-race Map.
+  Frage: Grid vs. kontinuierlich, und welches Steuerschema fuehlt sich auf
+         Desktop (Maus/Tastatur) und Touch (Handy) am besten an?
+  Nur Bewegung + Trail auf leerem Canvas. Kein Netz, keine Fill-Logik, kein Tod.
+
+  Selbst-enthaltene Datei (keine Abhaengigkeiten): laeuft per file:// direkt,
+  also einfach auf das Handy kopieren (Mail/Cloud/Messenger) und oeffnen.
+  Am Desktop: python3 -m http.server 8000 --directory .scratch/draw-race/prototype
+  -> http://localhost:8000/movement.html
+
+  Adaption der /prototype-Skill: statt 3 eingefrorener Varianten ist die
+  Bewegung ein LIVE-Labor (Modell + Steuerung umschaltbar, Parameter per Slider),
+  weil "smooth" eine Gefuehls-, keine Layoutfrage ist.
+-->
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>draw-race — Bewegungs-Prototyp</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    width: 100%; height: 100%; overflow: hidden;
+    background: #0e1116; color: #e6e9ef;
+    font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+    -webkit-user-select: none; user-select: none;
+    -webkit-tap-highlight-color: transparent;
+    touch-action: none; overscroll-behavior: none;
+  }
+  #cv { display: block; width: 100%; height: 100%; touch-action: none; }
+
+  /* --- Bedien-Panel (das "floating bar" der Skill, hier oben) --- */
+  #panel {
+    position: fixed; top: 8px; left: 8px; right: 8px;
+    background: rgba(18,22,30,0.92); border: 1px solid #2a3140;
+    border-radius: 12px; padding: 8px 10px; backdrop-filter: blur(6px);
+    box-shadow: 0 6px 24px rgba(0,0,0,0.4); z-index: 10;
+    max-height: 80vh; overflow-y: auto;
+  }
+  #panel.collapsed .body { display: none; }
+  .head { display: flex; align-items: center; gap: 8px; }
+  .head h1 { font-size: 13px; font-weight: 700; letter-spacing: .2px; }
+  .head .sub { font-size: 11px; color: #8b93a3; margin-left: auto; }
+  #toggle { cursor: pointer; font-size: 15px; padding: 0 6px; color: #9aa3b3; }
+  .body { margin-top: 8px; }
+  .row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 6px 0; }
+  .label { font-size: 10px; text-transform: uppercase; letter-spacing: .6px;
+           color: #7b8495; width: 100%; margin-bottom: 2px; }
+  button.seg {
+    flex: 1 1 auto; min-width: 84px; padding: 9px 8px; border-radius: 9px;
+    border: 1px solid #2f3747; background: #1a1f2b; color: #cfd5e0;
+    font-size: 12px; font-weight: 600; cursor: pointer; transition: .12s;
+  }
+  button.seg.on { background: #3b6ef5; border-color: #3b6ef5; color: #fff; }
+  button.seg:active { transform: scale(.97); }
+  .slider { display: flex; align-items: center; gap: 8px; width: 100%; }
+  .slider label { font-size: 11px; color: #aeb6c4; width: 118px; }
+  .slider input[type=range] { flex: 1; accent-color: #3b6ef5; }
+  .slider .val { font-size: 11px; color: #e6e9ef; width: 46px; text-align: right;
+                 font-variant-numeric: tabular-nums; }
+  .note { font-size: 10px; color: #6f7788; margin-top: 4px; line-height: 1.45; }
+  #hud {
+    position: fixed; left: 8px; bottom: 8px; z-index: 9;
+    font-size: 11px; color: #9aa3b3; background: rgba(14,17,22,0.75);
+    padding: 6px 9px; border-radius: 8px; font-variant-numeric: tabular-nums;
+    line-height: 1.5; pointer-events: none;
+  }
+  #hud b { color: #e6e9ef; font-weight: 600; }
+  .touchhint {
+    position: fixed; inset: 0; z-index: 5; pointer-events: none;
+    display: none; align-items: center; justify-content: center;
+  }
+  #fs { margin-left: 4px; }
+</style>
+
+<canvas id="cv"></canvas>
+
+<div id="panel">
+  <div class="head">
+    <h1>draw-race · Bewegungslabor</h1>
+    <span class="sub" id="devhint"></span>
+    <span id="toggle" title="Panel ein-/ausklappen">▾</span>
+  </div>
+  <div class="body">
+    <div class="row">
+      <div class="label">Bewegungsmodell</div>
+      <button class="seg" data-model="grid-hard">Grid (hart)</button>
+      <button class="seg" data-model="grid-soft">Grid (weich)</button>
+      <button class="seg" data-model="cont">Kontinuierlich</button>
+    </div>
+    <div class="row">
+      <div class="label">Steuerung</div>
+      <button class="seg" data-ctrl="keys">Tastatur</button>
+      <button class="seg" data-ctrl="mouse">Maus-Folgen</button>
+      <button class="seg" data-ctrl="steer">Touch: Lenken L/R</button>
+      <button class="seg" data-ctrl="stick">Touch: Joystick</button>
+      <button class="seg" data-ctrl="follow">Touch: Finger folgen</button>
+    </div>
+    <div class="row">
+      <div class="slider"><label>Tempo</label>
+        <input id="sp-speed" type="range" min="3" max="22" step="0.5">
+        <span class="val" id="v-speed"></span></div>
+      <div class="slider"><label>Drehrate (kont.)</label>
+        <input id="sp-turn" type="range" min="90" max="720" step="10">
+        <span class="val" id="v-turn"></span></div>
+      <div class="slider"><label>Render-Glaettung</label>
+        <input id="sp-smooth" type="range" min="0" max="1" step="0.05">
+        <span class="val" id="v-smooth"></span></div>
+      <div class="slider"><label>Zellgroesse</label>
+        <input id="sp-cell" type="range" min="14" max="48" step="1">
+        <span class="val" id="v-cell"></span></div>
+      <div class="slider"><label>Trail-Laenge</label>
+        <input id="sp-trail" type="range" min="20" max="4000" step="20">
+        <span class="val" id="v-trail"></span></div>
+    </div>
+    <div class="row">
+      <button class="seg" id="btn-reset">Reset Position</button>
+      <button class="seg" id="btn-clear">Trail leeren</button>
+      <button class="seg" id="fs">Vollbild</button>
+    </div>
+    <div class="note" id="ctrlnote"></div>
+  </div>
+</div>
+
+<div id="hud"></div>
+
+<script>
+"use strict";
+(function () {
+  const cv = document.getElementById('cv');
+  const ctx = cv.getContext('2d');
+  let DPR = 1, W = 0, H = 0;
+
+  // ---------- Zustand ----------
+  const S = {
+    model: 'grid-hard',          // grid-hard | grid-soft | cont
+    ctrl: 'keys',                // keys | mouse | steer | stick | follow
+    speed: 9,                    // Zellen/Sekunde
+    turnRate: 320 * Math.PI/180, // rad/s (kontinuierlich)
+    smooth: 0,                   // 0..1 Render-Glaettung (Grid)
+    cell: 26,                    // px pro Zelle bei Zoom 1
+    trailMax: 600,               // max. Trail-Punkte
+
+    // Weltposition (Zell-Koordinaten, float)
+    pos: { x: 0, y: 0 },
+    // Grid-Sim
+    dir: { x: 1, y: 0 },         // aktuelle Richtung (Einheits, 4-Wege)
+    queuedDir: null,             // naechste Richtung (bei Zellmitte angewandt)
+    target: { x: 1, y: 0 },      // Zielzellmitte
+    // Kontinuierlich
+    heading: 0,                  // rad
+    targetHeading: 0,
+    steerInput: 0,               // -1..1 (links..rechts)
+    // Kamera
+    cam: { x: 0, y: 0 },
+    // Trail: Liste von {x,y} (Grid: Zellmitten-Wegpunkte; Cont: Samples)
+    trail: [],
+    // Eingabe
+    keys: {},
+    mouse: { x: 0, y: 0, active: false },
+    touch: { id: null, sx: 0, sy: 0, x: 0, y: 0, side: 0 },
+    // Debug/HUD
+    fps: 0,
+  };
+
+  const DIRS = {
+    up:    { x: 0, y: -1 }, down:  { x: 0, y: 1 },
+    left:  { x: -1, y: 0 }, right: { x: 1, y: 0 },
+  };
+  const eq = (a, b) => a.x === b.x && a.y === b.y;
+  const isOpp = (a, b) => a.x === -b.x && a.y === -b.y;
+
+  // ---------- Setup / Resize ----------
+  function resize() {
+    DPR = Math.min(window.devicePixelRatio || 1, 2.5);
+    W = window.innerWidth; H = window.innerHeight;
+    cv.width = Math.round(W * DPR); cv.height = Math.round(H * DPR);
+    cv.style.width = W + 'px'; cv.style.height = H + 'px';
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  }
+  window.addEventListener('resize', resize);
+
+  function resetPos() {
+    S.pos = { x: 0, y: 0 };
+    S.dir = { x: 1, y: 0 }; S.queuedDir = null;
+    S.target = { x: 1, y: 0 };
+    S.heading = 0; S.targetHeading = 0; S.steerInput = 0;
+    S.cam = { x: 0, y: 0 };
+    S.trail = [ { x: 0, y: 0 } ];
+  }
+
+  // ---------- Eingabe ----------
+  window.addEventListener('keydown', e => {
+    if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight',' '].includes(e.key)) e.preventDefault();
+    S.keys[e.key.toLowerCase()] = true;
+    // Grid: absolute Richtung bei Tastendruck
+    if (S.model !== 'cont' && S.ctrl === 'keys') {
+      const d = keyDir(e.key);
+      if (d) requestGridDir(d);
+    }
+  });
+  window.addEventListener('keyup', e => { S.keys[e.key.toLowerCase()] = false; });
+
+  function keyDir(k) {
+    k = k.toLowerCase();
+    if (k === 'arrowup' || k === 'w') return DIRS.up;
+    if (k === 'arrowdown' || k === 's') return DIRS.down;
+    if (k === 'arrowleft' || k === 'a') return DIRS.left;
+    if (k === 'arrowright' || k === 'd') return DIRS.right;
+    return null;
+  }
+
+  // Maus
+  cv.addEventListener('mousemove', e => {
+    S.mouse.x = e.clientX; S.mouse.y = e.clientY; S.mouse.active = true;
+  });
+
+  // Touch
+  function touchXY(t) { return { x: t.clientX, y: t.clientY }; }
+  cv.addEventListener('touchstart', e => {
+    e.preventDefault();
+    const t = e.changedTouches[0];
+    S.touch.id = t.identifier;
+    const p = touchXY(t);
+    S.touch.sx = p.x; S.touch.sy = p.y; S.touch.x = p.x; S.touch.y = p.y;
+    S.touch.side = p.x < W / 2 ? -1 : 1;
+  }, { passive: false });
+  cv.addEventListener('touchmove', e => {
+    e.preventDefault();
+    for (const t of e.changedTouches) {
+      if (t.identifier === S.touch.id) { const p = touchXY(t); S.touch.x = p.x; S.touch.y = p.y; }
+    }
+  }, { passive: false });
+  function endTouch(e) {
+    for (const t of e.changedTouches) {
+      if (t.identifier === S.touch.id) { S.touch.id = null; S.steerInput = 0; }
+    }
+  }
+  cv.addEventListener('touchend', endTouch);
+  cv.addEventListener('touchcancel', endTouch);
+
+  // Grid-Richtungswunsch (verhindert 180°-Wende)
+  function requestGridDir(d) {
+    if (isOpp(d, S.dir) || eq(d, S.dir)) return;
+    S.queuedDir = d;
+  }
+
+  // ---------- Steuerung -> Absicht, jeden Frame ----------
+  function readIntent() {
+    if (S.model === 'cont') readIntentCont();
+    else readIntentGrid();
+  }
+
+  function readIntentGrid() {
+    switch (S.ctrl) {
+      case 'keys': break; // per keydown
+      case 'mouse': {
+        if (!S.mouse.active) break;
+        const hp = worldToScreen(S.pos);
+        pickAxisDir(S.mouse.x - hp.x, S.mouse.y - hp.y);
+        break;
+      }
+      case 'follow': {
+        if (S.touch.id === null) break;
+        const hp = worldToScreen(S.pos);
+        pickAxisDir(S.touch.x - hp.x, S.touch.y - hp.y);
+        break;
+      }
+      case 'stick': {
+        if (S.touch.id === null) break;
+        pickAxisDir(S.touch.x - S.touch.sx, S.touch.y - S.touch.sy, 12);
+        break;
+      }
+      case 'steer': {
+        // Halten = relative Wende (links/rechts) alle N ms
+        if (S.touch.id === null) break;
+        const now = performance.now();
+        if (!S._lastSteer || now - S._lastSteer > 130) {
+          const rot = S.touch.side; // -1 links, +1 rechts
+          requestGridDir(rotate90(S.dir, rot));
+          S._lastSteer = now;
+        }
+        break;
+      }
+    }
+  }
+  function pickAxisDir(dx, dy, deadzone = 4) {
+    if (Math.abs(dx) < deadzone && Math.abs(dy) < deadzone) return;
+    if (Math.abs(dx) > Math.abs(dy)) requestGridDir(dx > 0 ? DIRS.right : DIRS.left);
+    else requestGridDir(dy > 0 ? DIRS.down : DIRS.up);
+  }
+  function rotate90(d, sign) { // sign +1 = im Uhrzeigersinn (rechts)
+    return sign > 0 ? { x: -d.y, y: d.x } : { x: d.y, y: -d.x };
+  }
+
+  function readIntentCont() {
+    let steer = 0, absHeading = null;
+    switch (S.ctrl) {
+      case 'keys': {
+        if (S.keys['arrowleft'] || S.keys['a']) steer -= 1;
+        if (S.keys['arrowright'] || S.keys['d']) steer += 1;
+        break;
+      }
+      case 'mouse': {
+        if (S.mouse.active) {
+          const hp = worldToScreen(S.pos);
+          absHeading = Math.atan2(S.mouse.y - hp.y, S.mouse.x - hp.x);
+        }
+        break;
+      }
+      case 'follow': {
+        if (S.touch.id !== null) {
+          const hp = worldToScreen(S.pos);
+          absHeading = Math.atan2(S.touch.y - hp.y, S.touch.x - hp.x);
+        }
+        break;
+      }
+      case 'stick': {
+        if (S.touch.id !== null) {
+          const dx = S.touch.x - S.touch.sx, dy = S.touch.y - S.touch.sy;
+          if (Math.hypot(dx, dy) > 10) absHeading = Math.atan2(dy, dx);
+        }
+        break;
+      }
+      case 'steer': {
+        if (S.touch.id !== null) steer = S.touch.side; // links/rechts halten
+        break;
+      }
+    }
+    S.steerInput = steer;
+    S.targetHeading = absHeading; // null => reiner Lenkmodus
+  }
+
+  // ---------- Simulation (fester Zeitschritt) ----------
+  function stepGrid(dt) {
+    let remaining = S.speed * dt;
+    let guard = 0;
+    while (remaining > 1e-6 && guard++ < 64) {
+      const to = { x: S.target.x - S.pos.x, y: S.target.y - S.pos.y };
+      const dist = Math.hypot(to.x, to.y);
+      if (dist <= remaining) {
+        // Zielzellmitte erreicht -> einrasten, Trail-Wegpunkt, naechstes Ziel
+        S.pos.x = S.target.x; S.pos.y = S.target.y;
+        remaining -= dist;
+        pushTrail(S.pos.x, S.pos.y);
+        if (S.queuedDir && !isOpp(S.queuedDir, S.dir)) { S.dir = S.queuedDir; S.queuedDir = null; }
+        S.target = { x: S.pos.x + S.dir.x, y: S.pos.y + S.dir.y };
+      } else {
+        S.pos.x += (to.x / dist) * remaining;
+        S.pos.y += (to.y / dist) * remaining;
+        remaining = 0;
+      }
+    }
+  }
+
+  function stepCont(dt) {
+    if (S.targetHeading !== null) {
+      // zur Zielrichtung drehen, begrenzt durch Drehrate
+      let diff = S.targetHeading - S.heading;
+      while (diff > Math.PI) diff -= 2 * Math.PI;
+      while (diff < -Math.PI) diff += 2 * Math.PI;
+      const maxStep = S.turnRate * dt;
+      S.heading += Math.max(-maxStep, Math.min(maxStep, diff));
+    } else {
+      S.heading += S.steerInput * S.turnRate * dt;
+    }
+    S.pos.x += Math.cos(S.heading) * S.speed * dt;
+    S.pos.y += Math.sin(S.heading) * S.speed * dt;
+    const last = S.trail[S.trail.length - 1];
+    if (!last || Math.hypot(S.pos.x - last.x, S.pos.y - last.y) > 0.18) pushTrail(S.pos.x, S.pos.y);
+  }
+
+  function pushTrail(x, y) {
+    S.trail.push({ x, y });
+    while (S.trail.length > S.trailMax) S.trail.shift();
+  }
+
+  function sim(dt) {
+    readIntent();
+    if (S.model === 'cont') stepCont(dt); else stepGrid(dt);
+    // Kamera folgt weich
+    const k = 1 - Math.pow(0.0015, dt);
+    S.cam.x += (S.pos.x - S.cam.x) * k;
+    S.cam.y += (S.pos.y - S.cam.y) * k;
+  }
+
+  // ---------- Rendering ----------
+  function worldToScreen(p) {
+    return {
+      x: (p.x - S.cam.x) * S.cell + W / 2,
+      y: (p.y - S.cam.y) * S.cell + H / 2,
+    };
+  }
+
+  function drawGridBg() {
+    ctx.fillStyle = '#0e1116'; ctx.fillRect(0, 0, W, H);
+    const c = S.cell;
+    const ox = (W / 2 - S.cam.x * c) % c;
+    const oy = (H / 2 - S.cam.y * c) % c;
+    ctx.strokeStyle = '#1a2030'; ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (let x = ox; x < W; x += c) { ctx.moveTo(x, 0); ctx.lineTo(x, H); }
+    for (let x = ox - c; x > 0; x -= c) { ctx.moveTo(x, 0); ctx.lineTo(x, H); }
+    for (let y = oy; y < H; y += c) { ctx.moveTo(0, y); ctx.lineTo(W, y); }
+    for (let y = oy - c; y > 0; y -= c) { ctx.moveTo(0, y); ctx.lineTo(W, y); }
+    ctx.stroke();
+  }
+
+  function drawTrail() {
+    if (S.trail.length < 2) return;
+    const pts = S.trail.map(worldToScreen);
+    const head = worldToScreen(S.pos);
+    pts.push(head); // bis zum aktuellen Kopf zeichnen
+
+    ctx.lineWidth = Math.max(4, S.cell * 0.62);
+    ctx.strokeStyle = '#3b6ef5';
+    ctx.lineCap = 'round';
+
+    const smooth = (S.model === 'grid-hard') ? 0
+                 : (S.model === 'cont') ? 1 : S.smooth;
+
+    ctx.beginPath();
+    ctx.moveTo(pts[0].x, pts[0].y);
+    if (smooth <= 0.02 || S.model === 'grid-hard') {
+      ctx.lineJoin = 'miter';
+      for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+    } else {
+      ctx.lineJoin = 'round';
+      // Ecken kappen: quadratische Kurve durch Segment-Mittelpunkte,
+      // Rundungsgrad ~ smooth. Selbe Grid-Logik, weicher gerendert.
+      for (let i = 1; i < pts.length - 1; i++) {
+        const p = pts[i], n = pts[i + 1];
+        const mx = p.x + (n.x - p.x) * 0.5, my = p.y + (n.y - p.y) * 0.5;
+        // bei kleinem smooth naeher an die harte Ecke ziehen
+        const cx = p.x + (mx - p.x) * smooth, cy = p.y + (my - p.y) * smooth;
+        const px = pts[i - 1];
+        const ax = px.x + (p.x - px.x) * (1 - 0.5 * smooth);
+        const ay = px.y + (p.y - px.y) * (1 - 0.5 * smooth);
+        ctx.lineTo(ax, ay);
+        ctx.quadraticCurveTo(p.x, p.y, cx, cy);
+      }
+      ctx.lineTo(pts[pts.length - 1].x, pts[pts.length - 1].y);
+    }
+    ctx.stroke();
+  }
+
+  function drawHead() {
+    const h = worldToScreen(S.pos);
+    const r = S.cell * 0.42;
+    ctx.save();
+    ctx.translate(h.x, h.y);
+    ctx.shadowColor = 'rgba(59,110,245,0.55)'; ctx.shadowBlur = 14;
+    if (S.model === 'cont') {
+      ctx.rotate(S.heading);
+      ctx.fillStyle = '#8fb3ff';
+      ctx.beginPath();
+      ctx.moveTo(r, 0); ctx.lineTo(-r * 0.7, r * 0.7);
+      ctx.lineTo(-r * 0.35, 0); ctx.lineTo(-r * 0.7, -r * 0.7);
+      ctx.closePath(); ctx.fill();
+    } else {
+      const round = (S.model === 'grid-soft') ? S.smooth * r : 0;
+      ctx.fillStyle = '#8fb3ff';
+      roundRect(-r, -r, r * 2, r * 2, round); ctx.fill();
+    }
+    ctx.restore();
+  }
+  function roundRect(x, y, w, h, r) {
+    r = Math.min(r, w / 2, h / 2);
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
+  }
+
+  function drawTouchOverlay() {
+    if (S.touch.id === null) return;
+    ctx.save();
+    if (S.ctrl === 'steer') {
+      ctx.fillStyle = 'rgba(59,110,245,0.10)';
+      if (S.touch.side < 0) ctx.fillRect(0, 0, W / 2, H);
+      else ctx.fillRect(W / 2, 0, W / 2, H);
+    } else if (S.ctrl === 'stick') {
+      ctx.strokeStyle = 'rgba(255,255,255,0.25)'; ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.arc(S.touch.sx, S.touch.sy, 46, 0, 7); ctx.stroke();
+      ctx.fillStyle = 'rgba(59,110,245,0.8)';
+      const dx = S.touch.x - S.touch.sx, dy = S.touch.y - S.touch.sy;
+      const d = Math.min(46, Math.hypot(dx, dy)) || 0;
+      const a = Math.atan2(dy, dx);
+      ctx.beginPath();
+      ctx.arc(S.touch.sx + Math.cos(a) * d, S.touch.sy + Math.sin(a) * d, 22, 0, 7);
+      ctx.fill();
+    } else if (S.ctrl === 'follow') {
+      ctx.fillStyle = 'rgba(59,110,245,0.7)';
+      ctx.beginPath(); ctx.arc(S.touch.x, S.touch.y, 16, 0, 7); ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  function render() {
+    drawGridBg();
+    drawTrail();
+    drawTouchOverlay();
+    drawHead();
+  }
+
+  // ---------- HUD ----------
+  const hud = document.getElementById('hud');
+  function updateHud() {
+    const dirName = S.model === 'cont'
+      ? (S.heading * 180 / Math.PI).toFixed(0) + '°'
+      : (S.dir.x === 1 ? '→' : S.dir.x === -1 ? '←' : S.dir.y === 1 ? '↓' : '↑');
+    hud.innerHTML =
+      `<b>${modelLabel()}</b> · ${ctrlLabel()}<br>` +
+      `Pos <b>${S.pos.x.toFixed(1)}, ${S.pos.y.toFixed(1)}</b> · Richtung <b>${dirName}</b><br>` +
+      `Tempo <b>${S.speed}</b> Z/s · ${S.fps} fps`;
+  }
+  function modelLabel() {
+    return { 'grid-hard': 'Grid (hart)', 'grid-soft': 'Grid (weich)', 'cont': 'Kontinuierlich' }[S.model];
+  }
+  function ctrlLabel() {
+    return { keys: 'Tastatur', mouse: 'Maus', steer: 'Lenken L/R', stick: 'Joystick', follow: 'Finger folgen' }[S.ctrl];
+  }
+
+  // ---------- Loop (Akkumulator, feste 120 Hz Sim) ----------
+  let last = 0, acc = 0, frames = 0, fpsT = 0;
+  const FIXED = 1 / 120;
+  function loop(t) {
+    if (!last) last = t;
+    let dt = (t - last) / 1000; last = t;
+    if (dt > 0.25) dt = 0.25;
+    acc += dt;
+    let guard = 0;
+    while (acc >= FIXED && guard++ < 8) { sim(FIXED); acc -= FIXED; }
+    render();
+    frames++; fpsT += dt;
+    if (fpsT >= 0.5) { S.fps = Math.round(frames / fpsT); frames = 0; fpsT = 0; updateHud(); }
+    requestAnimationFrame(loop);
+  }
+
+  // ---------- Panel-Verdrahtung ----------
+  function bindSeg(attr, key, after) {
+    document.querySelectorAll(`[data-${attr}]`).forEach(b => {
+      b.addEventListener('click', () => {
+        S[key] = b.getAttribute('data-' + attr);
+        refreshSegs(); if (after) after();
+      });
+    });
+  }
+  function refreshSegs() {
+    document.querySelectorAll('[data-model]').forEach(b =>
+      b.classList.toggle('on', b.getAttribute('data-model') === S.model));
+    document.querySelectorAll('[data-ctrl]').forEach(b =>
+      b.classList.toggle('on', b.getAttribute('data-ctrl') === S.ctrl));
+    // Render-Glaettung nur fuer grid-soft aktiv sichtbar
+    if (S.model === 'grid-hard') S.smooth = 0;
+    if (S.model === 'grid-soft' && S.smooth === 0) { S.smooth = 0.8; syncSliders(); }
+    updateNote();
+  }
+  bindSeg('model', 'model', () => { syncSliders(); });
+  bindSeg('ctrl', 'ctrl');
+
+  function updateNote() {
+    const notes = {
+      keys: 'Desktop: Pfeiltasten oder WASD. Grid = absolute Richtung, Kontinuierlich = links/rechts lenken.',
+      mouse: 'Desktop: Kopf steuert zur Mausposition. Bei Grid wird die dominante Achse gewaehlt.',
+      steer: 'Handy: linke/rechte Bildschirmhaelfte halten = nach links/rechts drehen. Einhandtauglich.',
+      stick: 'Handy: Finger aufsetzen = virtueller Joystick, Richtung = Auslenkung.',
+      follow: 'Handy: Kopf laeuft zur Fingerposition.',
+    };
+    document.getElementById('ctrlnote').textContent = notes[S.ctrl] || '';
+  }
+
+  // Slider
+  const sliders = [
+    ['sp-speed', 'v-speed', 'speed', v => +v, v => v + ' Z/s'],
+    ['sp-turn', 'v-turn', 'turnRate', v => +v * Math.PI / 180, v => v + '°/s'],
+    ['sp-smooth', 'v-smooth', 'smooth', v => +v, v => (+v).toFixed(2)],
+    ['sp-cell', 'v-cell', 'cell', v => +v, v => v + ' px'],
+    ['sp-trail', 'v-trail', 'trailMax', v => +v, v => v],
+  ];
+  function syncSliders() {
+    document.getElementById('sp-speed').value = S.speed;
+    document.getElementById('sp-turn').value = Math.round(S.turnRate * 180 / Math.PI);
+    document.getElementById('sp-smooth').value = S.smooth;
+    document.getElementById('sp-cell').value = S.cell;
+    document.getElementById('sp-trail').value = S.trailMax;
+    for (const [sid, vid, , , fmt] of sliders)
+      document.getElementById(vid).textContent = fmt(document.getElementById(sid).value);
+  }
+  sliders.forEach(([sid, vid, key, parse, fmt]) => {
+    const el = document.getElementById(sid);
+    el.addEventListener('input', () => {
+      S[key] = parse(el.value);
+      document.getElementById(vid).textContent = fmt(el.value);
+    });
+  });
+
+  document.getElementById('btn-reset').addEventListener('click', resetPos);
+  document.getElementById('btn-clear').addEventListener('click', () => { S.trail = [{ x: S.pos.x, y: S.pos.y }]; });
+  document.getElementById('fs').addEventListener('click', () => {
+    if (document.fullscreenElement) document.exitFullscreen();
+    else document.documentElement.requestFullscreen?.();
+  });
+  document.getElementById('toggle').addEventListener('click', () => {
+    document.getElementById('panel').classList.toggle('collapsed');
+  });
+
+  // Touch-Geraet erkennen -> sinnvolle Defaults
+  const isTouch = matchMedia('(pointer: coarse)').matches || 'ontouchstart' in window;
+  document.getElementById('devhint').textContent = isTouch ? 'Touch erkannt' : 'Desktop';
+  if (isTouch) S.ctrl = 'steer';
+
+  // ---------- Start ----------
+  resize(); resetPos(); refreshSegs(); syncSliders(); updateNote();
+  requestAnimationFrame(loop);
+})();
+</script>

@@ -1,0 +1,30 @@
+# CONTEXT — draw-race
+
+Ubiquitäre Sprache des Spiels. Begriffe hier sind verbindlich — in Spec, Tickets, ADRs und Code denselben Term verwenden, keine Synonyme. Sprache der Effort-Dokumente: Deutsch (Code-Bezeichner dürfen englisch sein, dann pro Term unten notiert).
+
+Diese Datei entsteht lazy. Erstbefüllung aus [Ticket 02 — Spielregeln](.scratch/draw-race/issues/02-spielregeln-im-detail.md); Architektur-/Netcode-Begriffe folgen aus Ticket 08.
+
+## Glossar — Spielregeln
+
+- **Arena** — der Spielraum. In der Grundversion **endlos** (dauerhaft laufend, jederzeit joinen, kein Siegmoment) und **quadratisch mit festen Wänden**. Code: `arena`.
+- **Gebiet** (engl. *territory*) — die einem Spieler gehörende gefärbte Fläche. Safespace gegen Trail-Angriffe. Verliert ein Spieler sein *gesamtes* Gebiet, stirbt er (**Totalverlust-Tod**).
+- **Trail** — der Weg eines Spielers **ausserhalb** seines eigenen Gebiets (seit dem Verlassen). Wird der Trail geschnitten, stirbt der Spieler. Beim Schliessen der Schleife zurückgesetzt. Kein Balance-Parameter der Länge — er endet mit dem Loop.
+- **Loop schliessen** — mit dem Trail ins eigene Gebiet zurückkehren; löst das **Fill** aus.
+- **Fill** (Flächeneroberung) — Färben der vom Loop **eingeschlossenen Fläche**. **Polygonbasiert** (kontinuierliche Bewegung), nicht der zellbasierte Flood-Fill aus splix. Eingeschlossenes **fremdes Gebiet wird überfärbt/gestohlen**; eingeschlossene Gegner**köpfe überleben**.
+- **Kopf** (engl. *head*) — die aktuelle Position/Spitze eines Spielers. Kopf-an-Kopf: wer draussen ist, stirbt.
+- **Tod** — ausgelöst durch (1) Trail-Schnitt (fremd oder selbst), (2) Kopf-an-Kopf während man draussen ist, (3) Totalverlust des Gebiets. Folge: gesamtes Gebiet wird neutral.
+- **Startblock** — kleines Anfangs-Gebiet bei Spawn/Respawn.
+- **Spawn-Mindestabstand** — garantierter Abstand zu Gegnern/Gebiet beim Einsetzen (Schutz vor Spawn-Kill). Es gibt **keinen** Unverwundbarkeits-Timer.
+- **Sanfte Barriere** — Randverhalten: der Kopf gleitet an der Wand entlang / dreht ab, kein Rand-Tod (Paper.io-Stil).
+- **Leaderboard** — globale, für alle sichtbare Rangliste. Metrik ausschliesslich **% der Karte**; Top 5 + eigener Rang; Farb-Swatch pro Zeile.
+- **Score** — persönliche Leistungszahl, beim **Tod** berechnet und **live** auf dem eigenen HUD geschätzt. Faktoren: Peak-Fläche × Überlebenszeit × **Konkurrenz-Multiplikator** (Ø **menschliche** Mitspieler; Bots zählen nicht). Nicht Teil des globalen Leaderboards. Formel/Gewichte = Balance ([Ticket 11](.scratch/draw-race/issues/11-balance-parameter.md)).
+- **Rekord** — lokal gespeichert (ohne Account): Max-%, längste Überlebenszeit, Highscore.
+- **Bot** — heuristik­gesteuerter Nicht-Menschen-Spieler; füllt die öffentliche Arena, in privaten Räumen per Lobby-Toggle. Zählt **nicht** für den Konkurrenz-Multiplikator.
+- **Privater Raum** — nur per **Code/Link** zugänglich, nicht öffentlich gelistet. Mit **Lobby** (Host-Start); Host stellt Kartengrösse, Bots, Spielerlimit (2–16) und Nachjoin ein.
+- **Lobby** — Warteraum eines privaten Raums vor dem Host-Start.
+- **Nickname** — Gast-Anzeigename (1–16 Zeichen, Unicode gefiltert, Blockliste client+server). **Nicht eindeutig** — Unterscheidung über Farbe/Spieler-ID.
+- **Spieler-ID** — stabile ID pro Gerät (localStorage), trägt lokale Rekorde; Platzhalter für spätere Accounts.
+
+## Verworfen / Erweiterungspunkte
+
+- **Wrap-around / Torus-Arena** — für die Grundversion verworfen (mehrdeutige „innen/aussen"-Fill-Definition); vorgemerkt als künftiger Spielmodus.

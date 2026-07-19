@@ -1,0 +1,19 @@
+# IDE / Editor
+.idea/
+
+# Tool-Artefakte
+.playwright/
+
+# Claude Code (nur lokale, nicht geteilte Einstellungen)
+.claude/settings.local.json
+
+# Node / Build (für die spätere Umsetzung)
+node_modules/
+dist/
+build/
+*.log
+
+# Env / Secrets
+.env
+.env.*
+!.env.example

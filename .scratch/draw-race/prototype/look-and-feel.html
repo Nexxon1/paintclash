@@ -1,0 +1,620 @@
+<!--
+  PROTOTYPE — WEGWERFCODE — Ticket 07 (Look & Feel) der draw-race Map.
+
+  Frage: Wie sieht das Spiel konkret aus (Kamera, Tiefe, Farbwelt, Animationen)
+         und laeuft der 2.5D-Look fluessig auf Desktop UND Handy?
+
+  4 Stilvarianten auf EINER Szene, umschaltbar via ?variant=A|B|C|D, die untere
+  Leiste oder Tasten 1/2/3/4:
+    A — Flach & Clean       (fast Top-down, unbeleuchtet, flache Kacheln)
+    B — Bloecke & Schatten  (Kamera-Tilt, Bloecke mit Hoehe, Licht-Schattierung)
+    C — Tiefe & starker Tilt(flacher Winkel, hohe Bloecke, echte Shadow-Maps)
+    D — Paper.io Modern     (flache Gebietsflaechen + durchgezogene Trail-Linie;
+                             User-Feedback zu B: weniger blockartig, moderner)
+
+  Bewusst NICHT nur Farb-Tweaks: A/B/C unterscheiden sich in Kamera-Modell,
+  Block-Geometrie und Beleuchtung — die eigentliche Look-Achse aus dem Ticket.
+
+  Render-Strategie = die aus Ticket 06 empfohlene und HIER zu validierende:
+  gechunktes InstancedMesh (1 Draw Call / 64x64-Chunk), Per-Instanz-Farbe+Hoehe,
+  Fuell-Welle als Hoehen-Animation. Der FPS-Zaehler (oben rechts) ist das
+  eigentliche Messgeraet dieses Tickets — v.a. auf dem Handy.
+
+  Enthaelt echtes Mini-Gameplay zum Fuehlen: kontinuierliche Bewegung (Ticket 01:
+  Tempo 9 Z/s, Drehrate 320 grad/s), Trail, Loop-Fill (splix-Flood-Fill),
+  Ueberfaerben fremden Gebiets, Tod + Respawn, 5 Heuristik-Bots.
+
+  --- STARTEN ---
+  Desktop:  python3 -m http.server 8000 --directory .scratch/draw-race/prototype
+            -> http://localhost:8000/look-and-feel.html
+  Handy:    Am selben WLAN, Desktop-LAN-IP herausfinden (z.B. `ip addr` / `hostname -I`),
+            am Handy http://<LAN-IP>:8000/look-and-feel.html oeffnen.
+            (three.js kommt per ESM-Importmap vom CDN -> Internet noetig; kein
+             file:// weil ES-Module. Der http.server-Weg funktioniert fuer beide.)
+-->
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>draw-race — Look-&-Feel-Prototyp</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    width: 100%; height: 100%; overflow: hidden; background: #0b0e14; color: #e6e9ef;
+    font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+    -webkit-user-select: none; user-select: none; -webkit-tap-highlight-color: transparent;
+    touch-action: none; overscroll-behavior: none;
+  }
+  #cv { display: block; width: 100%; height: 100%; touch-action: none; }
+
+  /* obere Info-/Steuer-Zeile */
+  #top { position: fixed; top: 8px; left: 8px; right: 8px; display: flex; gap: 8px;
+         align-items: flex-start; z-index: 10; pointer-events: none; }
+  #panel {
+    pointer-events: auto; background: rgba(16,20,28,0.92); border: 1px solid #262f3f;
+    border-radius: 12px; padding: 8px 10px; backdrop-filter: blur(6px);
+    box-shadow: 0 6px 24px rgba(0,0,0,0.45); max-width: 340px; max-height: 82vh; overflow-y: auto;
+  }
+  #panel.collapsed .body { display: none; }
+  .head { display: flex; align-items: center; gap: 8px; }
+  .head h1 { font-size: 13px; font-weight: 700; }
+  #toggle { cursor: pointer; font-size: 15px; padding: 0 4px; color: #9aa3b3; margin-left: auto; }
+  .body { margin-top: 8px; }
+  .label { font-size: 10px; text-transform: uppercase; letter-spacing: .6px; color: #7b8495;
+           width: 100%; margin: 8px 0 3px; }
+  .row { display: flex; flex-wrap: wrap; gap: 6px; }
+  button.seg {
+    flex: 1 1 auto; min-width: 72px; padding: 8px 8px; border-radius: 8px;
+    border: 1px solid #2f3747; background: #1a1f2b; color: #cfd5e0;
+    font-size: 12px; font-weight: 600; cursor: pointer; transition: .12s;
+  }
+  button.seg.on { background: #3b82f6; border-color: #3b82f6; color: #fff; }
+  button.seg:active { transform: scale(.97); }
+  .note { font-size: 10px; color: #6f7788; margin-top: 8px; line-height: 1.5; }
+
+  /* FPS / Stats oben rechts */
+  #stats { pointer-events: none; margin-left: auto; text-align: right;
+           font-size: 12px; font-variant-numeric: tabular-nums; line-height: 1.5;
+           background: rgba(11,14,20,0.72); padding: 7px 10px; border-radius: 10px; }
+  #stats .fps { font-size: 22px; font-weight: 800; }
+  #stats .fps.good { color: #22c55e; } #stats .fps.mid { color: #eab308; } #stats .fps.bad { color: #ef4444; }
+  #stats small { color: #8b93a3; }
+
+  /* untere Varianten-Leiste (Skill-Vorgabe) */
+  #bar {
+    position: fixed; bottom: 14px; left: 50%; transform: translateX(-50%); z-index: 11;
+    display: flex; align-items: center; gap: 4px; padding: 6px;
+    background: rgba(11,14,20,0.9); border: 1px solid #3b82f6; border-radius: 999px;
+    box-shadow: 0 8px 30px rgba(0,0,0,.5);
+  }
+  #bar button { border: none; background: transparent; color: #cfd5e0; cursor: pointer;
+                font-size: 18px; width: 40px; height: 40px; border-radius: 999px; }
+  #bar button:active { background: #1a2130; }
+  #bar .lab { font-size: 13px; font-weight: 700; padding: 0 12px; min-width: 190px; text-align: center; }
+  #bar .lab b { color: #6ea8ff; }
+
+  #hint { position: fixed; left: 50%; bottom: 70px; transform: translateX(-50%); z-index: 9;
+          font-size: 12px; color: #cbd3e1; background: rgba(11,14,20,.8); padding: 6px 12px;
+          border-radius: 8px; pointer-events: none; text-align: center; display: none; }
+</style>
+
+<canvas id="cv"></canvas>
+
+<div id="top">
+  <div id="panel" class="collapsed">
+    <div class="head">
+      <h1>draw-race · Look-&-Feel</h1>
+      <span id="toggle" title="ein-/ausklappen">▾</span>
+    </div>
+    <div class="body">
+      <div class="label">Steuerung</div>
+      <div class="row">
+        <button class="seg" data-ctrl="keys">Tastatur</button>
+        <button class="seg" data-ctrl="mouse">Maus-Folgen</button>
+        <button class="seg" data-ctrl="follow">Finger-Folgen</button>
+      </div>
+      <div class="label">Arena-Groesse (FPS-Test)</div>
+      <div class="row">
+        <button class="seg" data-n="128">128²</button>
+        <button class="seg" data-n="192">192²</button>
+        <button class="seg" data-n="256">256²</button>
+      </div>
+      <div class="label">Szene</div>
+      <div class="row">
+        <button class="seg" id="btn-stress">70% fluten (Stress)</button>
+        <button class="seg" id="btn-reset">Neu starten</button>
+      </div>
+      <div class="note" id="ctrlnote"></div>
+    </div>
+  </div>
+  <div id="stats">
+    <div class="fps" id="fps">– fps</div>
+    <small id="substats"></small>
+  </div>
+</div>
+
+<div id="hint"></div>
+
+<div id="bar">
+  <button id="prev" title="vorige Variante (1/2/3)">◀</button>
+  <div class="lab" id="barlab"></div>
+  <button id="next" title="naechste Variante (1/2/3)">▶</button>
+</div>
+
+<script type="importmap">
+{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.185.1/build/three.module.js" } }
+</script>
+<script type="module">
+import * as THREE from 'three';
+
+// ---------------------------------------------------------------- Varianten
+const VARIANTS = {
+  A: { key:'A', name:'Flach & Clean',        ortho:true,  elev:74, orthoH:15, ownH:0.06, groundH:0.03, trailH:0.10, gap:0.10, shadows:false, amb:1.00, dirI:0.00, fog:false, headY:0.9,
+       desc:'Fast Top-down, unbeleuchtet, crisp. Splix-nah, maximal lesbar, guenstigster Render-Pfad.' },
+  B: { key:'B', name:'Blöcke & Schatten',    ortho:false, elev:50, fov:42,   ownH:0.75, groundH:0.06, trailH:0.32, gap:0.06, shadows:false, amb:0.55, dirI:0.95, fog:true,  headY:1.6,
+       desc:'Kamera-Tilt, Bloecke mit Hoehe, Seiten durch Licht schattiert (keine Shadow-Map). Paper.io-2-Look, mobil guenstig.' },
+  C: { key:'C', name:'Tiefe & starker Tilt', ortho:false, elev:32, fov:42,   ownH:1.35, groundH:0.06, trailH:0.50, gap:0.04, shadows:true,  amb:0.50, dirI:1.05, fog:true,  headY:2.2,
+       desc:'Flacher Winkel, hohe Bloecke, ECHTE Shadow-Map (Worst-Case fuer Mobile-FPS). Dramatisch, aber Bloecke verdecken das Feld.' },
+  D: { key:'D', name:'Paper.io Modern',       ortho:false, elev:52, fov:40,   ownH:0.18, groundH:0.00, trailH:0.00, gap:0.00, shadows:false, amb:0.62, dirI:0.85, fog:true,  headY:0.55, ribbon:true, ribbonW:0.42,
+       desc:'KEIN Wuerfel-Raster: Fugen entfernt -> zusammenhaengendes Gebiet wird EINE glatte, erhoehte Farbflaeche (Plateau, nur Aussenkante 3D). Feld flach, Trail = durchgezogene Linie. 2.5D-Tiefe + Licht-Schattierung bleibt -> modern.' },
+};
+const VKEYS = ['A','B','C','D'];
+
+// ---------------------------------------------------------------- Grund-Konstanten
+const CHUNK = 64;
+const SPEED = 9;                    // Zellen/s  (Ticket 01)
+const TURN  = 320 * Math.PI / 180;  // rad/s     (Ticket 01)
+const FIXED = 1/60;
+const PALETTE = [ null,             // Index 0 unbenutzt — modernere, Paper.io-nahe Palette
+  0x4c8dff, 0xff5d5d, 0x38d39f, 0xffc23b, 0xb06cff, 0xff8a3d ];
+const RIBBON_MAX = 1900;
+const GROUND_A = new THREE.Color(0x1a2130), GROUND_B = new THREE.Color(0x141a26);
+
+// ---------------------------------------------------------------- Zustand
+let N = 192;                        // Zellen pro Seite (Arena quadratisch)
+let owner, trailOwner, curH, targetH;   // Grid-Arrays (Uint8 / Float32), Laenge N*N
+let players = [];                   // players[id] = Spielerobjekt, id ab 1
+let chunks = [], cps = 0;           // InstancedMeshes, chunks/side
+let V = VARIANTS.A;                 // aktive Variante
+const dirtyChunks = new Set();
+const animSet = new Set();
+
+// three.js Grundgeruest
+const cv = document.getElementById('cv');
+const renderer = new THREE.WebGLRenderer({ canvas: cv, antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio || 1, 2));
+const scene = new THREE.Scene();
+const camPersp = new THREE.PerspectiveCamera(42, 1, 0.1, 400);
+const camOrtho = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 400);
+const amb = new THREE.AmbientLight(0xffffff, 1);
+const dir = new THREE.DirectionalLight(0xffffff, 1);
+const dirTarget = new THREE.Object3D();
+scene.add(amb, dir, dirTarget);
+dir.target = dirTarget;
+dir.shadow.mapSize.set(1024, 1024);
+Object.assign(dir.shadow.camera, { left:-26, right:26, top:26, bottom:-26, near:1, far:200 });
+const matBasic   = new THREE.MeshBasicMaterial({ color: 0xffffff });
+const matLambert = new THREE.MeshLambertMaterial({ color: 0xffffff });
+const boxGeom = new THREE.BoxGeometry(1, 1, 1).translate(0, 0.5, 0); // Basis auf y=0
+const dummy = new THREE.Object3D();
+const _c = new THREE.Color();
+let border = [];
+let camTarget = new THREE.Vector3();
+let alpha = 0;                                    // Render-Interpolation zwischen Sim-Ticks
+const rx = p => p.px + (p.x - p.px) * alpha;
+const rz = p => p.pz + (p.z - p.pz) * alpha;
+
+// ---------------------------------------------------------------- Grid-Helfer
+const idx  = (cx, cz) => cz * N + cx;
+const cxOf = c => c % N, czOf = c => (c / N) | 0;
+const wX = cx => cx - N/2 + 0.5, wZ = cz => cz - N/2 + 0.5;
+const cellAt = (x, z) => { const cx = Math.floor(x + N/2), cz = Math.floor(z + N/2);
+  return (cx < 0 || cz < 0 || cx >= N || cz >= N) ? -1 : idx(cx, cz); };
+
+function playerColor(id){ return new THREE.Color(PALETTE[((id-1) % (PALETTE.length-1)) + 1]); }
+function lightOf(col){ return col.clone().lerp(new THREE.Color(0xffffff), 0.5); }
+function groundCol(cx, cz){ return ((cx ^ cz) & 1) ? GROUND_A : GROUND_B; }
+
+// ---------------------------------------------------------------- Aufbau Meshes / Arena
+function buildArena(newN){
+  N = newN;
+  const total = N * N;
+  owner = new Uint8Array(total); trailOwner = new Uint8Array(total);
+  curH = new Float32Array(total); targetH = new Float32Array(total);
+  animSet.clear(); dirtyChunks.clear();
+
+  // alte Meshes weg
+  for (const m of chunks){ scene.remove(m); m.dispose(); }
+  for (const b of border){ scene.remove(b); }
+  for (const p of players){ if (p){ scene.remove(p.head); if (p.ribbon) scene.remove(p.ribbon); } }
+  chunks = []; border = [];
+  cps = Math.ceil(N / CHUNK);
+
+  const mat = V.ortho ? matBasic : matLambert;
+  for (let czc = 0; czc < cps; czc++) for (let cxc = 0; cxc < cps; cxc++){
+    const m = new THREE.InstancedMesh(boxGeom, mat, CHUNK * CHUNK);
+    m.frustumCulled = true;
+    m.castShadow = V.shadows; m.receiveShadow = V.shadows;
+    scene.add(m); chunks[czc * cps + cxc] = m;
+  }
+  // Rand-Waende (feste Waende / sanfte Barriere-Look)
+  const wallMat = new THREE.MeshBasicMaterial({ color: 0x2a3446 });
+  const H2 = N/2, wallH = 2, t = 0.6;
+  const walls = [[0,-H2, N,t],[0,H2, N,t],[-H2,0, t,N],[H2,0, t,N]];
+  for (const [x,z,w,d] of walls){
+    const g = new THREE.Mesh(new THREE.BoxGeometry(w, wallH, d).translate(0,wallH/2,0), wallMat);
+    g.position.set(x, 0, z); scene.add(g); border.push(g);
+  }
+
+  // Spieler (1 = Mensch)
+  players = [null];
+  const NB = 5;
+  for (let id = 1; id <= 1 + NB; id++){
+    const col = playerColor(id);
+    const headMat = new THREE.MeshBasicMaterial({ color: col });
+    const head = new THREE.Mesh(new THREE.SphereGeometry(0.45, 16, 12), headMat);
+    scene.add(head);
+    // durchgezogene Trail-Linie (Variante D): vorallokierter Ribbon-Streifen
+    const rgeo = new THREE.BufferGeometry();
+    rgeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(RIBBON_MAX * 6), 3));
+    const rindex = new Uint32Array((RIBBON_MAX - 1) * 6);
+    for (let i = 0; i < RIBBON_MAX - 1; i++){ const b = i*6, v = i*2;
+      rindex[b]=v; rindex[b+1]=v+1; rindex[b+2]=v+2; rindex[b+3]=v+1; rindex[b+4]=v+3; rindex[b+5]=v+2; }
+    rgeo.setIndex(new THREE.BufferAttribute(rindex, 1)); rgeo.setDrawRange(0, 0);
+    const rmat = new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: 0.95, side: THREE.DoubleSide, depthWrite: false });
+    const ribbon = new THREE.Mesh(rgeo, rmat); ribbon.frustumCulled = false; ribbon.renderOrder = 2; ribbon.visible = false;
+    scene.add(ribbon);
+    players[id] = { id, isBot: id !== 1, color: col, light: lightOf(col),
+      x: 0, z: 0, px: 0, pz: 0, heading: 0, alive: false, respawnAt: 0, trail: [], path: [],
+      cx: 0, cz: 0, head, ribbon, cxCen: N/2, czCen: N/2, aiTimer: 0, desired: 0 };
+  }
+
+  // alle Zellen initial = Boden, dann jeder Spieler ein Startblock
+  for (let c = 0; c < total; c++) writeCell(c, false);
+  for (let id = 1; id < players.length; id++) respawn(players[id], true);
+
+  applyVariantLook();          // Farben/Hoehen/Kamera/Licht setzen
+}
+
+// ---------------------------------------------------------------- Zellen-Rendering
+function writeCell(c, animate){
+  const cx = cxOf(c), cz = czOf(c);
+  let col, ht;
+  if (trailOwner[c] && !V.ribbon) { col = players[trailOwner[c]].light; ht = V.trailH; }        // A/B/C: klotziger Trail
+  else if (trailOwner[c] && V.ribbon) { col = groundCol(cx, cz);        ht = V.groundH; }        // D: Trail-Zellen zu BODEN gesenkt -> 2D-Linie "frisst" sich durch 3D-Gebiet (Paper.io)
+  else if (owner[c])              { col = players[owner[c]].color;      ht = V.ownH; }
+  else                            { col = groundCol(cx, cz);            ht = V.groundH; }
+  targetH[c] = ht;
+  const cxc = cx >> 6, czc = cz >> 6, li = (cz & 63) * CHUNK + (cx & 63);
+  const m = chunks[czc * cps + cxc];
+  m.setColorAt(li, col);
+  if (animate) animSet.add(c);
+  else { curH[c] = ht; writeMatrix(c); }
+  dirtyChunks.add(czc * cps + cxc);
+}
+function writeMatrix(c){
+  const cx = cxOf(c), cz = czOf(c);
+  const s = 1 - V.gap;
+  dummy.position.set(wX(cx), 0, wZ(cz));
+  dummy.scale.set(s, Math.max(curH[c], 0.001), s);
+  dummy.rotation.set(0,0,0); dummy.updateMatrix();
+  const cxc = cx >> 6, czc = cz >> 6, li = (cz & 63) * CHUNK + (cx & 63);
+  chunks[czc * cps + cxc].setMatrixAt(li, dummy.matrix);
+}
+function stepAnim(dt){
+  const k = 1 - Math.exp(-dt / 0.06);
+  for (const c of animSet){
+    const t = targetH[c]; let v = curH[c] + (t - curH[c]) * k;
+    if (Math.abs(t - v) < 0.003){ v = t; animSet.delete(c); }
+    curH[c] = v; writeMatrix(c);
+    dirtyChunks.add((czOf(c) >> 6) * cps + (cxOf(c) >> 6));
+  }
+}
+function flushDirty(){
+  for (const ci of dirtyChunks){
+    const m = chunks[ci];
+    m.instanceMatrix.needsUpdate = true;
+    if (m.instanceColor) m.instanceColor.needsUpdate = true;
+  }
+  dirtyChunks.clear();
+}
+
+// ---------------------------------------------------------------- Variante anwenden
+function applyVariantLook(){
+  const mat = V.ortho ? matBasic : matLambert;
+  for (const m of chunks){ m.material = mat; m.castShadow = V.shadows; m.receiveShadow = V.shadows; }
+  amb.intensity = V.amb;
+  dir.intensity = V.dirI; dir.castShadow = V.shadows;
+  renderer.shadowMap.enabled = V.shadows;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  scene.fog = V.fog ? new THREE.Fog(0x0b0e14, N*0.7, N*1.8) : null;
+  scene.background = new THREE.Color(0x0b0e14);
+  // alle Zellen-Hoehen/Farben fuer neue Variante neu setzen (ohne Animation)
+  const total = N * N;
+  for (let c = 0; c < total; c++) writeCell(c, false);
+  flushDirty();
+  resize();
+  document.getElementById('barlab').innerHTML = `<b>${V.key}</b> — ${V.name}`;
+  document.getElementById('ctrlnote').textContent = V.desc;
+  VKEYS.forEach(k => {});
+}
+
+// ---------------------------------------------------------------- Gameplay
+function respawn(p, initial){
+  // freien Platz mit Rand-Abstand suchen
+  let cx, cz, tries = 0;
+  do { cx = 8 + ((Math.random() * (N - 16)) | 0); cz = 8 + ((Math.random() * (N - 16)) | 0); }
+  while (owner[idx(cx, cz)] && tries++ < 30);
+  p.x = wX(cx); p.z = wZ(cz); p.px = p.x; p.pz = p.z; p.cx = cx; p.cz = cz;
+  p.heading = Math.random() * Math.PI * 2; p.desired = p.heading;
+  p.alive = true; p.trail.length = 0; p.path.length = 0; p.cxCen = cx; p.czCen = cz;
+  const r = 3;
+  for (let z = cz - r; z <= cz + r; z++) for (let x = cx - r; x <= cx + r; x++)
+    if (x >= 0 && z >= 0 && x < N && z < N){ owner[idx(x, z)] = p.id; writeCell(idx(x, z), !initial); }
+}
+
+function kill(p){
+  if (!p.alive) return;
+  p.alive = false;
+  const total = N * N;
+  for (let c = 0; c < total; c++){
+    if (owner[c] === p.id){ owner[c] = 0; writeCell(c, true); }
+    if (trailOwner[c] === p.id){ trailOwner[c] = 0; writeCell(c, true); }
+  }
+  p.trail.length = 0; p.path.length = 0;
+  p.respawnAt = performance.now() + 1500;
+}
+
+function fillLoop(p){
+  if (p.trail.length === 0) return;
+  for (const c of p.trail){ owner[c] = p.id; trailOwner[c] = 0; }
+  // BBox ueber das GESAMTE Gebiet des Spielers (nicht nur den Trail): so liegt der
+  // Box-Rand garantiert ausserhalb -> der Flood-Fill kann nicht ins Innere lecken.
+  // (Fix fuer die Loecher in frisch erschlossenem Gebiet.)
+  let minx = N, maxx = -1, minz = N, maxz = -1;
+  const tot = N * N;
+  for (let c = 0; c < tot; c++) if (owner[c] === p.id){
+    const cx = cxOf(c), cz = czOf(c);
+    if (cx < minx) minx = cx; if (cx > maxx) maxx = cx;
+    if (cz < minz) minz = cz; if (cz > maxz) maxz = cz;
+  }
+  if (maxx < 0){ p.trail.length = 0; p.path.length = 0; return; }
+  minx = Math.max(0, minx - 1); minz = Math.max(0, minz - 1);
+  maxx = Math.min(N - 1, maxx + 1); maxz = Math.min(N - 1, maxz + 1);
+  const w = maxx - minx + 1, h = maxz - minz + 1;
+  const seen = new Uint8Array(w * h);
+  const st = [];
+  const seed = (cx, cz) => { const c = idx(cx, cz); if (owner[c] !== p.id){ const li = (cz-minz)*w + (cx-minx); if (!seen[li]){ seen[li] = 1; st.push(cx, cz); } } };
+  for (let x = minx; x <= maxx; x++){ seed(x, minz); seed(x, maxz); }
+  for (let z = minz; z <= maxz; z++){ seed(minx, z); seed(maxx, z); }
+  while (st.length){
+    const cz = st.pop(), cx = st.pop();
+    const nb = [[cx-1,cz],[cx+1,cz],[cx,cz-1],[cx,cz+1]];
+    for (const [nx, nz] of nb){
+      if (nx < minx || nx > maxx || nz < minz || nz > maxz) continue;
+      const c = idx(nx, nz); if (owner[c] === p.id) continue;
+      const li = (nz-minz)*w + (nx-minx); if (seen[li]) continue;
+      seen[li] = 1; st.push(nx, nz);
+    }
+  }
+  for (let z = minz; z <= maxz; z++) for (let x = minx; x <= maxx; x++){
+    const c = idx(x, z), li = (z-minz)*w + (x-minx);
+    if (owner[c] !== p.id && !seen[li]){ owner[c] = p.id; writeCell(c, true); }
+  }
+  for (const c of p.trail) writeCell(c, true);
+  // Zentroid (fuer Bot-Heimkehr) grob nachziehen
+  p.cxCen = ((minx + maxx) / 2) | 0; p.czCen = ((minz + maxz) / 2) | 0;
+  p.trail.length = 0; p.path.length = 0;
+}
+
+function enterCell(p, c){
+  if (!p.alive) return;
+  const to = trailOwner[c];
+  if (to){ kill(players[to]); if (to === p.id) return; }   // Trail geschnitten -> dessen Owner stirbt
+  if (!p.alive) return;
+  if (owner[c] === p.id){ if (p.trail.length) fillLoop(p); }
+  else if (trailOwner[c] === 0){ trailOwner[c] = p.id; p.trail.push(c); writeCell(c, false); }
+}
+// 4-verbundener Pfad zwischen zwei Zellen (verhindert diagonale Trail-Luecken)
+function walkTo(p, ncx, ncz){
+  let cx = p.cx, cz = p.cz;
+  while (cx !== ncx || cz !== ncz){
+    if (cx !== ncx) cx += ncx > cx ? 1 : -1;
+    else            cz += ncz > cz ? 1 : -1;
+    if (cx < 0 || cz < 0 || cx >= N || cz >= N) break;
+    enterCell(p, idx(cx, cz));
+    if (!p.alive) break;
+  }
+  p.cx = ncx; p.cz = ncz;
+}
+
+// ---------------------------------------------------------------- Eingabe
+const input = { ctrl: 'keys', keys: {}, mouse: { x:0, y:0, active:false }, touch: { id:null, x:0, y:0 } };
+function targetHeadingFromScreen(sx, sy){
+  const dx = sx - innerWidth/2, dy = sy - innerHeight/2;
+  if (Math.hypot(dx, dy) < 12) return null;
+  return Math.atan2(dy, dx);   // Screen-rechts=+x, Screen-unten=+z (Kamera ohne Yaw)
+}
+function humanIntent(p, dt){
+  let steer = 0, tgt = null;
+  if (input.ctrl === 'keys'){
+    if (input.keys['arrowleft'] || input.keys['a']) steer -= 1;
+    if (input.keys['arrowright']|| input.keys['d']) steer += 1;
+  } else if (input.ctrl === 'mouse' && input.mouse.active){
+    tgt = targetHeadingFromScreen(input.mouse.x, input.mouse.y);
+  } else if (input.ctrl === 'follow' && input.touch.id !== null){
+    tgt = targetHeadingFromScreen(input.touch.x, input.touch.y);
+  }
+  applyHeading(p, dt, steer, tgt);
+}
+function applyHeading(p, dt, steer, tgt){
+  if (tgt !== null){
+    let d = tgt - p.heading; while (d > Math.PI) d -= 2*Math.PI; while (d < -Math.PI) d += 2*Math.PI;
+    const m = TURN * dt; p.heading += Math.max(-m, Math.min(m, d));
+  } else if (steer){ p.heading += steer * TURN * dt; }
+}
+function botIntent(p, dt){
+  p.aiTimer -= dt;
+  if (p.aiTimer <= 0){
+    p.aiTimer = 0.3 + Math.random() * 0.7;
+    const home = p.trail.length > 220 || Math.random() < 0.55;
+    if (home) p.desired = Math.atan2((wZ(p.czCen) - p.z), (wX(p.cxCen) - p.x)) + (Math.random()-0.5)*0.8;
+    else      p.desired = p.heading + (Math.random()-0.5) * 1.6;
+  }
+  applyHeading(p, dt, 0, p.desired);
+}
+
+// ---------------------------------------------------------------- Simulation
+function sim(dt){
+  const now = performance.now();
+  for (let id = 1; id < players.length; id++){
+    const p = players[id];
+    if (!p.alive){ if (now >= p.respawnAt) respawn(p, false); continue; }
+    if (p.isBot) botIntent(p, dt); else humanIntent(p, dt);
+    p.px = p.x; p.pz = p.z;                 // Position des Vor-Ticks (fuer Render-Interpolation)
+    p.x += Math.cos(p.heading) * SPEED * dt;
+    p.z += Math.sin(p.heading) * SPEED * dt;
+    // sanfte Barriere (Ticket 02 / CONTEXT.md): KEIN Rand-Tod, Kopf GLEITET an der Wand
+    // entlang (Paper.io-Stil) statt zurueckzuprallen -> laeuft nicht in den eigenen Trail.
+    const lim = N/2 - 0.6;
+    if (p.x < -lim || p.x > lim){
+      p.x = Math.max(-lim, Math.min(lim, p.x));
+      p.heading = (Math.sin(p.heading) >= 0 ? 1 : -1) * Math.PI/2;  // nur noch entlang z
+    }
+    if (p.z < -lim || p.z > lim){
+      p.z = Math.max(-lim, Math.min(lim, p.z));
+      p.heading = (Math.cos(p.heading) >= 0 ? 0 : Math.PI);          // nur noch entlang x
+    }
+    const nc = cellAt(p.x, p.z);
+    if (nc >= 0){ const ncx = cxOf(nc), ncz = czOf(nc); if (ncx !== p.cx || ncz !== p.cz) walkTo(p, ncx, ncz); }
+    // kontinuierliche Trail-Linie (Ribbon) aus echten Positionen sampeln, solange getrailt wird
+    if (p.alive && p.trail.length){
+      const lp = p.path.length ? p.path[p.path.length - 1] : null;
+      if (!lp || ((p.x - lp.x)**2 + (p.z - lp.z)**2) > 0.04){   // feiner sampeln -> glattere Trail-Spitze
+        p.path.push({ x: p.x, z: p.z });
+        if (p.path.length > RIBBON_MAX) p.path.shift();
+      }
+    }
+  }
+}
+
+// ---------------------------------------------------------------- Kamera / Koepfe
+function updateCamera(dt){
+  const p = players[1];
+  const k = 1 - Math.exp(-dt / 0.12);
+  camTarget.x += (rx(p) - camTarget.x) * k;
+  camTarget.z += (rz(p) - camTarget.z) * k;
+  const er = V.elev * Math.PI / 180, dist = V.ortho ? 60 : (V.orthoH || 40);
+  const D = V.ortho ? 80 : 40;
+  const off = new THREE.Vector3(0, Math.sin(er) * D, Math.cos(er) * D);
+  const cam = activeCam();
+  cam.position.set(camTarget.x + off.x, off.y, camTarget.z + off.z);
+  cam.lookAt(camTarget.x, 0, camTarget.z);
+  dir.position.set(camTarget.x + 30, 60, camTarget.z + 20);
+  dirTarget.position.set(camTarget.x, 0, camTarget.z);
+  for (let id = 1; id < players.length; id++){
+    const q = players[id];
+    q.head.visible = q.alive;
+    if (q.alive) q.head.position.set(rx(q), V.headY, rz(q));
+  }
+}
+function updateRibbon(p){
+  const g = p.ribbon.geometry;
+  if (!V.ribbon || !p.alive || p.path.length < 2){ p.ribbon.visible = false; g.setDrawRange(0, 0); return; }
+  const pts = p.path, n = pts.length, total = n + 1;   // + aktueller Kopf als letzter Punkt
+  const head = { x: rx(p), z: rz(p) };
+  const P = i => (i < n ? pts[i] : head);
+  const arr = g.attributes.position.array;
+  const w = V.ribbonW, y = V.groundH + 0.06;           // 2D-Linie auf Bodenhoehe: laeuft in der gecarvten Rinne durchs 3D-Gebiet
+  for (let i = 0; i < total; i++){
+    const a = P(Math.max(0, i - 1)), b = P(Math.min(total - 1, i + 1));
+    let dx = b.x - a.x, dz = b.z - a.z; const L = Math.hypot(dx, dz) || 1; dx /= L; dz /= L;
+    const px = -dz * w, pz = dx * w, c = P(i), o = i * 6;
+    arr[o]=c.x+px; arr[o+1]=y; arr[o+2]=c.z+pz;
+    arr[o+3]=c.x-px; arr[o+4]=y; arr[o+5]=c.z-pz;
+  }
+  g.attributes.position.needsUpdate = true;
+  g.setDrawRange(0, (total - 1) * 6);
+  p.ribbon.visible = true;
+}
+function activeCam(){ return V.ortho ? camOrtho : camPersp; }
+function resize(){
+  const w = innerWidth, h = innerHeight, asp = w / h;
+  renderer.setSize(w, h, false);
+  camPersp.aspect = asp; camPersp.fov = V.fov || 42; camPersp.updateProjectionMatrix();
+  const oh = V.orthoH || 15;
+  camOrtho.left = -oh*asp; camOrtho.right = oh*asp; camOrtho.top = oh; camOrtho.bottom = -oh;
+  camOrtho.updateProjectionMatrix();
+}
+addEventListener('resize', resize);
+
+// ---------------------------------------------------------------- Loop + HUD
+let last = 0, acc = 0, frames = 0, fpsT = 0, ownedPct = 0;
+const fpsEl = document.getElementById('fps'), subEl = document.getElementById('substats');
+function loop(t){
+  let dt = last ? (t - last) / 1000 : 0; last = t; if (dt > 0.25) dt = 0.25;
+  acc += dt; let g = 0;
+  while (acc >= FIXED && g++ < 8){ sim(FIXED); acc -= FIXED; }
+  alpha = Math.min(acc / FIXED, 1);
+  stepAnim(dt); updateCamera(dt);
+  for (let id = 1; id < players.length; id++) updateRibbon(players[id]);
+  flushDirty();
+  renderer.render(scene, activeCam());
+  frames++; fpsT += dt;
+  if (fpsT >= 0.5){
+    const fps = Math.round(frames / fpsT); frames = 0; fpsT = 0;
+    let owned = 0; const total = N*N; for (let c = 0; c < total; c++) if (owner[c] === 1) owned++;
+    ownedPct = (owned / total * 100);
+    fpsEl.textContent = fps + ' fps';
+    fpsEl.className = 'fps ' + (fps >= 55 ? 'good' : fps >= 35 ? 'mid' : 'bad');
+    subEl.innerHTML = `${V.key} · ${N}² Zellen · ${chunks.length} Draw-Calls<br>`
+      + `${(total/1000).toFixed(0)}k Instanzen · dein Gebiet ${ownedPct.toFixed(1)}%`;
+    const p = players[1]; const hint = document.getElementById('hint');
+    if (!p.alive){ hint.style.display = 'block'; hint.textContent = 'Gestorben — Respawn …'; }
+    else hint.style.display = 'none';
+  }
+  requestAnimationFrame(loop);
+}
+
+// ---------------------------------------------------------------- Varianten-/UI-Verdrahtung
+function setVariant(key){
+  V = VARIANTS[key]; applyVariantLook();
+  const u = new URL(location); u.searchParams.set('variant', key); history.replaceState(null, '', u);
+}
+function cycle(dir){ const i = VKEYS.indexOf(V.key); setVariant(VKEYS[(i + dir + VKEYS.length) % VKEYS.length]); }
+document.getElementById('prev').onclick = () => cycle(-1);
+document.getElementById('next').onclick = () => cycle(1);
+addEventListener('keydown', e => {
+  const k = e.key.toLowerCase();
+  if (['1','2','3','4'].includes(k)){ setVariant(VKEYS[+k - 1]); return; }
+  if (['arrowup','arrowdown','arrowleft','arrowright',' '].includes(k)) e.preventDefault();
+  input.keys[k] = true;
+});
+addEventListener('keyup', e => { input.keys[e.key.toLowerCase()] = false; });
+cv.addEventListener('mousemove', e => { input.mouse.x = e.clientX; input.mouse.y = e.clientY; input.mouse.active = true; });
+cv.addEventListener('touchstart', e => { e.preventDefault(); const t = e.changedTouches[0]; input.touch.id = t.identifier; input.touch.x = t.clientX; input.touch.y = t.clientY; }, { passive:false });
+cv.addEventListener('touchmove', e => { e.preventDefault(); for (const t of e.changedTouches) if (t.identifier === input.touch.id){ input.touch.x = t.clientX; input.touch.y = t.clientY; } }, { passive:false });
+const endT = e => { for (const t of e.changedTouches) if (t.identifier === input.touch.id) input.touch.id = null; };
+cv.addEventListener('touchend', endT); cv.addEventListener('touchcancel', endT);
+
+function setCtrl(c){ input.ctrl = c; document.querySelectorAll('[data-ctrl]').forEach(b => b.classList.toggle('on', b.dataset.ctrl === c)); }
+document.querySelectorAll('[data-ctrl]').forEach(b => b.onclick = () => setCtrl(b.dataset.ctrl));
+document.querySelectorAll('[data-n]').forEach(b => b.onclick = () => { buildArena(+b.dataset.n); document.querySelectorAll('[data-n]').forEach(x => x.classList.toggle('on', x === b)); });
+document.getElementById('btn-reset').onclick = () => buildArena(N);
+document.getElementById('btn-stress').onclick = () => {
+  const total = N*N;
+  for (let c = 0; c < total; c++) if (!owner[c] && Math.random() < 0.7){ owner[c] = 2 + ((Math.random()*(players.length-2))|0); writeCell(c, false); }
+  flushDirty();
+};
+document.getElementById('toggle').onclick = () => document.getElementById('panel').classList.toggle('collapsed');
+
+// Touch-Geraet -> Finger-Folgen als Default (Ticket 01)
+const isTouch = matchMedia('(pointer: coarse)').matches || 'ontouchstart' in window;
+setCtrl(isTouch ? 'follow' : 'keys');
+document.querySelectorAll('[data-n]').forEach(x => x.classList.toggle('on', +x.dataset.n === 192));
+
+// Start
+const startKey = (new URL(location).searchParams.get('variant') || 'A').toUpperCase();
+V = VARIANTS[VKEYS.includes(startKey) ? startKey : 'A'];
+buildArena(192);
+resize();
+requestAnimationFrame(loop);
+</script>

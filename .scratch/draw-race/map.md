@@ -1,0 +1,51 @@
+# Wayfinder-Map: draw-race — Grundversion
+
+Label: wayfinder:map
+Erstellt: 2026-07-18
+
+## Destination
+
+Eine implementierungsreife Spec (`spec.md`) für die Grundversion des Browser-Multiplayer-Flächenfärbe-Spiels: Spielmechanik, Steuerung, Look, Tech-Stack, Architektur, Netcode, Hosting (kostenlos in Phase 1) und Teststrategie sind entschieden und dokumentiert. Die Implementierung startet danach als eigenes Vorhaben.
+
+## Notes
+
+- **Arbeitstitel** „draw race" — kollidiert mit der Ubisoft-Marke *DrawRace*; Umbenennung/Markenprüfung ist vor Veröffentlichung nötig, aber out of scope dieser Map.
+- **Vorarbeit:** Marktrecherche liegt vor: [research-existing-games.md](research-existing-games.md). Wichtigste Referenzen daraus: splix.io-Monorepo (MIT, Deno + Vanilla JS, autoritativer Server mit `FILL_AREA`-Deltas), r/place-Architektur (Redis-Bitmap + CDN-Snapshot), Tileman.io („No Kills"-Modus als nächster Verwandter der Flächenanteil-Idee).
+- **Skills pro Ticket-Typ:** `grilling`-Tickets via /grilling + /domain-modeling, `prototype`-Tickets via /prototype, `research`-Tickets via /research-Subagent, `task` nach Ticket-Text.
+- **Domain-Docs:** `CONTEXT.md` (Glossar) existiert seit Ticket 02 mit der Spielregel-Sprache; `docs/adr/` entsteht lazy ab Ticket 08. Neue Begriffe/Entscheidungen dort ergänzen, keine Synonyme.
+- **Kein Git-Repo:** Research-Findings landen als Dateien unter `.scratch/draw-race/research/`, nicht auf Branches.
+- **Sprache** der Effort-Dokumente: Deutsch.
+- **Rahmenentscheidungen aus der Charting-Session (2026-07-18):**
+  - **Spielmodell:** Endlose Arena (splix-Standard) — dauerhaft laufende Arena, jederzeit joinen, Tod = eigenes Gebiet weg, Live-Leaderboard nach aktuellem Flächenanteil. Kein Matchmaking, kein definierter Siegmoment.
+  - **Plattform:** Browser-only — ein responsiver Web-Client für Desktop (Maus/WASD/Pfeile) und Mobile-Browser (Touch); PWA optional, native Apps später.
+  - **Tech-Stack:** TypeScript full-stack (strict) — geteilte Spiellogik zwischen Client-Prediction und autoritativem Server; konkrete Runtime/Engine sind Tickets.
+  - **Zielgrösse Phase 1:** Öffentlich, klein — ausgelegt auf ~10–100 gleichzeitige Spieler in einer Arena, kostenloses Hosting; Skalierungspfad (mehrere Arenen/Server) wird offen gehalten, nicht gebaut.
+  - **Bots & private Räume:** Einfache Heuristik-Bots füllen die öffentliche Arena; zusätzlich private Räume per Code/Link (nur Freunde), Bots dort per Lobby-Toggle zuschaltbar.
+  - **Identität:** Gast + Nickname, kein Login; stabile Spieler-ID als Platzhalter für spätere Accounts/Skins.
+
+## Decisions so far
+
+<!-- eine Zeile pro geschlossenem Ticket: Gist + Link -->
+
+- [splix.io-Codebasis-Analyse](issues/04-splix-codebasis-analyse.md) — Fill = inverser BFS-Flood-Fill auf temporärer Uint8-Maske (Bounding-Box des Spielers, Seeds aussen + an Gegnerpositionen); Server voll autoritativ bei 20 Hz; Karten-Updates ausschliesslich als 12-Byte-FILL_RECT-Rechtecke; keine Bots im Server; MIT verlangt bei Code-Übernahme nur Attribution. Findings: [research/splix-analyse.md](research/splix-analyse.md)
+- [Rendering-Engine](issues/06-rendering-engine.md) — 1. Wahl three.js (2.5D-Look nativ: Blockhöhe, Kamera-Tilt, Schatten; Fläche als gechunktes InstancedMesh, 1 Draw Call pro 64×64-Chunk); Fallback PixiJS v8, falls Ticket 07 einen flacheren Look ergibt (pixi-projection ist tot); Phaser 4 und Roh-WebGL scheiden aus; Mobile-60-fps bleibt ⚠️ Prototyp-Auftrag für Ticket 07. Findings: [research/rendering-engine.md](research/rendering-engine.md)
+- [Kostenloses Hosting](issues/03-hosting-recherche.md) — 1. Wahl Cloudflare Workers + Durable Objects (Free Plan): 1 Arena = 1 DO, WebSocket-Hibernation, SQLite für Rekorde/Raum-Codes, EU-Hint, keine Kreditkarte, kein Kostenrisiko; Free-Budget trägt genau eine 24/7-Arena, Input-Batching Pflicht; Upgrade Workers Paid 5 $/Monat. Fallback Oracle-Always-Free-A1-VM (Frankfurt). Fly.io/Glitch/Railway/Render/Deno-Deploy/GCP/AWS scheiden für gratis-always-on aus. Konsequenz für Ticket 08: Runtime = Workers, Spiellogik runtime-agnostisch schneiden. Findings: [research/hosting.md](research/hosting.md)
+- [Bewegungsmodell-Prototyp](issues/01-bewegungsmodell-prototyp.md) — **Kontinuierlich** (freie Winkel, Paper.io-Klasse) gewählt, Grid verworfen. Steuerung Desktop: Tastatur-Default + Maus-folgen-Option; Mobile: Finger-folgen-Default + „Lenken L/R"/„Joystick" als Optionen. Startwerte Tempo 9 Z/s, Drehrate 320°/s. Konsequenz: teurerer Netcode-Pfad (≈2–3× Grid, Colyseus↔Workers-Konflikt, Polygon-Fill statt splix-Flood-Fill) → Spannung löst Ticket 08. Prototyp: [prototype/movement.html](prototype/movement.html)
+- [Netcode-Patterns](issues/05-netcode-patterns.md) — beide Varianten: autoritativer Server, 20 Hz fixer Tick, WebSocket + Binärformat (WebTransport noch nicht praxistauglich auf Gratis-Hostern), Fill server-only, Sim als headless testbares TS-Paket. Grid: kein klassisches Prediction/Rollback nötig (Dead Reckoning + Turn-Inputs mit Undo-Fenster, splix als 1:1-Referenz), Eigenbau bevorzugt. Continuous: echte Prediction/Reconciliation + Interpolation + Rewind nötig, **Netcode-Aufwand ≈ 2–3× Grid**, keine offene Referenz; dort leichte Präferenz Colyseus — die aber mit der Workers-Hosting-Wahl (Ticket 03) kollidiert → Spannungsfeld löst Ticket 08. Findings: [research/netcode.md](research/netcode.md)
+- [Look-&-Feel-Prototyp](issues/07-look-and-feel-prototyp.md) — Richtung **D „Paper.io Modern"** gewählt: perspektivischer Tilt (~52°), flache zusammenhängende **Farbflächen** statt Blöcke, durchgezogene **2D-Trail-Linie** die sich durch fremdes 3D-Gebiet „frisst", sanfte Rand-Barriere (Gleiten, kein Tod). **Mobile-60fps aus Ticket 06 bestätigt**: three.js InstancedMesh läuft auf dem User-Handy flüssig bei 192² & 256² (65k Instanzen). Impl-Anforderungen für Spec: Fill/Gebiet **polygonbasiert** (glatte Kanten), Feld nicht als Würfel-Raster, Render-Interpolation im Client, **etwas mehr 3D-Tiefe** (mehr Tilt / höheres glattes Plateau, aber kein Würfel-Look); Tod bleibt schlicht (Aufwertung = Ausbaustufe). Prototyp: [prototype/look-and-feel.html](prototype/look-and-feel.html)
+- [Spielregeln im Detail](issues/02-spielregeln-im-detail.md) — vollständiges Regelwerk der endlosen Arena: Trail-Schnitt (Gegner/selbst) = Tod, eigenes Gebiet Safespace, **Totalverlust-Tod** wenn Gebiet auf null; Fill = komplette eingeschlossene Fläche, fremdes Gebiet wird **überfärbt**, eingeschlossene Köpfe überleben; Spawn = Startblock + Mindestabstand, kein Timer; Karte **quadratisch, feste Wände, sanfte Barriere** (Wrap-around/Torus verworfen → Erweiterung); Live-Leaderboard = nur %, Top 5 + eigener Rang + Farb-Swatch, dazu **Score** (Peak-Fläche × Überlebenszeit × Ø-Menschen, live auf HUD) + lokale Rekorde (Max-%, Zeit, Highscore); private Räume = Code/Link + Lobby, Host stellt Grösse/Bots/Limit 2–16/Nachjoin ein; Nicknames 1–16, Blockliste client+server, nicht eindeutig. Weiterleitungen + Balance-Nebel → Ticket 08 bzw. neues Ticket 11.
+
+## Not yet specified
+
+- **Abuse-/Cheat-Schutz** für die öffentliche Arena (Rate-Limiting, Nickname-Moderation, Headless-Bots Dritter) — wird ticketreif nach Netcode-Recherche (05) und Architektur (08). (Teil-Entscheidung aus Ticket 02: Nickname-Blockliste client+server.)
+
+## Out of scope
+
+- **Monetarisierung** (Skins, Ads, Portal-Deals) — Ausbaustufe; Architektur-Ticket 08 hält Erweiterungspunkte bereit. Grundlagen stehen in der Marktrecherche, Abschnitt 6.
+- **Items/Upgrades/Schiessen** (defly.io-Konzepte: Speed-Leveling im Match etc.) — Ausbaustufe; Erweiterungspunkte via Ticket 08.
+- **Weitere Spielmodi** (zeitbasierte Runden, Teams, No-Kills-Varianten) — Ausbaustufe; Erweiterungspunkte via Ticket 08.
+- **Wrap-around-Arena (Torus)** — in [Ticket 02](issues/02-spielregeln-im-detail.md) für die Grundversion verworfen (mehrdeutige „innen/aussen"-Fill-Definition ohne Rand, kein splix-Vorbild, Mehraufwand auf der ohnehin selbstgebauten Continuous-Fill-Basis). Reizvoll (Spawn überall fair, Rand-Plays) → möglicher künftiger Spielmodus; Fill-Erweiterungspunkt via Ticket 08.
+- **Persistenter Canvas** (die identifizierte Marktlücke: Gebiet bleibt offline bestehen) — bewusst nicht Grundversion; offene Designfragen (Snowballing, Offline-Schutz) werden erst als eigenes Vorhaben angegangen.
+- **Native Apps** (App Stores, Capacitor) — widerspricht Kostenlos-Ziel der Phase 1.
+- **Accounts/Progression** (Login, geräteübergreifende Rekorde) — Grundversion ist Gast-only.
+- **Namensfindung/Markenprüfung** — vor Veröffentlichung nötig (DrawRace-Kollision, s. Notes), nicht vor der Spec.
