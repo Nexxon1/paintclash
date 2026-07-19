@@ -62,6 +62,14 @@ Ergänzt seit [Ticket 12](.scratch/draw-race/issues/12-sound-design.md). Grundve
 - **„Fress"-Sound** — kontinuierlicher, leiser Loop, der spielt, *solange sich der Trail durch **fremdes** Gebiet frisst* (nicht über neutralem Boden oder eigenem Gebiet); sanft ein-/ausgeblendet.
 - **Egozentrischer Ton** — es klingen **ausschliesslich die eigenen** Aktionen des lokalen Spielers, nie fremde Events. Räumlicher Umgebungston fremder Spieler ist Ausbaustufe.
 
+## Glossar — Abuse & Betrieb
+
+Ergänzt seit [Ticket 15](.scratch/draw-race/issues/15-abuse-cheat-schutz.md). Leitprinzip **Verfügbarkeit zuerst**: die Server-Autorität erledigt Integritäts-Cheating strukturell, geschützt wird v. a. die *eine Gratis-Arena*.
+
+- **Steuer-Intent** — der **einzige** Inhalt, den ein Client senden darf: sein Bewegungs-*Wunsch* (Ziel-Heading / Turn-Signal, plus Join-/Respawn-Wunsch), nie Position/Tempo/Fill/Kill/fremde `playerId`. Der Server re-derived daraus die Position (festes Tempo, auf die legale Drehrate geklemmt); alles andere wird verworfen. Trust-Boundary der Grundversion. Code-Bezeichner darf englisch sein (`intent`).
+- **Arena-Populationsgrenze** — harte Obergrenze gleichzeitiger Spieler in einer Arena; zugleich CPU-Schutz des single-threaded DO und Anti-Dominanz-Backstop. *Dass* es sie gibt, ist gesetzt; der Wert kommt aus [Ticket 14](.scratch/draw-race/issues/14-do-cpu-benchmark.md). Bei Erreichen: „Arena voll"-Abweisung, keine Queue/kein Sharding (Skalierung = out of scope).
+- **best-effort-Verfügbarkeit** — die bewusste Betriebshaltung: keine Uptime-Garantie. Der harte Free-Tages-Stopp (ADR-0001/0013) ist die *gewollte* Abbuchungssicherheit; Worst Case eines DoS = Arena parkt bis zum Reset, **ohne Kosten**.
+
 ## Verworfen / Erweiterungspunkte
 
 - **Wrap-around / Torus-Arena** — für die Grundversion verworfen (mehrdeutige „innen/aussen"-Fill-Definition); vorgemerkt als künftiger Spielmodus.
