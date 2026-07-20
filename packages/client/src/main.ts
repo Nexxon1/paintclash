@@ -96,3 +96,6 @@ form.addEventListener('submit', (event) => {
   status.textContent = 'Verbinde …';
   start(nameInput.value.trim() || 'Gast');
 });
+
+// Only now is a click safe (no native submit/reload) — see index.html.
+query('#join-form button', HTMLButtonElement).disabled = false;

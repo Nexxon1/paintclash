@@ -203,6 +203,38 @@ describe('snapshots feed reconciliation + interpolation', () => {
     expect(Math.abs((sampled.self?.y ?? 0) - before.self.y)).toBeGreaterThan(0.5);
   });
 
+  it('adapts the interpolation delay when snapshot delivery starves the clock', () => {
+    const { session } = harness();
+    session.receive(encodeWelcome(1, BALANCE.arena.sizeWU));
+    const feed = (t: number): void => {
+      session.receive(encodeSnapshot(t, 0, [selfPlayer(), selfPlayer({ id: 2, x: t })]));
+    };
+    // Smooth phase: snapshots and local ticks advance in lockstep.
+    for (let t = 1; t <= 10; t++) {
+      feed(t);
+      session.simTick(0);
+      session.renderSample(0, 50);
+    }
+    const newestBefore = 10;
+    const renderedBefore = session.renderSample(0, 50).others.find((o) => o.id === 2)?.x ?? NaN;
+    const gapBefore = newestBefore - renderedBefore;
+    // Starvation: the local clock keeps running, snapshots stop (burst gap).
+    for (let i = 0; i < 8; i++) {
+      session.simTick(0);
+      session.renderSample(0, 50);
+    }
+    // Delivery resumes smoothly.
+    for (let t = 11; t <= 60; t++) {
+      feed(t);
+      session.simTick(0);
+      session.renderSample(0, 50);
+    }
+    const renderedAfter = session.renderSample(0, 50).others.find((o) => o.id === 2)?.x ?? NaN;
+    const gapAfter = 60 - renderedAfter;
+    // The delay adapted upward: more headroom against the next burst gap.
+    expect(gapAfter).toBeGreaterThan(gapBefore + 1);
+  });
+
   it('ignores malformed server frames', () => {
     const { session } = harness();
     joined(session);

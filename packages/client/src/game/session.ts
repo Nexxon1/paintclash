@@ -22,12 +22,18 @@ import { Predictor, type RenderPose } from './predictor.js';
 export const INPUT_FLUSH_TICKS = LIMITS.inputFlushTicks;
 
 /**
- * Enemies render this many ticks behind estimated server time (spec §6.1).
- * 3 ticks = 150 ms: enough headroom that clock-estimate noise never pushes
- * the sample past the newest snapshot (which would stall-and-jump); well
- * inside the genre's latency tolerance (spec §6.3: ~500 ms).
+ * Base delay behind estimated server time for enemy rendering (spec §6.1).
+ * 3 ticks = 150 ms of headroom on a clean link. Real links (WSL2 port
+ * forwarding, wifi) deliver snapshots in bursts: whenever the render clock
+ * catches the newest snapshot (starvation = enemy freezes a frame, then
+ * catches up = constant micro-stutter), the delay adapts upward; it slowly
+ * shrinks again while delivery stays smooth. All well inside the genre's
+ * ~500 ms tolerance (spec §6.3).
  */
 const INTERP_DELAY_TICKS = 3;
+const MAX_EXTRA_DELAY_TICKS = 6;
+/** Ticks of starvation-free running before the extra delay shrinks by one. */
+const DELAY_SHRINK_AFTER_TICKS = 600; // 30 s
 
 /**
  * EMA weight for the server-clock offset. The enemy timeline must advance on
@@ -88,6 +94,10 @@ export class ClientSession {
   private serverOffset: number | null = null;
   /** Rate-limited enemy timeline (see renderSample). */
   private renderTick: number | null = null;
+  /** Adaptive addition to INTERP_DELAY_TICKS (starvation-driven). */
+  private extraDelayTicks = 0;
+  /** Local tick of the last starvation (or last shrink step). */
+  private lastStarvationTick = 0;
   /** Last rendered pose per enemy — display-side speed limiting. */
   private readonly enemyPoses = new Map<number, { x: number; y: number; heading: number }>();
 
@@ -133,13 +143,14 @@ export class ClientSession {
   }
 
   /**
-   * Advance `ticks` fixed steps at once. Up to two ticks render normally
-   * (regular frame pacing); a bigger burst — the catch-up after a stall —
-   * is folded into the glide offsets so the own head never leaps on screen.
+   * Advance `ticks` fixed steps at once. A single tick renders normally
+   * (regular frame pacing); any multi-tick burst — a hiccup's or stall's
+   * catch-up — is folded into the glide offsets so the own head never
+   * leaps on screen.
    */
   advance(turn: TurnSignal, ticks: number): void {
     if (ticks <= 0) return;
-    if (ticks <= 2 || !this.predictor) {
+    if (ticks <= 1 || !this.predictor) {
       for (let i = 0; i < ticks; i++) this.simTick(turn);
       return;
     }
@@ -182,12 +193,26 @@ export class ClientSession {
   renderSample(alpha: number, frameDtMs = 50): RenderState {
     let others: SnapshotPlayer[] = [];
     if (this.serverOffset !== null) {
-      const target = this.clientTicks + alpha + this.serverOffset - INTERP_DELAY_TICKS;
+      const delay = INTERP_DELAY_TICKS + this.extraDelayTicks;
+      const target = this.clientTicks + alpha + this.serverOffset - delay;
       if (this.renderTick === null || target - this.renderTick > MAX_RENDER_LAG_TICKS) {
         this.renderTick = target;
       } else {
         const maxStep = (Math.min(frameDtMs, TICK_DT_MS) / TICK_DT_MS) * MAX_TIMEWARP;
         this.renderTick += Math.min(Math.max(target - this.renderTick, 0), maxStep);
+      }
+      // Starvation: the render clock caught the newest snapshot — the enemy
+      // would freeze-and-catch-up. Buy more headroom (bursty delivery).
+      const newest = this.interpolator.latestTick();
+      if (newest !== null && this.renderTick >= newest) {
+        if (this.extraDelayTicks < MAX_EXTRA_DELAY_TICKS) this.extraDelayTicks += 1;
+        this.lastStarvationTick = this.clientTicks;
+      } else if (
+        this.extraDelayTicks > 0 &&
+        this.clientTicks - this.lastStarvationTick > DELAY_SHRINK_AFTER_TICKS
+      ) {
+        this.extraDelayTicks -= 1;
+        this.lastStarvationTick = this.clientTicks;
       }
       others = this.smoothEnemies(
         this.interpolator.sample(this.renderTick, this.playerId ?? undefined),

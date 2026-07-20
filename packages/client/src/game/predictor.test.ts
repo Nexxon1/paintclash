@@ -103,7 +103,7 @@ describe('reconciliation (server corrects, client replays, spec §6.1)', () => {
     // Right at the swap the rendered heading is still the old one …
     expect(predictor.sample(1)?.heading).toBeCloseTo(0, 2);
     // … and converges to the server heading via frame-based decay.
-    for (let i = 0; i < 30; i++) predictor.decayError(16.7);
+    for (let i = 0; i < 50; i++) predictor.decayError(16.7);
     expect(predictor.sample(1)?.heading).toBeCloseTo(Math.PI / 2, 1);
   });
 
@@ -118,11 +118,31 @@ describe('reconciliation (server corrects, client replays, spec §6.1)', () => {
     // the rest of the ~70 WU divergence jumped immediately.
     expect(Math.hypot(pose.x - 150, pose.y - 150)).toBeLessThanOrEqual(8.001);
     expect(Math.hypot(pose.x - 150, pose.y - 150)).toBeGreaterThan(7);
-    // And converges onto the server state from there.
-    for (let i = 0; i < 40; i++) predictor.decayError(16.7);
+    // And converges onto the server state from there (speed-capped glide:
+    // 8 WU at ≤ 5 WU/s take ~2 s of frames).
+    for (let i = 0; i < 80; i++) predictor.decayError(50);
     const settled = predictor.sample(1);
     if (!settled) throw new Error('nothing to sample');
     expect(Math.hypot(settled.x - 150, settled.y - 150)).toBeLessThan(0.2);
+  });
+
+  it('the glide never exceeds +5 WU/s — no fast-forward feel', () => {
+    const predictor = new Predictor(ARENA);
+    predictor.reconcile(serverSelf(), 0, TICK_DT_SEC);
+    predictor.applyLocalInput(1, 0, TICK_DT_SEC);
+    // 4 WU behind the server (post-hiccup situation).
+    predictor.reconcile(serverSelf({ x: 100.45, y: 104 }), 1, TICK_DT_SEC);
+    let previous = predictor.sample(1);
+    for (let i = 0; i < 10; i++) {
+      predictor.decayError(50);
+      const current = predictor.sample(1);
+      if (!previous || !current) throw new Error('nothing to sample');
+      // Per 50-ms frame the glide contributes at most 0.25 WU.
+      expect(Math.hypot(current.x - previous.x, current.y - previous.y)).toBeLessThanOrEqual(
+        0.2501,
+      );
+      previous = current;
+    }
   });
 
   it('error decay scales with real frame time', () => {

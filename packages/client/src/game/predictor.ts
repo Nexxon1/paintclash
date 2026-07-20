@@ -20,6 +20,14 @@ import { angleDiff, lerpAngle } from './interpolator.js';
 /** Fraction of the visual error kept per 50 ms — ~80 ms half-life. */
 const ERROR_DECAY_PER_TICK = 0.65;
 /**
+ * Hard ceiling on how fast a correction may glide in. Exponential decay
+ * alone starts at ~30 WU/s for a big offset — that reads as the head
+ * "fast-forwarding". Capped, the head catches up at a gentle ≤ +5 WU/s
+ * (~1.5× travel speed) and ≤ +240°/s on top of its normal motion.
+ */
+const MAX_GLIDE_SPEED_WU_S = 5;
+const MAX_GLIDE_TURN_RAD_S = (240 * Math.PI) / 180;
+/**
  * Largest position offset that glides. Bigger divergence (a long stall while
  * the world kept moving) glides these 8 WU and JUMPS the rest — gliding tens
  * of WU would look like flying. Heading needs no cap: its offset is wrapped
@@ -126,13 +134,25 @@ export class Predictor {
   /**
    * Shrink the correction offsets. Call once per rendered frame with the real
    * frame duration (capped, so a post-stall mega-frame doesn't swallow the
-   * whole glide before it was ever visible).
+   * whole glide before it was ever visible). Shrinking is exponential for
+   * small offsets but speed-capped for big ones — the rendered head never
+   * "fast-forwards" faster than the glide ceiling.
    */
   decayError(frameDtMs = 50): void {
-    const factor = ERROR_DECAY_PER_TICK ** (Math.min(frameDtMs, 100) / 50);
-    this.errorX *= factor;
-    this.errorY *= factor;
-    this.errorH *= factor;
+    const dtMs = Math.min(frameDtMs, 100);
+    const keep = ERROR_DECAY_PER_TICK ** (dtMs / 50);
+    const magnitude = Math.hypot(this.errorX, this.errorY);
+    if (magnitude > 0) {
+      const shrink = Math.min(magnitude * (1 - keep), (MAX_GLIDE_SPEED_WU_S * dtMs) / 1000);
+      const scale = (magnitude - shrink) / magnitude;
+      this.errorX *= scale;
+      this.errorY *= scale;
+    }
+    const headingMagnitude = Math.abs(this.errorH);
+    if (headingMagnitude > 0) {
+      const shrink = Math.min(headingMagnitude * (1 - keep), (MAX_GLIDE_TURN_RAD_S * dtMs) / 1000);
+      this.errorH -= Math.sign(this.errorH) * shrink;
+    }
   }
 
   /**

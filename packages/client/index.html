@@ -65,7 +65,9 @@
         <h1>paintclash</h1>
         <form id="join-form">
           <input id="name" maxlength="16" placeholder="Dein Name" autocomplete="off" />
-          <button type="submit">Spielen</button>
+          <!-- Enabled by main.ts once the module is wired — a click before
+               that would fire a native submit and reload the page. -->
+          <button type="submit" disabled>Spielen</button>
         </form>
         <p id="status"></p>
       </div>
