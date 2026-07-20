@@ -32,8 +32,14 @@ export const INPUT_FLUSH_TICKS = LIMITS.inputFlushTicks;
  */
 const INTERP_DELAY_TICKS = 3;
 const MAX_EXTRA_DELAY_TICKS = 6;
+/**
+ * One starvation EVENT grows the delay by one — a stall starves several
+ * consecutive frames, and without this cooldown a single hiccup would slam
+ * the delay to its maximum (and sit there as permanent extra enemy lag).
+ */
+const DELAY_GROW_COOLDOWN_TICKS = 20; // 1 s
 /** Ticks of starvation-free running before the extra delay shrinks by one. */
-const DELAY_SHRINK_AFTER_TICKS = 600; // 30 s
+const DELAY_SHRINK_AFTER_TICKS = 200; // 10 s
 
 /**
  * EMA weight for the server-clock offset. The enemy timeline must advance on
@@ -106,6 +112,8 @@ export class ClientSession {
   private extraDelayTicks = 0;
   /** Local tick of the last starvation (or last shrink step). */
   private lastStarvationTick = 0;
+  /** Local tick of the last delay growth — one event per cooldown window. */
+  private lastDelayGrowTick = Number.NEGATIVE_INFINITY;
   /** Last rendered pose per enemy — display-side speed limiting. */
   private readonly enemyPoses = new Map<number, { x: number; y: number; heading: number }>();
 
@@ -217,7 +225,13 @@ export class ClientSession {
       // would freeze-and-catch-up. Buy more headroom (bursty delivery).
       const newest = this.interpolator.latestTick();
       if (newest !== null && this.renderTick >= newest) {
-        if (this.extraDelayTicks < MAX_EXTRA_DELAY_TICKS) this.extraDelayTicks += 1;
+        if (
+          this.extraDelayTicks < MAX_EXTRA_DELAY_TICKS &&
+          this.clientTicks - this.lastDelayGrowTick >= DELAY_GROW_COOLDOWN_TICKS
+        ) {
+          this.extraDelayTicks += 1;
+          this.lastDelayGrowTick = this.clientTicks;
+        }
         this.lastStarvationTick = this.clientTicks;
       } else if (
         this.extraDelayTicks > 0 &&

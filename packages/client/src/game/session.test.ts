@@ -218,21 +218,34 @@ describe('snapshots feed reconciliation + interpolation', () => {
     const newestBefore = 10;
     const renderedBefore = session.renderSample(0, 50).others.find((o) => o.id === 2)?.x ?? NaN;
     const gapBefore = newestBefore - renderedBefore;
-    // Starvation: the local clock keeps running, snapshots stop (burst gap).
+    // Starvation burst: the local clock keeps running, snapshots stop. Many
+    // starved frames in a row must count as ONE event (growth cooldown) —
+    // otherwise a single hiccup slams the delay to its maximum.
     for (let i = 0; i < 8; i++) {
       session.simTick(0);
       session.renderSample(0, 50);
     }
-    // Delivery resumes smoothly.
-    for (let t = 11; t <= 60; t++) {
+    // Delivery resumes; later a second, separate burst gap occurs.
+    for (let t = 11; t <= 40; t++) {
+      feed(t);
+      session.simTick(0);
+      session.renderSample(0, 50);
+    }
+    for (let i = 0; i < 8; i++) {
+      session.simTick(0);
+      session.renderSample(0, 50);
+    }
+    for (let t = 41; t <= 90; t++) {
       feed(t);
       session.simTick(0);
       session.renderSample(0, 50);
     }
     const renderedAfter = session.renderSample(0, 50).others.find((o) => o.id === 2)?.x ?? NaN;
-    const gapAfter = 60 - renderedAfter;
-    // The delay adapted upward: more headroom against the next burst gap.
+    const gapAfter = 90 - renderedAfter;
+    // Two events → roughly two extra ticks of headroom; a per-frame growth
+    // bug would have produced far more (capped at +6 after one burst).
     expect(gapAfter).toBeGreaterThan(gapBefore + 1);
+    expect(gapAfter).toBeLessThan(gapBefore + 4.5);
   });
 
   it('ignores malformed server frames', () => {
