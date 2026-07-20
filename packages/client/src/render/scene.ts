@@ -104,7 +104,7 @@ export class ArenaScene {
     // +z-pointing cone rotated so heading 0 = +x, heading π/2 = +z (=y_sim).
     meshes.head.rotation.y = Math.PI / 2 - heading;
     meshes.block.visible = block !== null;
-    if (block) meshes.block.position.set(block.cx, 0.15, block.cy);
+    if (block) meshes.block.position.set(block.cx, 0.05, block.cy);
   }
 
   private buildFloor(size: number): void {
@@ -135,9 +135,14 @@ export class ArenaScene {
     );
     head.rotation.order = 'YXZ';
     head.geometry.rotateX(Math.PI / 2); // cone points along +z = heading 0 … rotated by heading
+    // Flat, muted ground plate — clearly "owned floor", not a solid object.
     const block = new THREE.Mesh(
-      new THREE.BoxGeometry(BLOCK_SIZE, 0.3, BLOCK_SIZE),
-      new THREE.MeshLambertMaterial({ color: color.clone().offsetHSL(0, -0.1, 0.15) }),
+      new THREE.BoxGeometry(BLOCK_SIZE, 0.1, BLOCK_SIZE),
+      new THREE.MeshLambertMaterial({
+        color: color.clone().offsetHSL(0, -0.3, 0.22),
+        transparent: true,
+        opacity: 0.9,
+      }),
     );
     this.scene.add(head, block);
     const meshes = { head, block };

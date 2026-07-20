@@ -65,25 +65,48 @@ function start(name: string): void {
     scene.resize();
   });
 
-  let last = performance.now();
+  // The simulation is deliberately DECOUPLED from requestAnimationFrame:
+  // browsers throttle rAF under GPU contention (two game windows), occlusion
+  // or backgrounding — if inputs stopped with it, the server would move on
+  // without us and every wake-up would be a divergence (fast-forward feel,
+  // kicks after the idle timeout). A timer keeps the fixed-timestep loop and
+  // input flow alive; even hidden tabs still fire ~1/s, which beats the
+  // server's 10 s idle timeout. rAF is pure rendering.
+  let lastSim = performance.now();
   let accumulator = 0;
+  let lastTickAt = performance.now();
+  const simStep = (): void => {
+    const now = performance.now();
+    // Clamp long gaps instead of fast-forwarding hundreds of ticks.
+    accumulator = Math.min(accumulator + (now - lastSim), 10 * TICK_DT_MS);
+    lastSim = now;
+    const ticks = Math.floor(accumulator / TICK_DT_MS);
+    if (ticks > 0) {
+      accumulator -= ticks * TICK_DT_MS;
+      lastTickAt = now - accumulator;
+      // Bursts (post-stall catch-up) glide instead of leaping on screen.
+      session.advance(keys.turn(), ticks);
+    }
+  };
+  const simTimer = setInterval(simStep, TICK_DT_MS / 2);
+  ws.addEventListener('close', () => {
+    clearInterval(simTimer);
+  });
+
+  let lastFrame = performance.now();
   let hidden = false;
   const frame = (now: number): void => {
-    const frameDtMs = now - last;
+    const frameDtMs = now - lastFrame;
+    lastFrame = now;
     // Decay yesterday's correction offsets BEFORE folding new ones in.
     session.frame(frameDtMs);
-    // Clamp long tab-away gaps instead of fast-forwarding hundreds of ticks.
-    accumulator = Math.min(accumulator + frameDtMs, 10 * TICK_DT_MS);
-    last = now;
-    const ticks = Math.floor(accumulator / TICK_DT_MS);
-    accumulator -= ticks * TICK_DT_MS;
-    // Bursts (post-stall catch-up) glide instead of leaping on screen.
-    session.advance(keys.turn(), ticks);
+    simStep(); // freshest possible tick right before rendering
     if (session.ready() && !hidden) {
       hidden = true;
       overlay.style.display = 'none';
     }
-    const renderState = session.renderSample(accumulator / TICK_DT_MS, frameDtMs);
+    const alpha = Math.min((performance.now() - lastTickAt) / TICK_DT_MS, 1);
+    const renderState = session.renderSample(alpha, frameDtMs);
     if (window.__paintclash) window.__paintclash.lastRender = renderState;
     scene.update(renderState);
     requestAnimationFrame(frame);
