@@ -50,6 +50,14 @@ const OFFSET_RESYNC_TICKS = 10;
 const MAX_TIMEWARP = 2;
 
 /**
+ * Servo gain for the enemy timeline: per tick of gap to the target, adjust
+ * the playback rate by this much. The clock then cruises at 1× and leans
+ * gently toward the target instead of copying the target's estimate wobble
+ * 1:1 (which showed as constant small enemy speed jitter).
+ */
+const RENDER_SERVO_GAIN = 0.2;
+
+/**
  * Beyond this many ticks of render-clock lag, catching up smoothly would
  * take seconds — snap once instead (hidden-tab comebacks, not hitches).
  */
@@ -198,8 +206,12 @@ export class ClientSession {
       if (this.renderTick === null || target - this.renderTick > MAX_RENDER_LAG_TICKS) {
         this.renderTick = target;
       } else {
-        const maxStep = (Math.min(frameDtMs, TICK_DT_MS) / TICK_DT_MS) * MAX_TIMEWARP;
-        this.renderTick += Math.min(Math.max(target - this.renderTick, 0), maxStep);
+        // Servo: cruise at 1× real time, lean toward the target — never
+        // backwards, at most MAX_TIMEWARP while catching up.
+        const dtTicks = Math.min(frameDtMs, TICK_DT_MS) / TICK_DT_MS;
+        const gap = target - this.renderTick;
+        const rate = Math.min(Math.max(1 + RENDER_SERVO_GAIN * gap, 0), MAX_TIMEWARP);
+        this.renderTick += dtTicks * rate;
       }
       // Starvation: the render clock caught the newest snapshot — the enemy
       // would freeze-and-catch-up. Buy more headroom (bursty delivery).

@@ -109,3 +109,5 @@ Trade-off dokumentiert: adaptiver Puffer erhöht die Gegner-Anzeige-Latenz auf r
 4. **Deployed**: https://paintclash.secure-data.workers.dev (Free-Plan, DO + Assets; wrangler-Login des Users). Soak gegen Produktion: **PASS** (0 Resets, 0 Frozen-Frames, Tempi gedeckelt) — Referenzumgebung ohne WSL2-Artefakte.
 
 Soak-Endstand lokal & Produktion: selfResets 0, otherFrozen 0 %, max-Tempi ≤ 17,8 WU/s (Limit 25).
+
+**2026-07-20 (Agent, Nachbesserung 6 — Servo-Render-Uhr):** User: Gegner „nicht 100 % flüssig, kleine Sprünge". Ursache: der Zeitachsen-Folger begrenzte nur große Schritte und kopierte im Normalbetrieb das Wackeln der Offset-Schätzung 1:1. Jetzt **Servo-Regler** (Grundrate 1×, Gain 0,2/Tick Abweichung, Klemme [0, 2×]): Soak-Vergleich unter identischer Widrigkeit: Gegner-sd **1,83 → 0,83**, max 17,8 → 13,5 WU/s. Zwei-Tab-Versatz-Beobachtung des Users als Anforderung an Ticket 05/07 dokumentiert (Rewind gegen Handelnden-Sicht).
