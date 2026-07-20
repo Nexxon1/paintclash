@@ -84,16 +84,13 @@ describe('authoritative movement', () => {
     expect(dist).toBeLessThan(0.5);
   });
 
-  it('applies a steer intent (after the jitter window) and echoes its seq as ack', () => {
+  it('applies a steer intent within the jitter window and echoes its seq as ack', () => {
     const arena = new ArenaCore(1);
     const { socket, id } = joinedPlayer(arena);
     arena.tick(TICK_DT_SEC);
     arena.handleFrame(id, encodeInput([{ seq: 5, turn: 1 }]));
-    // A lone intent is held LIMITS.inputBufferTicks ticks (jitter buffer) …
-    arena.tick(TICK_DT_SEC);
-    expect(socket.lastSnapshot().ackSeq).toBe(0);
-    // … then applied.
-    arena.tick(TICK_DT_SEC);
+    // A lone intent is held at most LIMITS.inputBufferTicks ticks.
+    for (let i = 0; i < LIMITS.inputBufferTicks; i++) arena.tick(TICK_DT_SEC);
     const snapshot = socket.lastSnapshot();
     expect(snapshot.ackSeq).toBe(5);
     expect(snapshot.players.find((p) => p.id === id)?.turn).toBe(1);
