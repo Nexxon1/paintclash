@@ -41,7 +41,7 @@ export const LIMITS = Object.freeze({
    * latency (and thus cross-view offset) — after a burst it would otherwise
    * sit pinned just below `inputBacklogTarget` forever.
    */
-  standingBacklogTarget: 3,
+  standingBacklogTarget: 2,
   /**
    * Ticks the queue must stay above the standing target before ONE extra
    * intent is consumed (≈ one gentle catch-up step every 2 s) — slow enough

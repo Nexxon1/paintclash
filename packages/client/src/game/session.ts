@@ -23,14 +23,14 @@ export const INPUT_FLUSH_TICKS = LIMITS.inputFlushTicks;
 
 /**
  * Base delay behind estimated server time for enemy rendering (spec §6.1).
- * 3 ticks = 150 ms of headroom on a clean link. Real links (WSL2 port
- * forwarding, wifi) deliver snapshots in bursts: whenever the render clock
- * catches the newest snapshot (starvation = enemy freezes a frame, then
- * catches up = constant micro-stutter), the delay adapts upward; it slowly
- * shrinks again while delivery stays smooth. All well inside the genre's
- * ~500 ms tolerance (spec §6.3).
+ * 2 ticks = 100 ms of headroom on a clean link — deliberately tight, because
+ * every tick here is directly visible cross-view offset; bursty links are
+ * handled by the ADAPTIVE part: whenever the render clock catches the newest
+ * snapshot (starvation = enemy freezes a frame, then catches up), the delay
+ * grows; it slowly shrinks again while delivery stays smooth. All well
+ * inside the genre's ~500 ms tolerance (spec §6.3).
  */
-const INTERP_DELAY_TICKS = 3;
+const INTERP_DELAY_TICKS = 2;
 const MAX_EXTRA_DELAY_TICKS = 6;
 /**
  * One starvation EVENT grows the delay by one — a stall starves several
