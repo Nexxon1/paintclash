@@ -20,34 +20,13 @@ export const LIMITS = Object.freeze({
    */
   inputFlushTicks: 3,
   /**
-   * Upper bound on queued-but-unapplied steer intents per player (~1 s).
-   * Real browser jank makes clients burst-send legitimately; those inputs
-   * must NEVER be dropped (a dropped turn permanently bends the head's path
-   * — the server never turned, the client did). Backlog above
-   * `inputBacklogTarget` drains at two inputs per tick instead; only flood
-   * beyond this hard cap drops (spec §8.3).
+   * Upper bound on queued-but-unapplied steer intents per player (~1 s of
+   * future ticks). Inputs are tick-mapped (ticket 17): only seqs whose ticks
+   * still lie ahead ever queue, so a standing backlog no longer exists — this
+   * is purely the memory/flood cap for hostile or broken timelines (spec
+   * §8.3); overflow drops the oldest entries.
    */
   maxPendingInputs: 20,
-  /**
-   * Queue depth above which the server consumes two intents per tick to
-   * catch up after a client-side stall. Mirrors the client's own burst
-   * catch-up, so reconciliation stays exact. Must sit ABOVE the queue's
-   * normal oscillation peak (≈ batch size + jitter buffer), otherwise the
-   * drain itself causes the dry-outs it exists to prevent.
-   */
-  inputBacklogTarget: 6,
-  /**
-   * Standing backlog the slow trim converges to. A backlog is added input
-   * latency (and thus cross-view offset) — after a burst it would otherwise
-   * sit pinned just below `inputBacklogTarget` forever.
-   */
-  standingBacklogTarget: 2,
-  /**
-   * Ticks the queue must stay above the standing target before ONE extra
-   * intent is consumed (≈ one gentle catch-up step every 2 s) — slow enough
-   * never to cause the dry-outs an eager drain would.
-   */
-  backlogTrimAfterTicks: 40,
   /**
    * Ticks without a single valid frame before a connection counts as dead
    * (a connected client sends an input batch every few ticks, so only
@@ -55,10 +34,31 @@ export const LIMITS = Object.freeze({
    */
   idleTimeoutTicks: 200,
   /**
-   * Jitter buffer: ticks the server holds a player's first queued intent
-   * before starting to consume, so a batch arriving slightly late never
-   * drains the queue dry (a dry-out shifts the whole input timeline by one
-   * tick and surfaces as a reconciliation jerk on the client).
+   * Tick mapping (ticket 17): an input frame whose implied clientTickOffset
+   * deviates from the tracked one by more than this is a timeline break
+   * (client stall/clock jump), not network jitter.
    */
-  inputBufferTicks: 2,
+  tickMapResyncTicks: 10,
+  /**
+   * Consecutive out-of-range frames before the offset re-anchors — a single
+   * delayed frame on an otherwise healthy line must not cause a resync.
+   */
+  tickMapResyncFrames: 2,
+  /**
+   * EMA weight of the smoothed arrival margin (frames arrive ~6.7/s on the
+   * batch cadence → time constant ≈ 1.5 s).
+   */
+  tickMapMarginEmaWeight: 0.1,
+  /**
+   * Smoothed arrival margin (ticks of headroom before an input's mapped
+   * tick) below which the mapping slackens by one tick: a dry margin means
+   * jitter is eating inputs (each late turn change costs a visible glide).
+   */
+  tickMapMinMarginTicks: 0.15,
+  /**
+   * Smoothed arrival margin above which the mapping tightens by one tick:
+   * standing headroom is pure added input latency. Band width vs the floor
+   * is > 1 full tick, so the ±1 steps can never oscillate.
+   */
+  tickMapMaxMarginTicks: 1.35,
 });

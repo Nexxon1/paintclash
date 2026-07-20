@@ -9,10 +9,16 @@
  * `sim-core` every tick — nothing a client sends can express position,
  * speed, or another player's id.
  *
- * Input timeline: the client samples one intent per sim tick and ships them
- * batched (spec §6.3). The server queues fresh intents per player and applies
- * exactly ONE per tick, reconstructing the client's timeline — a short tap
- * inside a batch is never collapsed away. Backlog beyond
+ * Input timeline (ticket 17, tick-mapped): a client samples one intent per
+ * sim tick, `seq` IS its sim-tick counter. Per connection the server tracks
+ * `tickOffset` so that seq `s` maps to server tick `s + tickOffset`; each
+ * tick applies exactly the input mapped to it. A missing input (still in
+ * flight) persists the current turn and the tick still counts as processed —
+ * the ack is "processed through", not "applied" — so the client's replay of
+ * `seq > ack` reconstructs the server timeline exactly, with zero jitter
+ * buffer and zero standing backlog. Inputs arriving after their mapped tick
+ * ran are dropped (applying them would double-simulate the past); the drift
+ * servo below keeps that rare. Queue overflow beyond
  * `LIMITS.maxPendingInputs` is flood; the oldest entries drop (spec §8.3).
  */
 
@@ -24,13 +30,19 @@ import {
   type SnapshotPlayer,
 } from '@paintclash/protocol';
 import { LIMITS, type TurnSignal } from '@paintclash/shared';
-import { advancePlayer, createSimState, step, type SimState } from '@paintclash/sim-core';
+import { createSimState, step, type SimState } from '@paintclash/sim-core';
 
 /** What ArenaCore needs from a transport — a DO WebSocket satisfies this. */
 export interface ArenaSocket {
   send(frame: Uint8Array): void;
   close(code?: number, reason?: string): void;
 }
+
+/**
+ * Neutral start of the smoothed arrival margin: mid-band, so the servo
+ * neither slackens nor tightens before real samples arrive.
+ */
+const MARGIN_EMA_START = (LIMITS.tickMapMinMarginTicks + LIMITS.tickMapMaxMarginTicks) / 2;
 
 interface Connection {
   socket: ArenaSocket;
@@ -39,16 +51,20 @@ interface Connection {
   joined: boolean;
   /** Highest seq ever accepted — monotonicity gate (spec §6.4). */
   highestSeq: number;
-  /** Seq of the last *applied* intent — echoed as reconciliation ack. */
+  /** Seq the timeline is processed through — echoed as reconciliation ack. */
   ackSeq: number;
-  /** Fresh intents waiting to be applied, one per tick, oldest first. */
+  /** Inputs waiting for their mapped tick, strictly ascending seqs. */
   pendingInputs: InputItem[];
-  /** Jitter buffer: while true, queued intents are held, not consumed. */
-  buffering: boolean;
-  /** Ticks the oldest queued intent has waited while buffering. */
-  bufferWait: number;
-  /** Consecutive ticks the queue sat above the standing backlog target. */
-  aboveTargetTicks: number;
+  /**
+   * serverTick − clientSeq of this connection's input timeline; null until
+   * the first input frame anchors it. Seq `s` is applied at server tick
+   * `s + tickOffset`.
+   */
+  tickOffset: number | null;
+  /** Smoothed arrival margin in ticks (see LIMITS.tickMapMarginEmaWeight). */
+  marginEma: number;
+  /** Consecutive frames implying a broken timeline (resync hysteresis). */
+  resyncStreak: number;
   /** Consecutive malformed frames; a valid frame resets it. */
   garbage: number;
   /** Ticks since the last valid frame — dead-socket detection. */
@@ -85,9 +101,9 @@ export class ArenaCore {
       highestSeq: 0,
       ackSeq: 0,
       pendingInputs: [],
-      buffering: true,
-      bufferWait: 0,
-      aboveTargetTicks: 0,
+      tickOffset: null,
+      marginEma: MARGIN_EMA_START,
+      resyncStreak: 0,
       garbage: 0,
       idleTicks: 0,
     });
@@ -128,7 +144,8 @@ export class ArenaCore {
 
   /**
    * One raw client frame. Malformed → dropped; persistent garbage → socket
-   * killed (spec §8.3). Valid intents join the player's queue.
+   * killed (spec §8.3). Valid intents join the player's queue, keyed to
+   * their mapped tick.
    */
   handleFrame(playerId: number, frame: Uint8Array): void {
     const connection = this.connections.get(playerId);
@@ -154,19 +171,81 @@ export class ArenaCore {
       return;
     }
     if (!connection.joined) return;
+    const fresh: InputItem[] = [];
     for (const input of message.inputs) {
       if (input.seq <= connection.highestSeq) continue; // stale/replayed (spec §6.4)
       connection.highestSeq = input.seq;
+      fresh.push(input); // strictly ascending, thanks to the gate above
+    }
+    const newest = fresh[fresh.length - 1];
+    if (!newest) return;
+    // Track BEFORE filtering, so the very frame that re-anchors a broken
+    // timeline already steers again.
+    this.trackTickOffset(connection, newest.seq);
+    const tickOffset = connection.tickOffset;
+    if (tickOffset === null) return; // unreachable — tracking always anchors
+    for (const input of fresh) {
+      // Mapped tick already simulated (turn persisted + acked): applying it
+      // now would double-move the past. Late turn changes surface as one
+      // small reconciliation glide on the client instead.
+      if (input.seq + tickOffset <= this.state.tick) continue;
       connection.pendingInputs.push(input);
     }
     const overflow = connection.pendingInputs.length - LIMITS.maxPendingInputs;
     if (overflow > 0) connection.pendingInputs.splice(0, overflow);
   }
 
-  /** One authoritative 20 Hz tick: apply one intent per player, snapshot all. */
+  /**
+   * Fold one input frame's newest seq into the connection's tick mapping.
+   * Anchor on first contact; re-anchor after a sustained timeline break
+   * (client stall/clock jump — its seqs would otherwise map into the acked
+   * past forever, muting steering); otherwise servo the offset by ±1 around
+   * a small standing arrival margin (every idle tick of margin is 50 ms of
+   * input latency, every missing one costs late-dropped inputs).
+   */
+  private trackTickOffset(connection: Connection, newestSeq: number): void {
+    // Offset that would map this seq to the very next tick (zero margin).
+    const implied = this.state.tick + 1 - newestSeq;
+    if (connection.tickOffset === null) {
+      connection.tickOffset = implied;
+      connection.marginEma = MARGIN_EMA_START;
+      console.log(`[tickmap] anchor offset=${String(implied)} seq=${String(newestSeq)}`);
+      return;
+    }
+    if (Math.abs(implied - connection.tickOffset) > LIMITS.tickMapResyncTicks) {
+      connection.resyncStreak += 1;
+      if (connection.resyncStreak >= LIMITS.tickMapResyncFrames) {
+        console.log(
+          `[tickmap] resync ${String(connection.tickOffset)}→${String(implied)} seq=${String(newestSeq)}`,
+        );
+        connection.tickOffset = implied;
+        connection.marginEma = MARGIN_EMA_START;
+        connection.resyncStreak = 0;
+      }
+      return;
+    }
+    connection.resyncStreak = 0;
+    const margin = connection.tickOffset - implied;
+    connection.marginEma += LIMITS.tickMapMarginEmaWeight * (margin - connection.marginEma);
+    if (newestSeq % 20 < 3) {
+      console.log(
+        `[tickmap] frame seq=${String(newestSeq)} margin=${String(margin)} ema=${connection.marginEma.toFixed(2)} offset=${String(connection.tickOffset)} q=${String(connection.pendingInputs.length)}`,
+      );
+    }
+    if (connection.marginEma < LIMITS.tickMapMinMarginTicks) {
+      connection.tickOffset += 1;
+      connection.marginEma += 1;
+      console.log(`[tickmap] slacken → ${String(connection.tickOffset)}`);
+    } else if (connection.marginEma > LIMITS.tickMapMaxMarginTicks) {
+      connection.tickOffset -= 1;
+      connection.marginEma -= 1;
+      console.log(`[tickmap] tighten → ${String(connection.tickOffset)}`);
+    }
+  }
+
+  /** One authoritative 20 Hz tick: apply each tick-mapped intent, snapshot all. */
   tick(dtSec: number): void {
     const turns: { id: number; turn: TurnSignal }[] = [];
-    const catchUps: { connection: Connection; id: number; input: InputItem }[] = [];
     for (const [id, connection] of this.connections) {
       // Dead-socket sweep: transports don't always deliver a close event
       // (half-open TCP after an abrupt browser kill) — without this, ghost
@@ -177,58 +256,21 @@ export class ArenaCore {
         this.disconnect(id);
         continue;
       }
+      if (connection.tickOffset === null) continue;
+      const expectedSeq = this.state.tick + 1 - connection.tickOffset;
       const queue = connection.pendingInputs;
-      // Jitter buffer: hold until a batch is in (or the lone intent waited
-      // long enough), so a slightly late batch never dries the queue out.
-      if (connection.buffering && queue.length > 0) {
-        connection.bufferWait += 1;
-        if (
-          queue.length >= LIMITS.inputBufferTicks ||
-          connection.bufferWait >= LIMITS.inputBufferTicks
-        ) {
-          connection.buffering = false;
-        }
+      // Entries below the expected seq were superseded by a resync/tighten
+      // step — their ticks already ran.
+      while (queue.length > 0 && (queue[0]?.seq ?? Infinity) < expectedSeq) queue.shift();
+      const head = queue[0];
+      if (head?.seq === expectedSeq) {
+        queue.shift();
+        turns.push({ id, turn: head.turn });
       }
-      if (connection.buffering) continue;
-      const input = queue.shift();
-      if (input) {
-        connection.ackSeq = input.seq;
-        turns.push({ id, turn: input.turn });
-        // Catch-up drain: after a client-side stall the client fast-forwards
-        // several ticks at once and its inputs arrive as a burst. Consume a
-        // second intent this tick (as one extra sim advance below) so the
-        // backlog shrinks instead of being dropped — a dropped turn would
-        // permanently bend the head's path away from what the player saw.
-        let extra: InputItem | undefined;
-        if (queue.length > LIMITS.inputBacklogTarget) {
-          extra = queue.shift();
-        } else if (queue.length > LIMITS.standingBacklogTarget) {
-          // Slow trim: a standing backlog is pure added input latency (it
-          // inflates the cross-view offset). One gentle extra step every
-          // couple of seconds walks it back down without ever causing the
-          // dry-outs an eager drain would.
-          connection.aboveTargetTicks += 1;
-          if (connection.aboveTargetTicks >= LIMITS.backlogTrimAfterTicks) {
-            connection.aboveTargetTicks = 0;
-            extra = queue.shift();
-          }
-        } else {
-          connection.aboveTargetTicks = 0;
-        }
-        if (extra) catchUps.push({ connection, id, input: extra });
-      } else {
-        connection.buffering = true;
-        connection.bufferWait = 0;
-      }
+      // else: input still in flight — the sim persists the current turn and
+      // the ack below moves past this tick regardless ("processed").
     }
     step(this.state, { joins: this.pendingJoins, leaves: this.pendingLeaves, turns }, dtSec);
-    for (const { connection, id, input } of catchUps) {
-      const player = this.state.players.find((p) => p.id === id);
-      if (!player) continue;
-      player.turn = input.turn;
-      advancePlayer(player, this.state.arenaSizeWU, dtSec);
-      connection.ackSeq = input.seq;
-    }
     this.pendingJoins = [];
     this.pendingLeaves = [];
 
@@ -245,6 +287,12 @@ export class ArenaCore {
       // World state only flows to sockets that actually joined (spec §8.2) —
       // an upgrade without a join gets nothing but the idle timeout.
       if (!connection.joined) continue;
+      // The ack is derived, never counted: processed through = current tick
+      // on this connection's input timeline. It rebases (backwards, once)
+      // when a resync re-anchors the timeline.
+      if (connection.tickOffset !== null) {
+        connection.ackSeq = this.state.tick - connection.tickOffset;
+      }
       connection.socket.send(encodeSnapshot(this.state.tick, connection.ackSeq, players));
     }
   }

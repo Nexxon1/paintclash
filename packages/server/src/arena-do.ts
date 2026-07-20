@@ -105,6 +105,8 @@ export class ArenaDO extends DurableObject {
     if (this.ticking) return;
     this.ticking = true;
     let scheduled = Date.now();
+    let ticks = 0;
+    let anchors = 0;
     const loop = (): void => {
       if (arena.connectionCount === 0) {
         this.ticking = false;
@@ -113,8 +115,17 @@ export class ArenaDO extends DurableObject {
         return;
       }
       arena.tick(TICK_DT_SEC);
+      ticks += 1;
+      if (ticks % 100 === 0) {
+        console.log(
+          `[ticker] ticks=${String(ticks)} now=${String(Date.now())} anchors=${String(anchors)}`,
+        );
+      }
       scheduled += TICK_DT_MS;
-      if (Date.now() - scheduled > 2 * TICK_DT_MS) scheduled = Date.now();
+      if (Date.now() - scheduled > 2 * TICK_DT_MS) {
+        scheduled = Date.now();
+        anchors += 1;
+      }
       setTimeout(loop, Math.max(0, scheduled - Date.now()));
     };
     setTimeout(loop, TICK_DT_MS);

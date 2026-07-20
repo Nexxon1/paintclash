@@ -41,11 +41,15 @@ describe('BALANCE', () => {
   it('has frozen, positive protection limits (spec §8.3, beside BALANCE)', () => {
     expect(Object.isFrozen(LIMITS)).toBe(true);
     for (const value of Object.values(LIMITS)) {
-      expect(Number.isInteger(value)).toBe(true);
+      expect(Number.isFinite(value)).toBe(true);
       expect(value).toBeGreaterThan(0);
     }
-    // The backlog must at least absorb one full input batch.
+    // The flood cap must at least absorb one full input batch.
     expect(LIMITS.maxPendingInputs).toBeGreaterThanOrEqual(LIMITS.inputFlushTicks);
+    // The drift servo's deadband must exceed one tick, or its ±1 steps
+    // would oscillate; the resync gate must sit far outside the band.
+    expect(LIMITS.tickMapMaxMarginTicks - LIMITS.tickMapMinMarginTicks).toBeGreaterThan(1);
+    expect(LIMITS.tickMapResyncTicks).toBeGreaterThan(LIMITS.tickMapMaxMarginTicks);
   });
 
   it('keeps the start block + min distance inside the arena', () => {

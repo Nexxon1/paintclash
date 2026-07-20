@@ -28,6 +28,11 @@ export class SimClient {
   arenaSizeWU: number | null = null;
   /** Latest authoritative snapshot (stale ones are dropped). */
   snapshot: Snapshot | null = null;
+  /**
+   * Test hook: called for EVERY fresh snapshot. `snapshot` only keeps the
+   * latest, but per-tick assertions (input timing) must not miss one.
+   */
+  onSnapshot: ((snapshot: Snapshot) => void) | null = null;
 
   private readonly send: (frame: Uint8Array) => void;
   private readonly name: string;
@@ -61,6 +66,7 @@ export class SimClient {
     // Re-base prediction on every fresh authoritative state.
     const self = this.self();
     this.predicted = self ? { ...self } : null;
+    this.onSnapshot?.(this.snapshot);
   }
 
   /** The own player in the latest snapshot, if joined and alive. */

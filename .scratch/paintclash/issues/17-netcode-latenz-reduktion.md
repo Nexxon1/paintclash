@@ -4,7 +4,7 @@
 
 **Blocked by:** 03 (erledigt). Unabhängig von 04 startbar; Ergebnisse fließen in 05/07 (Rewind rechnet mit exakt diesem Verzug).
 
-**Status:** ready-for-agent
+**Status:** in-progress — Umbau fertig + lokal grün; Prod-Abnahme blockiert durch neu entdeckten DO-Tickrate-Bug (s. Session-Log 2026-07-20 unten)
 
 ## Gemessenes Latenz-Budget (Stand 2026-07-20, Commit ~`HEAD`)
 
@@ -43,3 +43,27 @@ Ein Richtungs-Sichtverzug ≈ 0,29 s = Summe:
 - [ ] CONTEXT.md: Ack-Semantik + Tick-Mapping nachziehen.
 
 _Referenz: Ticket 03 Kommentare (Latenz-Budget-Messungen, Soak-FAIL-Beleg für Puffer 1); ADR-0001 (Budget), ADR-0003 (Netcode)._
+
+---
+
+## Session-Log 2026-07-20 (WIP-Commit auf main)
+
+**Umbau implementiert wie skizziert — Client brauchte NULL Änderungen** (sein Replay-Kontrakt `pending = seq > ack` ist unter der neuen Ack-Semantik exakt konsistent; das war der Punkt des Umbaus):
+
+- **Server (`arena.ts`):** `tickOffset` pro Verbindung (seq `s` → Server-Tick `s + tickOffset`), Anker beim ersten Frame auf den **neuesten** seq; fehlender Input ⇒ Turn persistiert + Tick trotzdem geackt („processed" ≠ „applied", Ack wird **abgeleitet**: `ack = tick − tickOffset`, nie gezählt); verspätete seqs (mapped Tick schon simuliert) werden bei Ankunft verworfen. Jitter-Puffer, Backlog-Drain, Standing-Trim komplett entfernt (`LIMITS`-Keys gestrichen); `maxPendingInputs` nur noch Flood-/Memory-Cap.
+- **Drift-Servo:** Arrival-Margin-EMA (Gewicht 0,1, Start mittig 0,75); Band [0,15 … 1,35] Ticks → ±1-Schritte (slacken/tighten); Timeline-Bruch (|Δ| > 10 Ticks, 2 Frames in Folge) ⇒ Hard-Re-Anchor, Ack rebased dabei einmalig rückwärts (Client-Predictor verträgt das nachweislich).
+- **Tests:** 140 Unit grün (Arena-Suite komplett auf Tick-Mapping umgeschrieben inkl. 3 Drift-Tests); Szenario 6/6 inkl. neuem Abnahme-Test „Tap = exakt 1 autoritativer Tick, `tick − ack` konstant über Dry-Ticks" (sim-client hat dafür `onSnapshot`-Hook bekommen); E2E lokal 4/4; **Soak lokal PASS** (0 Resets, 0 Frozen, other-sd 0,86).
+- **Messung lokal (`offset-probe`): p50 1,0 WU = 0,11 s** (vorher 1,7 WU/0,19 s), Zwei-Screens-Diskrepanz 2 WU (vorher ~5). Ziel lokal erreicht.
+
+**Prod-Abnahme BLOCKIERT — vorbestehender Bug entdeckt: die deployte Arena-DO tickt 22,20 Hz statt 20** (gemessen `tests/soak/tickrate-probe.mjs`, 15 s Fenster). Folgen im neuen Modell: Client-seqs (20 Hz) fallen ~2,2 Ticks/s hinter die Server-Ticks, der Servo slackt endlos (+33 in ~16 s, per `wrangler tail` belegt), praktisch jeder Input kommt „zu spät" ⇒ **Steuerung auf Prod tot** (`steer-latency-probe.mjs`: 14/14 Presses EATEN; lokal 0/14, p50 122 ms). Das alte zählbasierte Modell hat den Bug maskiert (Queue lief leer, Puffer fing es ab) — er erklärt sehr wahrscheinlich einen Teil der beobachteten Ruckler/Lags (permanentes Timewarp-Nachziehen der Gegner-Timeline).
+
+**Verdacht Mechanik:** `startTicker`-Re-Anchor (`scheduled = Date.now()` ⇒ nächster Timeout 0 ms ⇒ Extra-Tick pro Re-Anchor) und/oder Workers-Zeitvirtualisierung (Date.now eingefroren während Ausführung). Diagnose-Logging ist **eingebaut und Teil dieses WIP-Stands**: `[ticker] ticks/now/anchors` alle 100 Ticks (arena-do.ts) + `[tickmap] anchor/slacken/tighten/resync/frame` (arena.ts).
+
+**Nächste Schritte (morgen):**
+1. WIP-Build deployen, `wrangler tail` → `[ticker]`-Deltas auswerten: ΔDate.now(DO) vs Edge-Zeitstempel vs Δticks ⇒ Uhr-Bug vs Scheduling-Bug unterscheiden.
+2. Pacing fixen (Re-Anchor ohne Sofort-Tick: `scheduled = Date.now() + TICK_DT_MS`; ggf. akkumulatorbasiert), Debug-Logs wieder raus.
+3. Prod messen: `steer-latency-probe` (0 EATEN, p50), `offset-probe` (Ziel ≤ 0,15 s p50 — Achtung: Läufe brauchen genug Samples, n≥30; bei n<10 wiederholen), Soak Prod PASS.
+4. CI-E2E-Fix (User-Wunsch): `walking-skeleton.spec.ts` Stall-Test nutzt flaches 30°-Frame-Budget → auf CI-Runnern (~66 ms Frames) reißt legales Glide+Turn (16° Tick + 240°/s·dt, dt bei 100 ms gekappt) die Grenze. Budget dt-normalisieren wie im Soak; Jump-Budget (1,0 WU) ist dt-robust und bleibt.
+5. Doku: CONTEXT.md (Ack-Semantik „verarbeitet", Tick-Mapping/Client-Tick-Offset/Arrival-Margin neu, Jitter-Puffer-Eintrag als abgelöst markieren), ADR-0003-Nachtrag, Ticket-Akzeptanzhaken.
+
+**Prod wurde auf den alten Netcode-Stand (Commit `2c0d369`) zurück-deployt**, damit die Referenzumgebung über Nacht spielbar bleibt. Neue Werkzeuge: `tests/soak/steer-latency-probe.mjs` (Press→autoritative-Anwendung, misst EATEN-Rate), `tests/soak/tickrate-probe.mjs` (Server-Tickrate aus Client-Sicht).

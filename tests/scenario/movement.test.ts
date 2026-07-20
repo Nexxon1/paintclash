@@ -1,5 +1,5 @@
 import { SELF } from 'cloudflare:test';
-import { BALANCE } from '@paintclash/shared';
+import { BALANCE, type TurnSignal } from '@paintclash/shared';
 import { SimClient } from '@paintclash/sim-client';
 import { describe, expect, it } from 'vitest';
 
@@ -119,6 +119,44 @@ describe('walking skeleton over the real wire', () => {
     } finally {
       a.ws.close();
       b.ws.close();
+    }
+  });
+
+  it('a short tap steers for exactly one authoritative tick — no jitter buffer, no lost input (ticket 17)', async () => {
+    const { client, ws } = await connect('tapper');
+    try {
+      await until(() => client.self(), 'spawn snapshot');
+      // One intent per server tick, paced by snapshot arrival: a snapshot
+      // lands right after its tick ran, so each intent reaches the server
+      // almost a full tick before the tick it is mapped to.
+      const plan: TurnSignal[] = [0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0];
+      let sent = 0;
+      const seen: { tick: number; ackSeq: number; turn: TurnSignal }[] = [];
+      client.onSnapshot = (snapshot) => {
+        const self = snapshot.players.find((p) => p.id === client.playerId);
+        if (!self) return;
+        seen.push({ tick: snapshot.tick, ackSeq: snapshot.ackSeq, turn: self.turn });
+        if (sent < plan.length) {
+          client.queueTurn(plan[sent] ?? 0);
+          client.flush();
+          sent += 1;
+        }
+      };
+      await until(
+        () => (seen.length >= plan.length + 6 ? true : null),
+        'the tap window to play out',
+        15000,
+      );
+      client.onSnapshot = null;
+      // The single-tick tap was applied for exactly one authoritative tick.
+      expect(seen.filter((s) => s.turn === 1)).toHaveLength(1);
+      // Tick-exact timeline, zero standing backlog: once anchored, the ack
+      // trails the tick by a constant offset — including the dry ticks after
+      // the plan ran out ("processed" ≠ "applied").
+      const offsets = new Set(seen.slice(1).map((s) => s.tick - s.ackSeq));
+      expect(offsets.size).toBe(1);
+    } finally {
+      ws.close();
     }
   });
 
