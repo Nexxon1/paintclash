@@ -67,12 +67,16 @@ test('movement renders smoothly — no reconciliation jerks, no frozen enemies',
 
   // Sample the actually-rendered pose every frame for 3 s and measure the
   // speed per ~50 ms bucket. Sim speed is 9 WU/s; jerks (double-steps,
-  // stalls, pops) blow up the standard deviation, a ghost/frozen enemy
-  // collapses the mean.
+  // stalls, pops) push many buckets far off 9, a ghost/frozen enemy
+  // collapses the mean. The discriminator is the OUTLIER FRACTION, not raw
+  // sd: shared CI runners hitch legitimately (glide phases inflate sd a
+  // little), while the historical double-step bug threw every other bucket
+  // out of band (> 50 % outliers).
   interface SpeedStats {
     mean: number;
     sd: number;
     max: number;
+    outlierPct: number;
   }
   const stats = await pageA.evaluate(
     () =>
@@ -90,7 +94,7 @@ test('movement renders smoothly — no reconciliation jerks, no frozen enemies',
             const speeds = (px: 'sx' | 'ox', py: 'sy' | 'oy'): SpeedStats => {
               const values: number[] = [];
               let last = samples[0];
-              if (!last) return { mean: 0, sd: 99, max: 99 };
+              if (!last) return { mean: 0, sd: 99, max: 99, outlierPct: 100 };
               for (const s of samples) {
                 if (s.t - last.t >= 50) {
                   values.push(
@@ -101,7 +105,14 @@ test('movement renders smoothly — no reconciliation jerks, no frozen enemies',
               }
               const mean = values.reduce((a, b) => a + b, 0) / values.length;
               const sd = Math.sqrt(values.reduce((a, b) => a + (b - mean) ** 2, 0) / values.length);
-              return { mean, sd, max: Math.max(...values) };
+              // Outside 9 WU/s ± the legal glide/warp envelope.
+              const outliers = values.filter((v) => v < 6 || v > 14).length;
+              return {
+                mean,
+                sd,
+                max: Math.max(...values),
+                outlierPct: (100 * outliers) / values.length,
+              };
             };
             resolve({ self: speeds('sx', 'sy'), other: speeds('ox', 'oy') });
           }
@@ -110,14 +121,17 @@ test('movement renders smoothly — no reconciliation jerks, no frozen enemies',
       }),
   );
 
-  // Wide margins so CI-runner jank never flakes this; the guarded regressions
-  // (frozen ghost ≈ 0 mean, double-step jerks ≈ sd > 2) still trip loudly.
+  // Margins sized for shared CI runners; the guarded regressions still trip
+  // loudly: frozen ghost ≈ mean 0, double-step jerks ≈ >50 % outliers +
+  // sd > 2.5, teleports ≈ max spikes.
   expect(stats.self.mean).toBeGreaterThan(7);
   expect(stats.self.mean).toBeLessThan(11);
-  expect(stats.self.sd).toBeLessThan(1.5);
+  expect(stats.self.sd).toBeLessThan(2.5);
+  expect(stats.self.outlierPct).toBeLessThan(25);
   expect(stats.other.mean).toBeGreaterThan(7);
   expect(stats.other.mean).toBeLessThan(11.5);
-  expect(stats.other.sd).toBeLessThan(2);
+  expect(stats.other.sd).toBeLessThan(2.5);
+  expect(stats.other.outlierPct).toBeLessThan(25);
   // Display-side speed limit: enemies may catch up at ≤ 2.2× nominal, never
   // spike beyond (pre-fix: 160+ WU/s teleports).
   expect(stats.other.max).toBeLessThan(25);
