@@ -41,7 +41,15 @@ window.addEventListener('keyup', (event) => {
   keys.up(event.key);
 });
 
+/** Tears down the previous game (loop, timer, socket, listeners). */
+let stopCurrentGame: (() => void) | null = null;
+
 function start(name: string): void {
+  // Without a full teardown, a re-submit after a disconnect would stack a
+  // second live game onto the same canvas: two render loops fighting, a
+  // dead session still consuming keys and clobbering the debug hook.
+  stopCurrentGame?.();
+
   const wsUrl = `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws`;
   const ws = new WebSocket(wsUrl);
   ws.binaryType = 'arraybuffer';
@@ -49,6 +57,7 @@ function start(name: string): void {
     ws.send(frame);
   }, name);
   window.__paintclash = { session };
+  let stopped = false;
 
   ws.addEventListener('open', () => {
     session.join();
@@ -57,15 +66,17 @@ function start(name: string): void {
     if (typeof event.data !== 'string') session.receive(event.data);
   });
   ws.addEventListener('close', () => {
-    status.textContent = 'Verbindung getrennt — neu laden zum Wiederverbinden.';
+    stopCurrentGame?.();
+    status.textContent = 'Verbindung getrennt — erneut auf Spielen klicken.';
     overlay.style.display = 'grid';
   });
 
   const scene = new ArenaScene(canvas);
   window.__paintclash.scene = scene;
-  window.addEventListener('resize', () => {
+  const onResize = (): void => {
     scene.resize();
-  });
+  };
+  window.addEventListener('resize', onResize);
 
   // The simulation is deliberately DECOUPLED from requestAnimationFrame:
   // browsers throttle rAF under GPU contention (two game windows), occlusion
@@ -91,13 +102,20 @@ function start(name: string): void {
     }
   };
   const simTimer = setInterval(simStep, TICK_DT_MS / 2);
-  ws.addEventListener('close', () => {
+
+  stopCurrentGame = () => {
+    if (stopped) return;
+    stopped = true;
     clearInterval(simTimer);
-  });
+    window.removeEventListener('resize', onResize);
+    scene.dispose();
+    if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) ws.close();
+  };
 
   let lastFrame = performance.now();
   let hidden = false;
   const frame = (now: number): void => {
+    if (stopped) return; // torn down — let this loop die
     const frameDtMs = now - lastFrame;
     lastFrame = now;
     // Decay yesterday's correction offsets BEFORE folding new ones in.

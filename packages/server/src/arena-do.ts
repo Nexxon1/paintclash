@@ -49,10 +49,17 @@ export class ArenaDO extends DurableObject {
         try {
           server.close(code, reason);
         } catch {
-          this.drop(server);
+          /* already closed */
         }
+        // The arena killed this socket itself (idle/garbage) — don't wait
+        // for a close event that a half-open connection may never deliver.
+        this.drop(server);
       },
     });
+    if (playerId === null) {
+      server.close(1013, 'arena full'); // spec §8.3: clean rejection, no queue
+      return new Response(null, { status: 101, webSocket: client });
+    }
     this.socketIds.set(server, playerId);
 
     this.startTicker(arena);

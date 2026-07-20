@@ -22,10 +22,11 @@ async function join(page: Page, name: string): Promise<void> {
 }
 
 function pose(page: Page): Promise<DebugPose> {
+  // Read the pose the page actually drew — renderSample() mutates session
+  // state (render clock, adaptive delay) and must stay the app's call.
   return page.evaluate(() => {
-    const session = window.__paintclash?.session;
-    const sample = session?.renderSample(1).self;
-    if (!sample) throw new Error('no session/self yet');
+    const sample = window.__paintclash?.lastRender?.self;
+    if (!sample) throw new Error('no rendered self yet');
     return { x: sample.x, y: sample.y, heading: sample.heading };
   });
 }
@@ -185,18 +186,17 @@ test('two browsers share one arena', async ({ browser }) => {
   await join(pageA, 'Alice');
   await join(pageB, 'Bob');
 
-  // Each client eventually renders exactly one other player.
+  // Each client eventually renders exactly one other player (read from the
+  // drawn state — renderSample() mutates session internals).
   await expect
-    .poll(
-      () => pageA.evaluate(() => window.__paintclash?.session.renderSample(1).others.length ?? -1),
-      { timeout: 10_000 },
-    )
+    .poll(() => pageA.evaluate(() => window.__paintclash?.lastRender?.others.length ?? -1), {
+      timeout: 10_000,
+    })
     .toBe(1);
   await expect
-    .poll(
-      () => pageB.evaluate(() => window.__paintclash?.session.renderSample(1).others.length ?? -1),
-      { timeout: 10_000 },
-    )
+    .poll(() => pageB.evaluate(() => window.__paintclash?.lastRender?.others.length ?? -1), {
+      timeout: 10_000,
+    })
     .toBe(1);
 
   await pageA.close();

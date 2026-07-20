@@ -40,6 +40,7 @@ class FakeSocket {
 function joinedPlayer(arena: ArenaCore, name = 'p'): { socket: FakeSocket; id: number } {
   const socket = new FakeSocket();
   const id = arena.connect(socket);
+  if (id === null) throw new Error('arena unexpectedly full');
   arena.handleFrame(id, encodeJoin(name));
   return { socket, id };
 }
@@ -240,13 +241,34 @@ describe('intent-only validation at the protocol boundary (spec §8.2/8.3)', () 
     expect(socket.closed).toBeNull();
   });
 
-  it('ignores input frames from a connection that never joined', () => {
+  it('sends nothing to a connection that never joined — no inputs, no snapshots', () => {
     const arena = new ArenaCore(1);
     const socket = new FakeSocket();
     const id = arena.connect(socket);
+    if (id === null) throw new Error('arena unexpectedly full');
     arena.handleFrame(id, encodeInput([{ seq: 1, turn: 1 }]));
     arena.tick(TICK_DT_SEC);
-    expect(socket.lastSnapshot().players).toHaveLength(0);
+    // Spec §8.2: world state only flows after a join.
+    expect(socket.sent).toHaveLength(0);
+  });
+
+  it('rejects connections beyond the hard population cap (spec §8.3, u8 wire bound)', () => {
+    const arena = new ArenaCore(1);
+    for (let i = 0; i < LIMITS.maxConnections; i++) {
+      expect(arena.connect(new FakeSocket())).not.toBeNull();
+    }
+    expect(arena.connect(new FakeSocket())).toBeNull();
+    expect(arena.connectionCount).toBe(LIMITS.maxConnections);
+  });
+
+  it('recycles player ids of departed players (u16 wire bound)', () => {
+    const arena = new ArenaCore(1);
+    const a = joinedPlayer(arena, 'a');
+    arena.tick(TICK_DT_SEC);
+    arena.disconnect(a.id);
+    arena.tick(TICK_DT_SEC); // leave processed, sim player gone
+    const socket = new FakeSocket();
+    expect(arena.connect(socket)).toBe(a.id);
   });
 
   it('an intent only ever steers the socket-own player', () => {
@@ -260,6 +282,20 @@ describe('intent-only validation at the protocol boundary (spec §8.2/8.3)', () 
     const snapshot = a.socket.lastSnapshot();
     expect(snapshot.players.find((p) => p.id === a.id)?.turn).toBe(1);
     expect(snapshot.players.find((p) => p.id === b.id)?.turn).toBe(0);
+  });
+});
+
+describe('same-tick join + disconnect', () => {
+  it('cancels the unspawned join — no immortal ghost player', () => {
+    const arena = new ArenaCore(1);
+    const witness = joinedPlayer(arena, 'witness');
+    arena.tick(TICK_DT_SEC);
+    // Joins and vanishes before the next tick ever spawns it.
+    const ghost = joinedPlayer(arena, 'ghost');
+    arena.disconnect(ghost.id);
+    arena.tick(TICK_DT_SEC);
+    arena.tick(TICK_DT_SEC);
+    expect(witness.socket.lastSnapshot().players.map((p) => p.id)).toEqual([witness.id]);
   });
 });
 

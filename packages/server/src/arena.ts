@@ -56,7 +56,6 @@ interface Connection {
 export class ArenaCore {
   private readonly state: SimState;
   private readonly connections = new Map<number, Connection>();
-  private nextPlayerId = 1;
   private pendingJoins: number[] = [];
   private pendingLeaves: number[] = [];
 
@@ -68,9 +67,15 @@ export class ArenaCore {
     return this.connections.size;
   }
 
-  /** Register a fresh socket; the returned id is bound to it (spec §8.2). */
-  connect(socket: ArenaSocket): number {
-    const id = this.nextPlayerId++;
+  /**
+   * Register a fresh socket; the returned id is bound to it (spec §8.2).
+   * Returns null when the arena is full (spec §8.3: clean rejection, no
+   * queue) — also the guard that keeps the u8 snapshot player count and the
+   * u16 wire ids safely in range.
+   */
+  connect(socket: ArenaSocket): number | null {
+    if (this.connections.size >= LIMITS.maxConnections) return null;
+    const id = this.allocatePlayerId();
     this.connections.set(id, {
       socket,
       name: '',
@@ -86,9 +91,34 @@ export class ArenaCore {
     return id;
   }
 
-  /** Socket gone — queue the player's removal for the next tick. */
+  /**
+   * Smallest free id — ids are recycled because the wire carries them as
+   * u16; a monotonic counter would silently truncate (and collide) after
+   * 65k connects on a long-lived arena.
+   */
+  private allocatePlayerId(): number {
+    for (let id = 1; ; id++) {
+      if (
+        !this.connections.has(id) &&
+        !this.state.players.some((p) => p.id === id) &&
+        !this.pendingLeaves.includes(id)
+      ) {
+        return id;
+      }
+    }
+  }
+
+  /** Socket gone — cancel an unspawned join, else queue the removal. */
   disconnect(playerId: number): void {
     if (this.connections.delete(playerId)) {
+      const pendingJoin = this.pendingJoins.indexOf(playerId);
+      if (pendingJoin !== -1) {
+        // Joined and vanished within the same tick: the spawn has not
+        // happened yet, and once the connection is gone nothing could ever
+        // remove the player again — an immortal ghost. Cancel the spawn.
+        this.pendingJoins.splice(pendingJoin, 1);
+        return;
+      }
       this.pendingLeaves.push(playerId);
     }
   }
@@ -196,6 +226,9 @@ export class ArenaCore {
       blockCy: p.blockCy,
     }));
     for (const connection of this.connections.values()) {
+      // World state only flows to sockets that actually joined (spec §8.2) —
+      // an upgrade without a join gets nothing but the idle timeout.
+      if (!connection.joined) continue;
       connection.socket.send(encodeSnapshot(this.state.tick, connection.ackSeq, players));
     }
   }

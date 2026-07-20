@@ -59,12 +59,19 @@ await a.evaluate(() => {
     if (!other) rec.othersMissing++;
     if (self && prevSelf) {
       const dt = now - prevSelf.t;
-      if (dt < 40) {
-        const jump = Math.hypot(self.x - prevSelf.x, self.y - prevSelf.y);
-        const turn = (dAng(prevSelf.h, self.heading) * 180) / Math.PI;
-        if (jump > 1.0 || turn > 30)
-          rec.resets.push({ jump: +jump.toFixed(2), turnDeg: +turn.toFixed(0) });
-      }
+      // dt-normalized budget: legal movement (9 WU/s) + max glide (5 WU/s)
+      // plus margin — this also judges the first frame AFTER a stall (the
+      // classic reset frame), which a small-dt-only check would skip.
+      const jumpBudget = (dt / 1000) * (9 + 5) + 0.5;
+      const turnBudgetDeg = (dt / 1000) * (320 + 240) + 10;
+      const jump = Math.hypot(self.x - prevSelf.x, self.y - prevSelf.y);
+      const turn = (dAng(prevSelf.h, self.heading) * 180) / Math.PI;
+      if (jump > jumpBudget || turn > turnBudgetDeg)
+        rec.resets.push({
+          jump: +jump.toFixed(2),
+          turnDeg: +turn.toFixed(0),
+          dtMs: +dt.toFixed(0),
+        });
     }
     if (self) prevSelf = { t: now, x: self.x, y: self.y, h: self.heading };
     if (self) {

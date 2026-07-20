@@ -58,8 +58,11 @@ function distanceToPlayer(x: number, y: number, p: PlayerSim): number {
  * failing (spec §2.3 "bestmögliche freie Stelle").
  */
 function spawnPlayer(state: SimState, id: number): void {
-  const half = BALANCE.spawn.startBlockWU / 2;
-  const range = Math.max(0, state.arenaSizeWU - BALANCE.spawn.startBlockWU);
+  // An arena smaller than the start block (tiny private rooms) must still
+  // spawn inside — clamp the block to what fits.
+  const blockWU = Math.min(BALANCE.spawn.startBlockWU, state.arenaSizeWU);
+  const half = blockWU / 2;
+  const range = Math.max(0, state.arenaSizeWU - blockWU);
   let bestX = state.arenaSizeWU / 2;
   let bestY = state.arenaSizeWU / 2;
   let bestDist = -Infinity;

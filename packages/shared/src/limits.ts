@@ -4,6 +4,14 @@
  * during implementation.
  */
 export const LIMITS = Object.freeze({
+  /**
+   * Hard cap on concurrent connections per arena. Provisional CPU ceiling
+   * from the DO benchmark (build ticket 02); ticket 15 sets the gameplay
+   * population limit. MUST stay below 256 — the snapshot wire format counts
+   * players in a single byte, and an overflow would make every snapshot
+   * undecodable for every client (global freeze).
+   */
+  maxConnections: 64,
   /** Consecutive malformed frames before a socket is killed (spec §8.3). */
   garbageKillThreshold: 10,
   /**

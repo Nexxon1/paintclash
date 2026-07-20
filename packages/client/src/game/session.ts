@@ -114,6 +114,8 @@ export class ClientSession {
   private lastStarvationTick = 0;
   /** Local tick of the last delay growth — one event per cooldown window. */
   private lastDelayGrowTick = Number.NEGATIVE_INFINITY;
+  /** Local tick when the last fresh snapshot arrived (outage detection). */
+  private lastSnapshotClientTick = 0;
   /** Last rendered pose per enemy — display-side speed limiting. */
   private readonly enemyPoses = new Map<number, { x: number; y: number; heading: number }>();
 
@@ -145,6 +147,7 @@ export class ClientSession {
     const latest = this.interpolator.latestTick();
     if (latest !== null && message.tick <= latest) return;
     this.interpolator.add(message.tick, message.players);
+    this.lastSnapshotClientTick = this.clientTicks;
     const offsetSample = message.tick - this.clientTicks;
     this.serverOffset =
       this.serverOffset === null || Math.abs(offsetSample - this.serverOffset) > OFFSET_RESYNC_TICKS
@@ -211,7 +214,9 @@ export class ClientSession {
     if (this.serverOffset !== null) {
       const delay = INTERP_DELAY_TICKS + this.extraDelayTicks;
       const target = this.clientTicks + alpha + this.serverOffset - delay;
-      if (this.renderTick === null || target - this.renderTick > MAX_RENDER_LAG_TICKS) {
+      if (this.renderTick === null || Math.abs(target - this.renderTick) > MAX_RENDER_LAG_TICKS) {
+        // Way behind (stall) or way ahead (post-outage resync dropped the
+        // target): snap once — the servo would take seconds either way.
         this.renderTick = target;
       } else {
         // Servo: cruise at 1× real time, lean toward the target — never
@@ -222,10 +227,15 @@ export class ClientSession {
         this.renderTick += dtTicks * rate;
       }
       // Starvation: the render clock caught the newest snapshot — the enemy
-      // would freeze-and-catch-up. Buy more headroom (bursty delivery).
+      // would freeze-and-catch-up. Buy more headroom (bursty delivery) —
+      // but only while data is actually flowing: a full outage would
+      // otherwise pump the delay to its maximum for nothing.
       const newest = this.interpolator.latestTick();
+      const dataFlowing =
+        this.clientTicks - this.lastSnapshotClientTick <= DELAY_GROW_COOLDOWN_TICKS / 2;
       if (newest !== null && this.renderTick >= newest) {
         if (
+          dataFlowing &&
           this.extraDelayTicks < MAX_EXTRA_DELAY_TICKS &&
           this.clientTicks - this.lastDelayGrowTick >= DELAY_GROW_COOLDOWN_TICKS
         ) {
@@ -271,14 +281,19 @@ export class ClientSession {
         const dx = target.x - shown.x;
         const dy = target.y - shown.y;
         const dist = Math.hypot(dx, dy);
-        if (dist > maxMove && dist <= MAX_ENEMY_GLIDE_WU) {
-          target.x = shown.x + (dx / dist) * maxMove;
-          target.y = shown.y + (dy / dist) * maxMove;
+        if (dist <= MAX_ENEMY_GLIDE_WU) {
+          if (dist > maxMove) {
+            target.x = shown.x + (dx / dist) * maxMove;
+            target.y = shown.y + (dy / dist) * maxMove;
+          }
+          const dh = angleDiff(shown.heading, target.heading);
+          if (Math.abs(dh) > maxTurn) {
+            target.heading = shown.heading + Math.sign(dh) * maxTurn;
+          }
         }
-        const dh = angleDiff(shown.heading, target.heading);
-        if (Math.abs(dh) > maxTurn) {
-          target.heading = shown.heading + Math.sign(dh) * maxTurn;
-        }
+        // Teleport-grade distance (a future respawn): snap position AND
+        // heading — rate-limiting only the heading would render the body
+        // driving sideways at the new spot.
       }
       this.enemyPoses.set(target.id, { x: target.x, y: target.y, heading: target.heading });
     }

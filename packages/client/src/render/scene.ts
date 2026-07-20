@@ -50,6 +50,11 @@ export class ArenaScene {
     this.resize();
   }
 
+  /** Release the GL context — a torn-down game must not hold the canvas. */
+  dispose(): void {
+    this.renderer.dispose();
+  }
+
   resize(): void {
     const { innerWidth, innerHeight } = window;
     // A minimized/zero-height window would make the aspect NaN/Infinity and

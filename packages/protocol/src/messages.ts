@@ -152,6 +152,9 @@ export function decodeClientMessage(frame: Uint8Array): ClientMessage | null {
       const nameLen = view.getUint8(2);
       if (nameLen > MAX_NAME_BYTES || frame.length !== 3 + nameLen) return null;
       const name = textDecoder.decode(frame.subarray(3, 3 + nameLen));
+      // The byte cap alone admits up to 64 ASCII chars from a hand-crafted
+      // frame — enforce the code-point cap on decode too (wire invariant).
+      if (Array.from(name).length > MAX_NAME_CHARS) return null;
       return { type: 'join', version, name };
     }
     case OP_INPUT: {
