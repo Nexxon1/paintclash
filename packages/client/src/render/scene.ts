@@ -52,6 +52,9 @@ export class ArenaScene {
 
   resize(): void {
     const { innerWidth, innerHeight } = window;
+    // A minimized/zero-height window would make the aspect NaN/Infinity and
+    // corrupt the projection matrix (screen-filling smears) — skip.
+    if (innerWidth <= 0 || innerHeight <= 0) return;
     this.renderer.setSize(innerWidth, innerHeight);
     this.camera.aspect = innerWidth / innerHeight;
     this.camera.updateProjectionMatrix();
@@ -89,6 +92,9 @@ export class ArenaScene {
     this.renderer.render(this.scene, this.camera);
   }
 
+  /** Non-finite poses that were blocked from rendering (debug/diagnosis). */
+  poseAnomalies = 0;
+
   /** Place (and lazily create) one player's head + start block. */
   private pose(
     key: number,
@@ -98,6 +104,16 @@ export class ArenaScene {
     heading: number,
     block: { cx: number; cy: number } | null,
   ): void {
+    // A single non-finite value smears mesh triangles across the whole
+    // screen (huge single-color blobs). Never let one reach the GPU; count
+    // and warn so a wild occurrence stays diagnosable.
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(heading)) {
+      this.poseAnomalies += 1;
+      if (this.poseAnomalies === 1 || this.poseAnomalies % 100 === 0) {
+        console.warn('paintclash: non-finite pose blocked', { key, x, y, heading });
+      }
+      return;
+    }
     let meshes = this.players.get(key);
     meshes ??= this.spawnMeshes(key, self);
     meshes.head.position.set(x, 0.6, y);

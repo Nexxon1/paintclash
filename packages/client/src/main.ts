@@ -14,8 +14,9 @@ import type { RenderState } from './game/session.js';
 
 declare global {
   interface Window {
-    /** Debug/E2E hook: the running session + the pose actually drawn. */
-    __paintclash?: { session: ClientSession; lastRender?: RenderState };
+    /** Debug/E2E hook: the running session, the pose actually drawn, and
+     * the count of blocked non-finite poses (see ArenaScene.poseAnomalies). */
+    __paintclash?: { session: ClientSession; lastRender?: RenderState; scene?: ArenaScene };
   }
 }
 
@@ -61,6 +62,7 @@ function start(name: string): void {
   });
 
   const scene = new ArenaScene(canvas);
+  window.__paintclash.scene = scene;
   window.addEventListener('resize', () => {
     scene.resize();
   });
