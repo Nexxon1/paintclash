@@ -100,3 +100,12 @@ Fünf Ursachen/Fixes:
 - **Beifang:** Join-Race auf langsamen Verbindungen — Klick vor Modul-Ladeende feuerte ein natives Form-Submit (Seiten-Reload). Play-Button startet jetzt `disabled` und wird vom Modul aktiviert.
 
 Trade-off dokumentiert: adaptiver Puffer erhöht die Gegner-Anzeige-Latenz auf realen Links um bis zu 300 ms zusätzlich (Genre-Toleranz ~500 ms, Spec §6.3); Kill-Fairness rechnet der Rewind (T07) ohnehin aus Sicht des Handelnden.
+
+**2026-07-20 (Agent, Nachbesserung 5 — Soak-Test findet die Teleport-Wurzel):** User forderte zu Recht ein realistisches Testsetup, das die Probleme selbst findet. Neuer **60-s-Soak-Test** (`pnpm soak [url]`, tests/soak/): kombinierte Widrigkeit (Jank auf dem Beobachter, Gegner-Fenster mit komplett eingefrorenem rAF, Tap-Lenken), harte Schwellen (0 Resets, <3 % eingefrorene Gegner-Frames, Tempo-Limits). Er **fand den Teleport sofort** (18-WU-Sprung in einem Frame) und die Instrumentierung zeigte die Wurzel: **57 Snapshots in einem Burst** — `wrangler dev`/workerd (WSL2) stallt sekundenweise, und der DO-Ticker holte danach alle verpassten Ticks im Schnellfeuer nach = „Welt spult vor". Fixes dieser Runde:
+
+1. **Sim vom Render-Takt entkoppelt** (main.ts): Fixed-Timestep + Input-Fluss laufen auf Timer, rAF rendert nur noch. Behebt strukturell: Vorspulen/Teleports bei GPU-Drosselung (zwei Fenster!), Rauswurf nach 10 s (verstecktes/verdecktes Fenster sendet weiter ~1/s). Verifiziert: Client mit 15 s komplett eingefrorenem rAF bleibt verbunden, lenkbar, divergenzfrei.
+2. **Server-Ticker re-ankert nach Runtime-Stalls** statt Tick-Schulden nachzuholen (> 2 Ticks Rückstand = Fahrplan neu) — kein Snapshot-Schnellfeuer mehr; die Welt pausiert für alle gleich.
+3. **Startblock-Optik**: Der „riesige blaue Fleck" war das 6×6-Spawn-Territorium — rendert jetzt als flache, entsättigte Bodenplatte.
+4. **Deployed**: https://paintclash.secure-data.workers.dev (Free-Plan, DO + Assets; wrangler-Login des Users). Soak gegen Produktion: **PASS** (0 Resets, 0 Frozen-Frames, Tempi gedeckelt) — Referenzumgebung ohne WSL2-Artefakte.
+
+Soak-Endstand lokal & Produktion: selfResets 0, otherFrozen 0 %, max-Tempi ≤ 17,8 WU/s (Limit 25).

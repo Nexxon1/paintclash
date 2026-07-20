@@ -86,7 +86,14 @@ export class ArenaDO extends DurableObject {
     if (playerId !== undefined) this.arena?.disconnect(playerId);
   }
 
-  /** Self-rescheduling 50 ms cadence against a fixed schedule; stops when empty. */
+  /**
+   * Self-rescheduling 50 ms cadence against a fixed schedule; stops when
+   * empty. After a runtime stall (GC, workerd hiccup — seconds under
+   * `wrangler dev`) the schedule RE-ANCHORS instead of replaying the missed
+   * ticks back-to-back: a burst of catch-up ticks broadcasts dozens of
+   * snapshots at once, which every client can only render as a teleport.
+   * Skipping the debt just pauses the world briefly — equally for everyone.
+   */
   private startTicker(arena: ArenaCore): void {
     if (this.ticking) return;
     this.ticking = true;
@@ -100,6 +107,7 @@ export class ArenaDO extends DurableObject {
       }
       arena.tick(TICK_DT_SEC);
       scheduled += TICK_DT_MS;
+      if (Date.now() - scheduled > 2 * TICK_DT_MS) scheduled = Date.now();
       setTimeout(loop, Math.max(0, scheduled - Date.now()));
     };
     setTimeout(loop, TICK_DT_MS);
