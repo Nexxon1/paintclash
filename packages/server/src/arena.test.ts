@@ -179,6 +179,28 @@ describe('authoritative movement', () => {
     expect(dist).toBeLessThan(1.0);
   });
 
+  it('slowly trims a standing backlog back to the target (input latency)', () => {
+    const arena = new ArenaCore(1);
+    const { socket, id } = joinedPlayer(arena);
+    arena.tick(TICK_DT_SEC);
+    // A burst leaves a standing backlog at the drain threshold …
+    let seq = 0;
+    arena.handleFrame(
+      id,
+      encodeInput(Array.from({ length: 12 }, () => ({ seq: ++seq, turn: 0 as const }))),
+    );
+    // … then normal play continues: one fresh intent per tick.
+    let lag = Infinity;
+    for (let t = 0; t < 200; t++) {
+      arena.tick(TICK_DT_SEC);
+      arena.handleFrame(id, encodeInput([{ seq: ++seq, turn: 0 }]));
+      lag = seq - socket.lastSnapshot().ackSeq;
+    }
+    // Without the trim the backlog stayed pinned at 6 forever (+300 ms of
+    // permanent input latency); the slow trim walks it to the target.
+    expect(lag).toBeLessThanOrEqual(LIMITS.standingBacklogTarget + 1);
+  });
+
   it('drops the oldest backlog only beyond the hard flood cap (spec §8.3)', () => {
     const arena = new ArenaCore(1);
     const { socket, id } = joinedPlayer(arena);

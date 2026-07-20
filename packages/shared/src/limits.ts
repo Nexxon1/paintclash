@@ -37,6 +37,18 @@ export const LIMITS = Object.freeze({
    */
   inputBacklogTarget: 6,
   /**
+   * Standing backlog the slow trim converges to. A backlog is added input
+   * latency (and thus cross-view offset) — after a burst it would otherwise
+   * sit pinned just below `inputBacklogTarget` forever.
+   */
+  standingBacklogTarget: 3,
+  /**
+   * Ticks the queue must stay above the standing target before ONE extra
+   * intent is consumed (≈ one gentle catch-up step every 2 s) — slow enough
+   * never to cause the dry-outs an eager drain would.
+   */
+  backlogTrimAfterTicks: 40,
+  /**
    * Ticks without a single valid frame before a connection counts as dead
    * (a connected client sends an input batch every few ticks, so only
    * half-open/vanished sockets ever reach this).

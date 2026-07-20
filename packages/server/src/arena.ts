@@ -47,6 +47,8 @@ interface Connection {
   buffering: boolean;
   /** Ticks the oldest queued intent has waited while buffering. */
   bufferWait: number;
+  /** Consecutive ticks the queue sat above the standing backlog target. */
+  aboveTargetTicks: number;
   /** Consecutive malformed frames; a valid frame resets it. */
   garbage: number;
   /** Ticks since the last valid frame — dead-socket detection. */
@@ -85,6 +87,7 @@ export class ArenaCore {
       pendingInputs: [],
       buffering: true,
       bufferWait: 0,
+      aboveTargetTicks: 0,
       garbage: 0,
       idleTicks: 0,
     });
@@ -196,10 +199,23 @@ export class ArenaCore {
         // second intent this tick (as one extra sim advance below) so the
         // backlog shrinks instead of being dropped — a dropped turn would
         // permanently bend the head's path away from what the player saw.
+        let extra: InputItem | undefined;
         if (queue.length > LIMITS.inputBacklogTarget) {
-          const extra = queue.shift();
-          if (extra) catchUps.push({ connection, id, input: extra });
+          extra = queue.shift();
+        } else if (queue.length > LIMITS.standingBacklogTarget) {
+          // Slow trim: a standing backlog is pure added input latency (it
+          // inflates the cross-view offset). One gentle extra step every
+          // couple of seconds walks it back down without ever causing the
+          // dry-outs an eager drain would.
+          connection.aboveTargetTicks += 1;
+          if (connection.aboveTargetTicks >= LIMITS.backlogTrimAfterTicks) {
+            connection.aboveTargetTicks = 0;
+            extra = queue.shift();
+          }
+        } else {
+          connection.aboveTargetTicks = 0;
         }
+        if (extra) catchUps.push({ connection, id, input: extra });
       } else {
         connection.buffering = true;
         connection.bufferWait = 0;
