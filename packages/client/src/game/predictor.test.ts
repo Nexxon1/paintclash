@@ -77,31 +77,77 @@ describe('reconciliation (server corrects, client replays, spec §6.1)', () => {
     expect(halfway.x).toBeCloseTo(full.x - 0.225, 5);
   });
 
-  it('a mid-tick server correction never jumps the rendered pose', () => {
+  it('a mid-tick server correction never jumps the rendered pose — heading included', () => {
     const predictor = new Predictor(ARENA);
     predictor.reconcile(serverSelf(), 0, TICK_DT_SEC);
     predictor.applyLocalInput(1, 0, TICK_DT_SEC);
     const before = predictor.sample(0.4);
     if (!before) throw new Error('nothing to sample');
-    // Server disagrees by 2 WU sideways and a few degrees.
-    predictor.reconcile(serverSelf({ x: 100.45, y: 102, heading: 0.1 }), 1, TICK_DT_SEC);
+    // Server disagrees by 2 WU sideways and ~30°.
+    predictor.reconcile(serverSelf({ x: 100.45, y: 102, heading: 0.5 }), 1, TICK_DT_SEC);
     const after = predictor.sample(0.4);
     if (!after) throw new Error('nothing to sample');
     // Continuity at the swap instant — the correction only flows in later
-    // via the decaying error offset.
+    // via the decaying error offsets.
     expect(after.x).toBeCloseTo(before.x, 6);
     expect(after.y).toBeCloseTo(before.y, 6);
+    expect(after.heading).toBeCloseTo(before.heading, 6);
   });
 
-  it('a teleport-grade divergence snaps instead of gliding', () => {
+  it('a heading correction glides in over frames instead of whipping around', () => {
+    const predictor = new Predictor(ARENA);
+    predictor.reconcile(serverSelf(), 0, TICK_DT_SEC);
+    predictor.applyLocalInput(1, 0, TICK_DT_SEC);
+    // Server says we are looking 90° elsewhere (post-stall situation).
+    predictor.reconcile(serverSelf({ x: 100.45, heading: Math.PI / 2 }), 1, TICK_DT_SEC);
+    // Right at the swap the rendered heading is still the old one …
+    expect(predictor.sample(1)?.heading).toBeCloseTo(0, 2);
+    // … and converges to the server heading via frame-based decay.
+    for (let i = 0; i < 30; i++) predictor.decayError(16.7);
+    expect(predictor.sample(1)?.heading).toBeCloseTo(Math.PI / 2, 1);
+  });
+
+  it('teleport-grade divergence jumps the excess and glides only the cap', () => {
     const predictor = new Predictor(ARENA);
     predictor.reconcile(serverSelf(), 0, TICK_DT_SEC);
     predictor.applyLocalInput(1, 0, TICK_DT_SEC);
     predictor.reconcile(serverSelf({ x: 150, y: 150 }), 1, TICK_DT_SEC);
     const pose = predictor.sample(1);
-    // Everything acked, nothing to replay: land exactly on the server state.
-    expect(pose?.x).toBeCloseTo(150, 6);
-    expect(pose?.y).toBeCloseTo(150, 6);
+    if (!pose) throw new Error('nothing to sample');
+    // Rendered pose lands within the 8-WU glide cap of the server state —
+    // the rest of the ~70 WU divergence jumped immediately.
+    expect(Math.hypot(pose.x - 150, pose.y - 150)).toBeLessThanOrEqual(8.001);
+    expect(Math.hypot(pose.x - 150, pose.y - 150)).toBeGreaterThan(7);
+    // And converges onto the server state from there.
+    for (let i = 0; i < 40; i++) predictor.decayError(16.7);
+    const settled = predictor.sample(1);
+    if (!settled) throw new Error('nothing to sample');
+    expect(Math.hypot(settled.x - 150, settled.y - 150)).toBeLessThan(0.2);
+  });
+
+  it('error decay scales with real frame time', () => {
+    const predictor = new Predictor(ARENA);
+    predictor.reconcile(serverSelf(), 0, TICK_DT_SEC);
+    predictor.applyLocalInput(1, 0, TICK_DT_SEC);
+    predictor.reconcile(serverSelf({ x: 100.45, y: 104 }), 1, TICK_DT_SEC);
+    const start = predictor.sample(1);
+    // Three 16.7-ms frames ≈ one 50-ms frame worth of decay.
+    const p2 = new Predictor(ARENA);
+    p2.reconcile(serverSelf(), 0, TICK_DT_SEC);
+    p2.applyLocalInput(1, 0, TICK_DT_SEC);
+    p2.reconcile(serverSelf({ x: 100.45, y: 104 }), 1, TICK_DT_SEC);
+    for (let i = 0; i < 3; i++) predictor.decayError(16.7);
+    p2.decayError(50);
+    expect(predictor.sample(1)?.y).toBeCloseTo(p2.sample(1)?.y ?? NaN, 2);
+    // A mega-frame after a stall is capped — it cannot swallow the glide.
+    const p3 = new Predictor(ARENA);
+    p3.reconcile(serverSelf(), 0, TICK_DT_SEC);
+    p3.applyLocalInput(1, 0, TICK_DT_SEC);
+    p3.reconcile(serverSelf({ x: 100.45, y: 104 }), 1, TICK_DT_SEC);
+    p3.decayError(1500);
+    const afterMega = p3.sample(1);
+    if (!afterMega || !start) throw new Error('nothing to sample');
+    expect(Math.abs(afterMega.y - 104)).toBeGreaterThan(1); // still gliding
   });
 
   it('interpolates the heading between ticks too (render interpolation, §4.3)', () => {

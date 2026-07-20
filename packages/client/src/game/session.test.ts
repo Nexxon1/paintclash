@@ -152,6 +152,57 @@ describe('snapshots feed reconciliation + interpolation', () => {
     expect(positions[positions.length - 1]).toBeLessThanOrEqual(51);
   });
 
+  it('never teleports enemies on a hitch-sized clock jump — catches up rate-limited', () => {
+    const { session } = harness();
+    session.receive(encodeWelcome(1, BALANCE.arena.sizeWU));
+    // Enemy walks 1 WU per tick along x.
+    for (let t = 1; t <= 3; t++) {
+      session.receive(encodeSnapshot(t, 0, [selfPlayer(), selfPlayer({ id: 2, x: 40 + t })]));
+    }
+    const before = session.renderSample(0).others.find((o) => o.id === 2);
+    // Hitch: the next snapshots are 15 ticks ahead (≤ the snap threshold).
+    for (let t = 18; t <= 20; t++) {
+      session.receive(encodeSnapshot(t, 0, [selfPlayer(), selfPlayer({ id: 2, x: 40 + t })]));
+    }
+    const after = session.renderSample(0, 50).others.find((o) => o.id === 2);
+    if (!before || !after) throw new Error('enemy missing');
+    // One 50-ms frame may advance the enemy timeline at most 2 ticks (2 WU
+    // here) — never the whole 15-tick jump at once.
+    expect(after.x - before.x).toBeLessThanOrEqual(2.001);
+    // And it does keep catching up over subsequent frames.
+    let previous = after.x;
+    for (let i = 0; i < 20; i++) {
+      const next = session.renderSample(0, 50).others.find((o) => o.id === 2);
+      if (!next) throw new Error('enemy vanished');
+      expect(next.x - previous).toBeLessThanOrEqual(2.001);
+      previous = next.x;
+    }
+    expect(previous).toBeGreaterThan(54); // arrived near the new timeline
+  });
+
+  it('a catch-up burst of own ticks glides instead of leaping on screen', () => {
+    const { session } = harness();
+    joined(session);
+    session.simTick(0);
+    const before = session.renderSample(1, 0);
+    // Post-stall: 10 ticks in one frame, key held (worst case for heading).
+    session.advance(1, 10);
+    const after = session.renderSample(1, 0);
+    if (!before.self || !after.self) throw new Error('missing self');
+    // Rendered pose stays continuous at the burst instant …
+    expect(Math.hypot(after.self.x - before.self.x, after.self.y - before.self.y)).toBeLessThan(
+      0.1,
+    );
+    // … although the underlying prediction advanced 10 turning ticks
+    // (the turn arc shows up on the y axis) — the glide brings it in.
+    let sampled = after;
+    for (let i = 0; i < 30; i++) {
+      session.frame(50);
+      sampled = session.renderSample(1, 50);
+    }
+    expect(Math.abs((sampled.self?.y ?? 0) - before.self.y)).toBeGreaterThan(0.5);
+  });
+
   it('ignores malformed server frames', () => {
     const { session } = harness();
     joined(session);

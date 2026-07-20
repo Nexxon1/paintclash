@@ -74,3 +74,21 @@ Endstand Sonden: Clean-Fehler-Peak **0,01 WU** (keine Umlenker), unter Kunst-Jan
 - *Andere rucklige:* (a) Catch-up-Drain erzeugt echte 0,9-WU-Doppelschritte des Gegners in einem Server-Tick → Interpolation zeigt Tempo-Spikes; ggf. Drain sanfter (nur jeden 2. Tick doppelt). (b) Gegner-Turn-Onsets tragen Batch+Queue-Latenz. (c) Offset-EMA-Atmung prüfen.
 - *Mess-Falle:* Für Fremd-Spieler-Sonden zwei getrennte Browser-**Kontexte** nutzen (zweite Seite im selben Kontext wird headless gethrottlet — deshalb war die Fremd-Messung im Schnell-Repro leer).
 - *Test-Ausbau (User-Wunsch):* E2E-Reset-Detektor (max. Frame-zu-Frame-Sprung/-Drehung des Selbst), Fremd-vs-Selbst-Glätte-Verhältnis, optional Jank-injizierter E2E; Sonden-Logik aus `repro.mjs` wiederverwenden.
+
+**2026-07-20 (Agent, Nachbesserung 3 — Resets & Gegner-Ruckeln, quantifiziert):** Beide User-Reports mit Stall-Matrix-Sonde (300/800/1500 ms Main-Thread-Freezes bei gehaltener Taste, getrennte Browser-Kontexte) hart reproduziert und behoben:
+
+| Messung | vorher | nachher |
+|---|---|---|
+| Resume-Sprung nach Stall | 2,5–3,1 WU | **0–0,3 WU** |
+| Blickrichtungs-Reset nach Stall | 100–155° | **0–11°** |
+| Einzelframe-Drehung nach Resume | bis 163° | ≤ 20° |
+| Gegner-Tempo-Spitzen | bis 231 WU/s (Teleports) | **≤ 19,8 WU/s** (2,2×-Limit) |
+
+Fünf Ursachen/Fixes:
+1. **Eigener Aufhol-Burst rendrte sofort** (10 Ticks + 160° in einem Frame): `Predictor.runGlided` faltet den ganzen Burst in die Gleit-Offsets (`session.advance(turn, ticks)`).
+2. **Decay-Reihenfolge:** Fehler-Abbau lief im selben renderSample wie die frischen Folds (100-ms-Kappe = 58 % sofort sichtbar). Jetzt expliziter Frame-Start-Schritt `session.frame(dt)` VOR advance/receive.
+3. **Heading hatte keine Glättung:** eigener `errorH`-Offset (shortest-arc-gewrappt ⇒ nie > 180° Glide, Kappe entfernt — sie brach am Winkel-Wrap).
+4. **Snapshot-Puffer rutschte unter der Render-Uhr weg** (32 Einträge = 1,6 s): auf 128 erhöht; Render-Uhr snapt erst > 20 Ticks Rückstand (Hidden-Tab-Comeback), darunter 2×-Aufholen.
+5. **Gegner-Anzeige-Limit:** `smoothEnemies` begrenzt gerenderte Gegner-Bewegung auf 2,2× Nominal (Drehung ebenso); > 8 WU (Respawn-Klasse) snapt. Deckt Drain-Doppelschritte des Gegners und alle Zeitachsen-Artefakte ab.
+
+**Test-Absicherung (User-Wunsch):** Neuer E2E `recovers from a main-thread stall…` (injizierter 800-ms-Freeze bei gehaltener Taste; max. Einzelframe-Sprung < 1 WU, Drehung < 30°) + Gegner-max-Tempo-Assertion (< 25 WU/s) im Smoothness-E2E; Unit-Tests für Burst-Glide, Heading-Glide, Glide-Kappe (Sprung nur über 8 WU), frame-zeitbasierten Decay, Rate-Limit der Gegner-Uhr. Restnotiz: `mean` der Gegner sinkt in Stress-Läufen unter 9, weil Anzeige-Limit + Warp legitime Aufholphasen strecken — bewusster Trade-off (glatt > exakt-synchron), Kill-Fairness regelt später der Rewind (T07).

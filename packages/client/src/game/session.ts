@@ -13,9 +13,9 @@ import {
   type InputItem,
   type SnapshotPlayer,
 } from '@paintclash/protocol';
-import { LIMITS, TICK_DT_SEC, type TurnSignal } from '@paintclash/shared';
+import { BALANCE, LIMITS, TICK_DT_MS, TICK_DT_SEC, type TurnSignal } from '@paintclash/shared';
 
-import { Interpolator } from './interpolator.js';
+import { angleDiff, Interpolator } from './interpolator.js';
 import { Predictor, type RenderPose } from './predictor.js';
 
 /** Sim ticks per batched input frame — the shared §6.3 batching cadence. */
@@ -39,6 +39,26 @@ const OFFSET_SMOOTHING = 0.05;
 
 /** An offset this many ticks off is a real clock break — resync hard. */
 const OFFSET_RESYNC_TICKS = 10;
+
+/** Fastest the enemy timeline may run while catching up (2 = double speed). */
+const MAX_TIMEWARP = 2;
+
+/**
+ * Beyond this many ticks of render-clock lag, catching up smoothly would
+ * take seconds — snap once instead (hidden-tab comebacks, not hitches).
+ */
+const MAX_RENDER_LAG_TICKS = 20;
+
+/**
+ * Display-side speed limit for enemies: whatever the timeline does (their
+ * catch-up drain, our clock warp), a rendered enemy moves at most this
+ * multiple of nominal speed. Distances beyond MAX_ENEMY_GLIDE_WU are
+ * teleport-grade (e.g. a future respawn) and snap instead.
+ */
+const MAX_ENEMY_SPEEDUP = 2.2;
+const MAX_ENEMY_GLIDE_WU = 8;
+/** Enemy heading may re-align at most this multiple of the sim turn rate. */
+const MAX_ENEMY_TURN_SPEEDUP = 2.2;
 
 export interface RenderState {
   self: RenderPose | null;
@@ -66,6 +86,10 @@ export class ClientSession {
   private lastSentTurn: TurnSignal = 0;
   /** EMA of (server tick − local tick); null until the first snapshot. */
   private serverOffset: number | null = null;
+  /** Rate-limited enemy timeline (see renderSample). */
+  private renderTick: number | null = null;
+  /** Last rendered pose per enemy — display-side speed limiting. */
+  private readonly enemyPoses = new Map<number, { x: number; y: number; heading: number }>();
 
   constructor(send: (frame: Uint8Array) => void, name: string) {
     this.send = send;
@@ -108,6 +132,22 @@ export class ClientSession {
     }
   }
 
+  /**
+   * Advance `ticks` fixed steps at once. Up to two ticks render normally
+   * (regular frame pacing); a bigger burst — the catch-up after a stall —
+   * is folded into the glide offsets so the own head never leaps on screen.
+   */
+  advance(turn: TurnSignal, ticks: number): void {
+    if (ticks <= 0) return;
+    if (ticks <= 2 || !this.predictor) {
+      for (let i = 0; i < ticks; i++) this.simTick(turn);
+      return;
+    }
+    this.predictor.runGlided(() => {
+      for (let i = 0; i < ticks; i++) this.simTick(turn);
+    });
+  }
+
   /** One fixed 20 Hz tick: sample input, predict, batch, maybe flush. */
   simTick(turn: TurnSignal): void {
     if (!this.predictor || !this.ready()) return;
@@ -115,7 +155,6 @@ export class ClientSession {
     const seq = this.nextSeq++;
     this.queued.push({ seq, turn });
     this.predictor.applyLocalInput(seq, turn, TICK_DT_SEC);
-    this.predictor.decayError();
     this.ticksSinceFlush += 1;
     // Flush on the batch cadence — or immediately when the steer direction
     // changes: turn onsets are what latency is felt on, and they are rare
@@ -124,23 +163,78 @@ export class ClientSession {
     this.lastSentTurn = turn;
   }
 
-  /** Everything the renderer needs, at inter-tick blend factor `alpha`. */
-  renderSample(alpha: number): RenderState {
-    // Enemy timeline = smooth local clock + smoothed offset − delay. It
-    // advances every local tick even when a snapshot arrives late.
-    const others =
-      this.serverOffset === null
-        ? []
-        : this.interpolator.sample(
-            this.clientTicks + alpha + this.serverOffset - INTERP_DELAY_TICKS,
-            this.playerId ?? undefined,
-          );
+  /**
+   * Frame-start housekeeping: decay the correction offsets by the time the
+   * PREVIOUS frame was visible. Must run before `advance()`/`receive()` fold
+   * new corrections in — decaying a just-created offset would reveal a chunk
+   * of it instantly instead of gliding.
+   */
+  frame(frameDtMs: number): void {
+    this.predictor?.decayError(frameDtMs);
+  }
+
+  /**
+   * Everything the renderer needs, at inter-tick blend factor `alpha`.
+   * The enemy timeline advances through a rate-limited follower — after a
+   * stall or clock resync it catches up at most twice as fast and never
+   * runs backwards, instead of teleporting.
+   */
+  renderSample(alpha: number, frameDtMs = 50): RenderState {
+    let others: SnapshotPlayer[] = [];
+    if (this.serverOffset !== null) {
+      const target = this.clientTicks + alpha + this.serverOffset - INTERP_DELAY_TICKS;
+      if (this.renderTick === null || target - this.renderTick > MAX_RENDER_LAG_TICKS) {
+        this.renderTick = target;
+      } else {
+        const maxStep = (Math.min(frameDtMs, TICK_DT_MS) / TICK_DT_MS) * MAX_TIMEWARP;
+        this.renderTick += Math.min(Math.max(target - this.renderTick, 0), maxStep);
+      }
+      others = this.smoothEnemies(
+        this.interpolator.sample(this.renderTick, this.playerId ?? undefined),
+        frameDtMs,
+      );
+    }
     return {
       self: this.predictor?.sample(alpha) ?? null,
       selfBlock: this.selfBlock,
       others,
       arenaSizeWU: this.arenaSizeWU,
     };
+  }
+
+  /**
+   * Display-side guarantee for enemies (mirrors the own head's glide): the
+   * rendered pose follows the interpolated target with bounded speed — a
+   * timeline artifact can then never look like a teleport or a whip-around.
+   */
+  private smoothEnemies(targets: SnapshotPlayer[], frameDtMs: number): SnapshotPlayer[] {
+    const dtSec = Math.min(frameDtMs, 100) / 1000;
+    const maxMove = BALANCE.movement.speedWuPerSec * MAX_ENEMY_SPEEDUP * dtSec;
+    const maxTurn =
+      (BALANCE.movement.turnRateDegPerSec * Math.PI * MAX_ENEMY_TURN_SPEEDUP * dtSec) / 180;
+    const seen = new Set<number>();
+    for (const target of targets) {
+      seen.add(target.id);
+      const shown = this.enemyPoses.get(target.id);
+      if (shown) {
+        const dx = target.x - shown.x;
+        const dy = target.y - shown.y;
+        const dist = Math.hypot(dx, dy);
+        if (dist > maxMove && dist <= MAX_ENEMY_GLIDE_WU) {
+          target.x = shown.x + (dx / dist) * maxMove;
+          target.y = shown.y + (dy / dist) * maxMove;
+        }
+        const dh = angleDiff(shown.heading, target.heading);
+        if (Math.abs(dh) > maxTurn) {
+          target.heading = shown.heading + Math.sign(dh) * maxTurn;
+        }
+      }
+      this.enemyPoses.set(target.id, { x: target.x, y: target.y, heading: target.heading });
+    }
+    for (const id of this.enemyPoses.keys()) {
+      if (!seen.has(id)) this.enemyPoses.delete(id);
+    }
+    return targets;
   }
 
   private flush(): void {

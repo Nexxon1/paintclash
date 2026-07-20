@@ -69,18 +69,21 @@ function start(name: string): void {
   let accumulator = 0;
   let hidden = false;
   const frame = (now: number): void => {
+    const frameDtMs = now - last;
+    // Decay yesterday's correction offsets BEFORE folding new ones in.
+    session.frame(frameDtMs);
     // Clamp long tab-away gaps instead of fast-forwarding hundreds of ticks.
-    accumulator = Math.min(accumulator + (now - last), 10 * TICK_DT_MS);
+    accumulator = Math.min(accumulator + frameDtMs, 10 * TICK_DT_MS);
     last = now;
-    while (accumulator >= TICK_DT_MS) {
-      session.simTick(keys.turn());
-      accumulator -= TICK_DT_MS;
-    }
+    const ticks = Math.floor(accumulator / TICK_DT_MS);
+    accumulator -= ticks * TICK_DT_MS;
+    // Bursts (post-stall catch-up) glide instead of leaping on screen.
+    session.advance(keys.turn(), ticks);
     if (session.ready() && !hidden) {
       hidden = true;
       overlay.style.display = 'none';
     }
-    const renderState = session.renderSample(accumulator / TICK_DT_MS);
+    const renderState = session.renderSample(accumulator / TICK_DT_MS, frameDtMs);
     if (window.__paintclash) window.__paintclash.lastRender = renderState;
     scene.update(renderState);
     requestAnimationFrame(frame);

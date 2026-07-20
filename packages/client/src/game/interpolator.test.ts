@@ -66,8 +66,8 @@ describe('enemy interpolation between snapshots (spec §6.1)', () => {
 
   it('keeps a bounded buffer', () => {
     const interp = new Interpolator();
-    for (let t = 0; t < 100; t++) interp.add(t, [player(2, { x: t })]);
-    expect(interp.latestTick()).toBe(99);
+    for (let t = 0; t < 200; t++) interp.add(t, [player(2, { x: t })]);
+    expect(interp.latestTick()).toBe(199);
     // Old ticks fell out of the buffer — sampling clamps to what is left.
     expect(interp.sample(0)[0]?.x).toBeGreaterThan(0);
   });

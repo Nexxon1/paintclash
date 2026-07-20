@@ -6,16 +6,26 @@
 
 import type { SnapshotPlayer } from '@paintclash/protocol';
 
-/** Snapshots kept for bracketing; ~1.6 s of history at 20 Hz. */
-const BUFFER_SIZE = 32;
+/**
+ * Snapshots kept for bracketing; ~6.4 s of history at 20 Hz. Must comfortably
+ * cover the render clock's catch-up window after a stall — if the buffer
+ * slides out from under the (rate-limited) render tick, the clamp drags
+ * enemies forward in one visible leap.
+ */
+const BUFFER_SIZE = 128;
 const TWO_PI = 2 * Math.PI;
 
-/** Shortest-arc angle lerp, result wrapped into [0, 2π). */
-export function lerpAngle(a: number, b: number, t: number): number {
+/** Signed shortest-arc difference b − a in (−π, π]. */
+export function angleDiff(a: number, b: number): number {
   let diff = (b - a) % TWO_PI;
   if (diff > Math.PI) diff -= TWO_PI;
   if (diff < -Math.PI) diff += TWO_PI;
-  const result = (a + diff * t) % TWO_PI;
+  return diff;
+}
+
+/** Shortest-arc angle lerp, result wrapped into [0, 2π). */
+export function lerpAngle(a: number, b: number, t: number): number {
+  const result = (a + angleDiff(a, b) * t) % TWO_PI;
   return result < 0 ? result + TWO_PI : result;
 }
 
