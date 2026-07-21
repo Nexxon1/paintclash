@@ -22,7 +22,7 @@ import {
   type Territory,
   type TurnSignal,
 } from '@paintclash/shared';
-import { appendTrailPoint, pointInTerritory, territoryArea } from '@paintclash/sim-core';
+import { pointInTerritory, territoryArea } from '@paintclash/sim-core';
 
 import { angleDiff, Interpolator } from './interpolator.js';
 import { Predictor, type RenderPose } from './predictor.js';
@@ -112,10 +112,30 @@ const MAX_ENEMY_GLIDE_WU = 8;
 /** Enemy heading may re-align at most this multiple of the sim turn rate. */
 const MAX_ENEMY_TURN_SPEEDUP = 2.2;
 
+/**
+ * Path depth (in WU) a fresh trail is seeded backward into the territory,
+ * following the recently rendered path. A single last-inside pose is not
+ * enough: at oblique exit angles the ribbon's flat start cap leaves a
+ * visible wedge between band and plateau edge — seeding along the real
+ * path buries the start well under the plateau for any exit angle.
+ */
+const TRAIL_SEED_DEPTH_WU = 1.5;
+
+/** Recent-pose ring capacity: covers the seed depth at the 0.1 WU gate. */
+const RECENT_POSES_CAP = 24;
+
 /** A trail vertex bound to the server tick it was observed at. */
 interface StampedPoint {
   tick: number;
   point: Point;
+  /** Lies over foreign territory — drawn on top of the plateau (interim). */
+  lift?: boolean;
+}
+
+/** A recorded trail vertex; `lift` = it lies over foreign territory. */
+interface TrailPoint {
+  point: Point;
+  lift: boolean;
 }
 
 /** One player's territory for rendering; `rev` bumps on every replacement. */
@@ -136,10 +156,12 @@ export interface RenderState {
   territories: TerritoryView[];
   /**
    * Trail polylines to draw (ticket 04), each ending at its player's
-   * rendered head: the own one from predicted ticks, enemy ones from
-   * snapshot poses held back to the enemy render timeline.
+   * rendered head: the own one from rendered frame poses, enemy ones from
+   * snapshot poses held back to the enemy render timeline. `lifts[i]` marks
+   * points over foreign territory — drawn on top of the plateau there
+   * (interim until ticket 06's carve-through groove).
    */
-  trails: { playerId: number; points: Point[] }[];
+  trails: { playerId: number; points: Point[]; lifts: boolean[] }[];
   /** Players whose fill landed since the last sample (wave animation). */
   fills: number[];
 }
@@ -164,15 +186,18 @@ export class ClientSession {
    * renderSample, so the ribbon is by construction exactly as smooth as the
    * head on screen: tick-pose vertices would click at 20 Hz through turns
    * and the bridge to the interpolated head would fold back on itself every
-   * tick (visible tip flicker). Cleared by the own fill message.
+   * tick (visible tip flicker). Cleared by the own fill message. The live
+   * head pose itself is appended at sample time, never stored — the stored
+   * points always lie behind it, so the ribbon tip stays glued to the head
+   * without the 0.1 WU gate quantizing it.
    */
-  private ownTrail: Point[] = [];
-  /** Previous rendered pose — seeds a starting own trail (last inside pose). */
-  private ownPrevPose: Point | null = null;
+  private ownTrail: TrailPoint[] = [];
+  /** Recent rendered poses — a fresh trail is seeded backward from these. */
+  private readonly ownRecent: Point[] = [];
   /** Enemy trails from snapshot poses, tick-stamped for the render timeline. */
   private readonly enemyTrails = new Map<number, StampedPoint[]>();
-  /** Last snapshot pose per enemy — seeds a starting trail (last inside pose). */
-  private readonly enemyPrevPose = new Map<number, StampedPoint>();
+  /** Recent snapshot poses per enemy — seed a starting trail backward. */
+  private readonly enemyRecent = new Map<number, StampedPoint[]>();
   /** Local sim ticks since start — the smooth clock everything renders on. */
   private clientTicks = 0;
   /** Turn value of the last flushed tick — direction changes flush eagerly. */
@@ -246,7 +271,11 @@ export class ClientSession {
       if (message.playerId !== this.playerId) {
         this.enemyTrails.set(
           message.playerId,
-          message.points.map((point) => ({ tick: 0, point })),
+          message.points.map((point) => ({
+            tick: 0,
+            point,
+            lift: this.overForeignLand(point[0], point[1], message.playerId),
+          })),
         );
       }
       return;
@@ -293,9 +322,9 @@ export class ClientSession {
       if (territory && !pointInTerritory(p.x, p.y, territory)) {
         let trail = this.enemyTrails.get(p.id);
         if (!trail || trail.length === 0) {
-          trail = [];
-          const prev = this.enemyPrevPose.get(p.id);
-          if (prev) trail.push(prev);
+          // Seed backward along the recent path while it stays inside the
+          // territory — buried under the plateau for any exit angle.
+          trail = this.seedFromRecent(this.enemyRecent.get(p.id) ?? [], territory);
           this.enemyTrails.set(p.id, trail);
         }
         const last = trail[trail.length - 1];
@@ -305,17 +334,55 @@ export class ClientSession {
           !last ||
           Math.hypot(point[0] - last.point[0], point[1] - last.point[1]) >= MIN_TRAIL_STEP_WU
         ) {
-          trail.push({ tick, point });
+          trail.push({ tick, point, lift: this.overForeignLand(point[0], point[1], p.id) });
         }
       }
-      this.enemyPrevPose.set(p.id, { tick, point });
+      this.pushRecent(p.id, tick, point);
     }
     // Players gone from the snapshot left the arena; their land is neutral.
-    for (const map of [this.territories, this.enemyTrails, this.enemyPrevPose] as const) {
+    for (const map of [this.territories, this.enemyTrails, this.enemyRecent] as const) {
       for (const id of map.keys()) {
         if (!present.has(id) && id !== this.playerId) map.delete(id);
       }
     }
+  }
+
+  /** Record one enemy pose in its recent-path ring (gated like trails). */
+  private pushRecent(id: number, tick: number, point: Point): void {
+    let recent = this.enemyRecent.get(id);
+    if (!recent) {
+      recent = [];
+      this.enemyRecent.set(id, recent);
+    }
+    const last = recent[recent.length - 1];
+    if (
+      last &&
+      Math.hypot(point[0] - last.point[0], point[1] - last.point[1]) < MIN_TRAIL_STEP_WU
+    ) {
+      return;
+    }
+    recent.push({ tick, point });
+    if (recent.length > RECENT_POSES_CAP) recent.shift();
+  }
+
+  /**
+   * Walk a recent-path ring backward and keep the tail that is still inside
+   * `territory`, up to TRAIL_SEED_DEPTH_WU of path length — the under-the-
+   * plateau start of a fresh trail (oldest first).
+   */
+  private seedFromRecent(recent: readonly StampedPoint[], territory: Territory): StampedPoint[] {
+    const seed: StampedPoint[] = [];
+    let depth = 0;
+    let prev: Point | null = null;
+    for (let i = recent.length - 1; i >= 0; i--) {
+      const entry = recent[i];
+      if (!entry || !pointInTerritory(entry.point[0], entry.point[1], territory)) break;
+      if (prev) depth += Math.hypot(entry.point[0] - prev[0], entry.point[1] - prev[1]);
+      if (depth > TRAIL_SEED_DEPTH_WU) break;
+      seed.unshift(entry);
+      prev = entry.point;
+    }
+    return seed;
   }
 
   /**
@@ -436,60 +503,110 @@ export class ClientSession {
       others,
       arenaSizeWU: this.arenaSizeWU,
       territories: [...this.territories.values()],
-      trails: this.sampleTrails(others),
+      trails: this.sampleTrails(self, others),
       fills,
     };
+  }
+
+  /** Is this point on land owned by anyone but `exceptId`? (lift flag) */
+  private overForeignLand(x: number, y: number, exceptId: number): boolean {
+    for (const view of this.territories.values()) {
+      if (view.playerId === exceptId) continue;
+      if (pointInTerritory(x, y, view.territory)) return true;
+    }
+    return false;
   }
 
   /**
    * Extend the own trail with the pose actually drawn this frame. Outside
    * the own territory every rendered pose joins the ribbon (collinear runs
-   * compact away); a fresh trail is seeded with the previous pose — still
-   * inside on the exit frame — so the ribbon emerges from under the plateau
-   * instead of leaving a gap at the edge (same rule as sim + enemies).
+   * compact away, sub-step wobble is gated); a fresh trail is seeded
+   * backward along the recently rendered path while it stays inside the
+   * territory, so the ribbon start is buried under the plateau for any
+   * exit angle (same rule as the enemy derivation).
    */
   private trackOwnTrail(self: RenderPose | null): void {
-    const own = this.playerId === null ? undefined : this.territories.get(this.playerId);
-    if (!self || !own) return;
+    if (!self || this.playerId === null) return;
+    const own = this.territories.get(this.playerId);
+    if (!own) return;
     if (!pointInTerritory(self.x, self.y, own.territory)) {
-      if (this.ownTrail.length === 0 && this.ownPrevPose) {
-        this.ownTrail.push(this.ownPrevPose);
+      if (this.ownTrail.length === 0) {
+        this.ownTrail = this.seedFromRecent(
+          this.ownRecent.map((point): StampedPoint => ({ tick: 0, point })),
+          own.territory,
+        ).map(({ point }): TrailPoint => ({ point, lift: false }));
       }
       const last = this.ownTrail[this.ownTrail.length - 1];
-      // Same sub-step gate as for enemies: reconciliation wobble must not
-      // etch a sawtooth into the ribbon (see MIN_TRAIL_STEP_WU).
-      if (!last || Math.hypot(self.x - last[0], self.y - last[1]) >= MIN_TRAIL_STEP_WU) {
-        appendTrailPoint(this.ownTrail, self.x, self.y);
+      // Sub-step gate: reconciliation wobble must not etch a sawtooth into
+      // the ribbon (see MIN_TRAIL_STEP_WU). The live head pose is appended
+      // at sample time instead — the tip never lags behind the gate.
+      if (
+        !last ||
+        Math.hypot(self.x - last.point[0], self.y - last.point[1]) >= MIN_TRAIL_STEP_WU
+      ) {
+        this.pushOwnPoint([self.x, self.y], this.overForeignLand(self.x, self.y, this.playerId));
       }
     }
-    this.ownPrevPose = [self.x, self.y];
+    const lastRecent = this.ownRecent[this.ownRecent.length - 1];
+    if (
+      !lastRecent ||
+      Math.hypot(self.x - lastRecent[0], self.y - lastRecent[1]) >= MIN_TRAIL_STEP_WU
+    ) {
+      this.ownRecent.push([self.x, self.y]);
+      if (this.ownRecent.length > RECENT_POSES_CAP) this.ownRecent.shift();
+    }
   }
 
   /**
-   * Trail polylines for this frame. The own trail already ends at the pose
-   * drawn this frame (trackOwnTrail); enemy trails only reveal points up to
-   * the enemy render timeline (they'd lead their delayed heads otherwise)
-   * and bridge to the smoothed head, so every ribbon stays glued to what is
-   * on screen.
+   * Append one own-trail vertex, merging exactly-collinear forward motion
+   * into one segment (mirrors sim-core's appendTrailPoint) so straight
+   * cruising stays O(1) points instead of one vertex per 0.1 WU.
    */
-  private sampleTrails(others: SnapshotPlayer[]): RenderState['trails'] {
+  private pushOwnPoint(point: Point, lift: boolean): void {
+    const last = this.ownTrail[this.ownTrail.length - 1];
+    const beforeLast = this.ownTrail[this.ownTrail.length - 2];
+    if (last && beforeLast && last.lift === lift && beforeLast.lift === lift) {
+      const ax = last.point[0] - beforeLast.point[0];
+      const ay = last.point[1] - beforeLast.point[1];
+      const bx = point[0] - last.point[0];
+      const by = point[1] - last.point[1];
+      if (ax * bx + ay * by > 0 && Math.abs(ax * by - ay * bx) < 1e-9) {
+        last.point = point;
+        return;
+      }
+    }
+    this.ownTrail.push({ point, lift });
+  }
+
+  /**
+   * Trail polylines for this frame, each ending in the player's LIVE
+   * rendered head pose (appended here, never stored — the tip stays glued
+   * to the head every frame, whatever the point gate kept). Enemy trails
+   * only reveal stored points up to the enemy render timeline (they'd lead
+   * their delayed heads otherwise).
+   */
+  private sampleTrails(self: RenderPose | null, others: SnapshotPlayer[]): RenderState['trails'] {
     const trails: RenderState['trails'] = [];
-    if (this.playerId !== null && this.ownTrail.length >= 2) {
-      trails.push({
-        playerId: this.playerId,
-        points: this.ownTrail.map((p): Point => [p[0], p[1]]),
-      });
+    if (self && this.playerId !== null && this.ownTrail.length >= 1) {
+      const points = this.ownTrail.map(({ point }): Point => [point[0], point[1]]);
+      const lifts = this.ownTrail.map(({ lift }) => lift);
+      points.push([self.x, self.y]);
+      lifts.push(this.overForeignLand(self.x, self.y, this.playerId));
+      if (points.length >= 2) trails.push({ playerId: this.playerId, points, lifts });
     }
     for (const enemy of others) {
       const stamped = this.enemyTrails.get(enemy.id);
       if (!stamped || stamped.length === 0) continue;
       const points: Point[] = [];
-      for (const { tick, point } of stamped) {
+      const lifts: boolean[] = [];
+      for (const { tick, point, lift } of stamped) {
         if (this.renderTick !== null && tick > this.renderTick) break;
         points.push([point[0], point[1]]);
+        lifts.push(lift ?? false);
       }
       points.push([enemy.x, enemy.y]);
-      if (points.length >= 2) trails.push({ playerId: enemy.id, points });
+      lifts.push(this.overForeignLand(enemy.x, enemy.y, enemy.id));
+      if (points.length >= 2) trails.push({ playerId: enemy.id, points, lifts });
     }
     return trails;
   }

@@ -4,7 +4,7 @@
  * rendering, no wall clock and no ambient RNG.
  */
 export { closeLoop, type FillOutcome } from './fill.js';
-export { appendTrailPoint, pointInTerritory, territoryArea } from './geometry.js';
+export { pointInTerritory, territoryArea } from './geometry.js';
 export { nextRandom, seedRng, type RngState } from './rng.js';
 export {
   cloneSimState,

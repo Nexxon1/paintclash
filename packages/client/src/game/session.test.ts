@@ -197,10 +197,10 @@ describe('snapshots feed reconciliation + interpolation', () => {
       trail = session.renderSample(1).trails.find((t) => t.playerId === 1);
     }
     if (!trail) throw new Error('own trail missing');
-    // Seeded with the last pose still INSIDE (same rule as the sim) — the
-    // ribbon emerges from under the plateau instead of leaving a gap.
-    // Block edge is x = 103; ticks land at 101.45 … 102.8 (in), 103.25 (out).
-    expect(trail.points[0]?.[0]).toBeCloseTo(102.8, 5);
+    // Seeded backward along the rendered path while inside (≤ 1.5 WU path
+    // depth) — the ribbon start is buried under the plateau for any exit
+    // angle. Block edge is x = 103; inside poses 101.45 … 102.8 all seed.
+    expect(trail.points[0]?.[0]).toBeCloseTo(101.45, 5);
     // Last point is the pose actually drawn this frame (the head itself) —
     // frame-pose appending is what keeps the ribbon as smooth as the head.
     const head = session.renderSample(1).self;
@@ -210,6 +210,30 @@ describe('snapshots feed reconciliation + interpolation', () => {
     session.receive(encodeTerritory(1, 'fill', blockAt(105, 100)));
     trail = session.renderSample(1).trails.find((t) => t.playerId === 1);
     expect(trail).toBeUndefined();
+  });
+
+  it('marks trail points over foreign territory (drawn on top until the 06 carve)', () => {
+    const { session } = harness();
+    session.receive(encodeWelcome(1, BALANCE.arena.sizeWU));
+    session.receive(encodeTerritory(1, 'sync', blockAt(100, 100)));
+    session.receive(encodeTerritory(2, 'sync', blockAt(110, 100))); // 107..113
+    session.receive(
+      encodeSnapshot(1, 0, [selfPlayer({ x: 101 }), selfPlayer({ id: 2, x: 110, y: 110 })]),
+    );
+    let lifts: boolean[] = [];
+    let points: [number, number][] = [];
+    for (let i = 0; i < 16; i++) {
+      session.simTick(0);
+      const trail = session.renderSample(1).trails.find((t) => t.playerId === 1);
+      lifts = trail?.lifts ?? [];
+      points = trail?.points ?? [];
+    }
+    // The head is now over the enemy block; those points are lifted, the
+    // neutral stretch before it is not.
+    expect(lifts.some((l) => l)).toBe(true);
+    expect(lifts[0]).toBe(false);
+    const firstLifted = lifts.findIndex((l) => l);
+    expect(points[firstLifted]?.[0]).toBeGreaterThan(107 - 0.5);
   });
 
   it('sub-step render wobble never etches extra points into the own trail', () => {

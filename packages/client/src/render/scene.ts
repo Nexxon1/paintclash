@@ -22,6 +22,13 @@ const SELF_KEY = -1;
 const TERRITORY_HEIGHT = 0.35;
 /** Trail ribbons hug the floor (§4.1: 2D line at ground height). */
 const TRAIL_Y = 0.03;
+/**
+ * Ribbon height over FOREIGN territory: on top of the plateau, so the line
+ * stays visible while crossing enemy land. Interim look — ticket 06 replaces
+ * it with the real carve-through groove (§4.1: territory sinks under the
+ * trail).
+ */
+const TRAIL_LIFT_Y = TERRITORY_HEIGHT + 0.03;
 const TRAIL_WIDTH = BALANCE.trail.widthWU;
 /** Fill wave duration (§4.2: the territory "grows" as a height wave). */
 const FILL_WAVE_MS = 450;
@@ -81,7 +88,7 @@ class TrailRibbon {
     this.mesh.frustumCulled = false; // grows every frame; culling lags behind
   }
 
-  update(points: Point[]): void {
+  update(points: Point[], lifts: boolean[]): void {
     const n = points.length;
     if (n < 2) {
       this.geometry.setDrawRange(0, 0);
@@ -119,7 +126,9 @@ class TrailRibbon {
         nz = dx / len;
       }
       const w = TRAIL_WIDTH / 2;
-      const y = TRAIL_Y + this.yOffset;
+      // Lifted vertices ride on top of foreign plateaus; the segment between
+      // a ground and a lifted point renders as a short ramp up the edge.
+      const y = (lifts[i] ? TRAIL_LIFT_Y : TRAIL_Y) + this.yOffset;
       position.setXYZ(i * 2, curr[0] + nx * w, y, curr[1] + nz * w);
       position.setXYZ(i * 2 + 1, curr[0] - nx * w, y, curr[1] - nz * w);
     }
@@ -303,7 +312,7 @@ export class ArenaScene {
   /** Trail ribbons — one per player with a visible trail this frame. */
   private updateTrails(state: RenderState): void {
     const seen = new Set<number>();
-    for (const { playerId, points } of state.trails) {
+    for (const { playerId, points, lifts } of state.trails) {
       seen.add(playerId);
       let ribbon = this.trails.get(playerId);
       if (!ribbon) {
@@ -314,7 +323,7 @@ export class ArenaScene {
         this.trails.set(playerId, ribbon);
         this.scene.add(ribbon.mesh);
       }
-      ribbon.update(points);
+      ribbon.update(points, lifts);
     }
     for (const [id, ribbon] of this.trails) {
       if (!seen.has(id)) {
