@@ -209,15 +209,11 @@ export class ArenaCore {
     if (connection.tickOffset === null) {
       connection.tickOffset = implied;
       connection.marginEma = MARGIN_EMA_START;
-      console.log(`[tickmap] anchor offset=${String(implied)} seq=${String(newestSeq)}`);
       return;
     }
     if (Math.abs(implied - connection.tickOffset) > LIMITS.tickMapResyncTicks) {
       connection.resyncStreak += 1;
       if (connection.resyncStreak >= LIMITS.tickMapResyncFrames) {
-        console.log(
-          `[tickmap] resync ${String(connection.tickOffset)}→${String(implied)} seq=${String(newestSeq)}`,
-        );
         connection.tickOffset = implied;
         connection.marginEma = MARGIN_EMA_START;
         connection.resyncStreak = 0;
@@ -227,19 +223,12 @@ export class ArenaCore {
     connection.resyncStreak = 0;
     const margin = connection.tickOffset - implied;
     connection.marginEma += LIMITS.tickMapMarginEmaWeight * (margin - connection.marginEma);
-    if (newestSeq % 20 < 3) {
-      console.log(
-        `[tickmap] frame seq=${String(newestSeq)} margin=${String(margin)} ema=${connection.marginEma.toFixed(2)} offset=${String(connection.tickOffset)} q=${String(connection.pendingInputs.length)}`,
-      );
-    }
     if (connection.marginEma < LIMITS.tickMapMinMarginTicks) {
       connection.tickOffset += 1;
       connection.marginEma += 1;
-      console.log(`[tickmap] slacken → ${String(connection.tickOffset)}`);
     } else if (connection.marginEma > LIMITS.tickMapMaxMarginTicks) {
       connection.tickOffset -= 1;
       connection.marginEma -= 1;
-      console.log(`[tickmap] tighten → ${String(connection.tickOffset)}`);
     }
   }
 

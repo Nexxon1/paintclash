@@ -4,7 +4,9 @@
 
 **Blocked by:** 03 (erledigt). Unabhängig von 04 startbar; Ergebnisse fließen in 05/07 (Rewind rechnet mit exakt diesem Verzug).
 
-**Status:** in-progress — Umbau fertig + lokal grün; Prod-Abnahme blockiert durch neu entdeckten DO-Tickrate-Bug (s. Session-Log 2026-07-20 unten)
+**Status:** resolved
+
+Tick-Mapping + Sim-Kadenz-Servo deployt (2026-07-21), Prod-Abnahme erfüllt — s. Session-Log 2026-07-21 unten.
 
 ## Gemessenes Latenz-Budget (Stand 2026-07-20, Commit ~`HEAD`)
 
@@ -37,10 +39,10 @@ Ein Richtungs-Sichtverzug ≈ 0,29 s = Summe:
 
 ## Akzeptanz
 
-- [ ] `offset-probe` Produktion p50 ≤ 0,15 s (≤ 1,35 WU je Sicht), dokumentiert im Ticket.
-- [ ] Soak lokal + Produktion PASS (0 Resets, 0 Frozen, Tempi gedeckelt); Smoothness-E2E grün.
-- [ ] Szenario-Test: kurzer Tap bleibt exakt (kein Input verloren) trotz Puffer 0.
-- [ ] CONTEXT.md: Ack-Semantik + Tick-Mapping nachziehen.
+- [x] `offset-probe` Produktion p50 ≤ 0,15 s (≤ 1,35 WU je Sicht), dokumentiert im Ticket. → **1,28–1,40 WU über zwei Läufe (n=80/66); in Realzeit 0,13–0,14 s** (Prod-Tick real 22,2 Hz ⇒ 9,99 WU/s, s. Session-Log 2026-07-21). Lokal 0,98 WU / 0,11 s.
+- [x] Soak lokal + Produktion PASS (0 Resets, 0 Frozen, Tempi gedeckelt); Smoothness-E2E grün. → Prod: 0 Resets, 0 % Frozen, other-sd 0,94, max 19,2 < 25. Lokal PASS. E2E 4/4.
+- [x] Szenario-Test: kurzer Tap bleibt exakt (kein Input verloren) trotz Puffer 0. → `movement.test.ts` „a short tap steers for exactly one authoritative tick" + Unit-Test mit Heading-Beweis.
+- [x] CONTEXT.md: Ack-Semantik + Tick-Mapping nachziehen. → Ack („verarbeitet"), Tick-Mapping, Ankunfts-Marge, Sim-Kadenz-Servo, Input-Queue neu gefasst; Jitter-Puffer-Eintrag ersetzt. ADR-0003-Nachtrag ergänzt.
 
 _Referenz: Ticket 03 Kommentare (Latenz-Budget-Messungen, Soak-FAIL-Beleg für Puffer 1); ADR-0001 (Budget), ADR-0003 (Netcode)._
 
@@ -67,3 +69,27 @@ _Referenz: Ticket 03 Kommentare (Latenz-Budget-Messungen, Soak-FAIL-Beleg für P
 5. Doku: CONTEXT.md (Ack-Semantik „verarbeitet", Tick-Mapping/Client-Tick-Offset/Arrival-Margin neu, Jitter-Puffer-Eintrag als abgelöst markieren), ADR-0003-Nachtrag, Ticket-Akzeptanzhaken.
 
 **Prod wurde auf den alten Netcode-Stand (Commit `2c0d369`) zurück-deployt**, damit die Referenzumgebung über Nacht spielbar bleibt. Neue Werkzeuge: `tests/soak/steer-latency-probe.mjs` (Press→autoritative-Anwendung, misst EATEN-Rate), `tests/soak/tickrate-probe.mjs` (Server-Tickrate aus Client-Sicht).
+
+---
+
+## Session-Log 2026-07-21 (Abschluss)
+
+**Tickrate-Diagnose entschieden** (Debug-Deploy + `wrangler tail`): `[ticker]`-Logs zeigen `anchors=0` (Re-Anchor-Extra-Tick-Theorie widerlegt) und **exakt 50,00 ms/Tick nach der DO-eigenen Uhr** — bei real gemessenen 21,8–22,2 Hz. ⇒ Die **Isolate-Uhr (`Date.now()`) des Produktions-DO läuft in sich konsistent, aber ~10 % neben der Realzeit**; von innen nicht erkennbar, server-seitig nicht ehrlich fixbar (lokal: exakt 20,00 Hz). Als Anomalie mit Optionen in Ticket 18 erfasst; Warnkommentar in `startTicker` (arena-do.ts).
+
+**Fix: Sim-Kadenz-Servo im Client** (statt Server-Pacing anzufassen): `ClientSession.simIntervalMs()` steuert den Server-Offset-EMA auf seine Baseline zurück (Gain 0,05/Tick, Fehler-Kappung ±3 Ticks ⇒ Rate ±15 %; Uhrbruch > 10 Ticks ⇒ Baseline-Übernahme). `main.ts` taktet Akkumulator + Alpha mit dem Servo-Intervall. Damit produziert der Client seqs in **echter** Server-Tickrate — das Tick-Mapping ist per Konstruktion stabil, egal welche Uhr-/Raten-Abweichung, lokal ein No-op. 5 neue Unit-Tests (Lockstep, ±10 % Skew, Kappung, Re-Baseline).
+
+**Feintuning:** `INTERP_DELAY_TICKS` 2 → 1,5 (jeder Interp-Tick ≈ 45–50 ms Sichtverzug; Soak-gewacht).
+
+**Prod-Messungen (finaler Build, Version 072463f0):**
+
+| Messung | Wert |
+|---|---|
+| `steer-latency-probe` | **0/14 EATEN, p50 117 ms, max 149 ms** (Warm-up-Lauf direkt nach Join: 6/14 — Servo-Konvergenz ~3 s, danach stabil 0) |
+| `offset-probe` p50 | **1,28–1,40 WU** (n=80/66) = nominal 0,14–0,16 s; **in Realzeit 0,13–0,14 s** (Tick real 22,2 Hz ⇒ 9,99 WU/s) — Ziel ≤ 0,15 s erfüllt |
+| Zwei-Screens-Diskrepanz | 2,6–2,8 WU (vorher ~5,2) |
+| Soak Prod | **PASS**: 0 Resets, 0 % Frozen, other-sd 0,94, max 19,2 < 25 |
+| Soak lokal / offset lokal | PASS / 0,98 WU = 0,11 s |
+
+**Bekannte Restpunkte:** (1) Servo-Warm-up: in den ersten ~3 s nach Join können Turn-Onsets 1–3 Ticks verspätet ankommen (Ein-Glide-Korrektur, danach exakt). (2) Spieltempo auf Prod real ~11 % über Spec (9,99 statt 9 WU/s) — vorbestehend, gilt für alle gleich, → Ticket 18. (3) CI-E2E-Fix umgesetzt: Stall-Test-Budgets dt-normalisiert (Tick-Anteil skaliert mit dt, Glide-Anteil mit dt gekappt bei 100 ms) statt flacher 1,0-WU-/30°-Grenzen.
+
+_Rewind (T05/07) erhält mit `tickOffset` die exakte Zeitbasis: Handelnden-Sicht = Server-Tick − Client-Tick-Offset − Interp-Delay._

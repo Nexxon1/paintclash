@@ -34,7 +34,7 @@ export const LIMITS = Object.freeze({
    */
   idleTimeoutTicks: 200,
   /**
-   * Tick mapping (ticket 17): an input frame whose implied clientTickOffset
+   * Tick mapping (ticket 17): an input frame whose implied `tickOffset`
    * deviates from the tracked one by more than this is a timeline break
    * (client stall/clock jump), not network jitter.
    */

@@ -100,13 +100,19 @@ export class ArenaDO extends DurableObject {
    * ticks back-to-back: a burst of catch-up ticks broadcasts dozens of
    * snapshots at once, which every client can only render as a teleport.
    * Skipping the debt just pauses the world briefly — equally for everyone.
+   *
+   * KNOWN SKEW (measured 2026-07-21, ticket 17): in production the isolate's
+   * Date.now() is self-consistent with its own timers but runs ~10% off real
+   * time — this loop paces a perfect 50 ms by its own clock yet emits ~22
+   * ticks per real second (locally: exactly 20). Undetectable from inside;
+   * clients therefore servo their sim cadence to the OBSERVED tick rate
+   * (ClientSession.simIntervalMs), which also keeps the tick-mapped input
+   * timeline aligned. Do not "fix" pacing here by trusting Date.now().
    */
   private startTicker(arena: ArenaCore): void {
     if (this.ticking) return;
     this.ticking = true;
     let scheduled = Date.now();
-    let ticks = 0;
-    let anchors = 0;
     const loop = (): void => {
       if (arena.connectionCount === 0) {
         this.ticking = false;
@@ -115,17 +121,8 @@ export class ArenaDO extends DurableObject {
         return;
       }
       arena.tick(TICK_DT_SEC);
-      ticks += 1;
-      if (ticks % 100 === 0) {
-        console.log(
-          `[ticker] ticks=${String(ticks)} now=${String(Date.now())} anchors=${String(anchors)}`,
-        );
-      }
       scheduled += TICK_DT_MS;
-      if (Date.now() - scheduled > 2 * TICK_DT_MS) {
-        scheduled = Date.now();
-        anchors += 1;
-      }
+      if (Date.now() - scheduled > 2 * TICK_DT_MS) scheduled = Date.now();
       setTimeout(loop, Math.max(0, scheduled - Date.now()));
     };
     setTimeout(loop, TICK_DT_MS);

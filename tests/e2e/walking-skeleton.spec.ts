@@ -151,7 +151,7 @@ test('recovers from a main-thread stall without teleporting or whipping around',
   // switch / GC pause), keep recording through the recovery.
   const result = await page.evaluate(
     () =>
-      new Promise<{ maxJumpWU: number; maxTurnDeg: number }>((resolve) => {
+      new Promise<{ maxJumpExcessWU: number; maxTurnExcessDeg: number }>((resolve) => {
         const TWO_PI = 2 * Math.PI;
         const dAng = (a: number, b: number): number => {
           let d = (b - a) % TWO_PI;
@@ -160,8 +160,8 @@ test('recovers from a main-thread stall without teleporting or whipping around',
           return Math.abs(d);
         };
         let prev: { t: number; x: number; y: number; h: number } | null = null;
-        let maxJumpWU = 0;
-        let maxTurnDeg = 0;
+        let maxJumpExcessWU = 0;
+        let maxTurnExcessDeg = 0;
         const t0 = performance.now();
         let stalled = false;
         function frame(now: number): void {
@@ -170,8 +170,19 @@ test('recovers from a main-thread stall without teleporting or whipping around',
             if (prev) {
               // Every rendered transition counts — including the frame that
               // spans the stall itself: the pose must glide, never leap.
-              maxJumpWU = Math.max(maxJumpWU, Math.hypot(self.x - prev.x, self.y - prev.y));
-              maxTurnDeg = Math.max(maxTurnDeg, (dAng(prev.h, self.heading) * 180) / Math.PI);
+              // Budgets are dt-based (CI runners render 40–90 ms frames):
+              // legal sim motion (9 WU/s, 320 °/s) scales with the frame,
+              // the correction glide (5 WU/s, 240 °/s) with the client's
+              // 100 ms decay cap, plus fixed slack. A reset blows past this
+              // at any frame rate.
+              const dt = now - prev.t;
+              const glideDt = Math.min(dt, 100) / 1000;
+              const jump = Math.hypot(self.x - prev.x, self.y - prev.y);
+              const turn = (dAng(prev.h, self.heading) * 180) / Math.PI;
+              const jumpBudget = (dt / 1000) * 9 + glideDt * 5 + 0.3;
+              const turnBudget = (dt / 1000) * 320 + glideDt * 240 + 10;
+              maxJumpExcessWU = Math.max(maxJumpExcessWU, jump - jumpBudget);
+              maxTurnExcessDeg = Math.max(maxTurnExcessDeg, turn - turnBudget);
             }
             prev = { t: now, x: self.x, y: self.y, h: self.heading };
           }
@@ -181,17 +192,17 @@ test('recovers from a main-thread stall without teleporting or whipping around',
             for (;;) if (performance.now() >= until) break;
           }
           if (now - t0 < 2500) requestAnimationFrame(frame);
-          else resolve({ maxJumpWU, maxTurnDeg });
+          else resolve({ maxJumpExcessWU, maxTurnExcessDeg });
         }
         requestAnimationFrame(frame);
       }),
   );
   await page.keyboard.up('ArrowRight');
 
-  // One 60-fps frame of legal movement is 0.15 WU / ~5.3°; corrections may
-  // glide on top. A reset (pre-fix: 2–3 WU, 100–155°) must never reappear.
-  expect(result.maxJumpWU).toBeLessThan(1.0);
-  expect(result.maxTurnDeg).toBeLessThan(30);
+  // No rendered transition may exceed its motion budget. A reset (pre-fix:
+  // 2–3 WU and 100–155° inside ordinary ~16 ms frames) overshoots by miles.
+  expect(result.maxJumpExcessWU).toBeLessThanOrEqual(0);
+  expect(result.maxTurnExcessDeg).toBeLessThanOrEqual(0);
 });
 
 test('two browsers share one arena', async ({ browser }) => {

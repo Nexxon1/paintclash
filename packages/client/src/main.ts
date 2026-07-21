@@ -88,14 +88,18 @@ function start(name: string): void {
   let lastSim = performance.now();
   let accumulator = 0;
   let lastTickAt = performance.now();
+  let tickInterval = TICK_DT_MS;
   const simStep = (): void => {
     const now = performance.now();
+    // The interval is servo-shifted to the server's REAL tick rate — the
+    // tick-mapped input timeline (seq ≡ tick) depends on matching it.
+    tickInterval = session.simIntervalMs();
     // Clamp long gaps instead of fast-forwarding hundreds of ticks.
-    accumulator = Math.min(accumulator + (now - lastSim), 10 * TICK_DT_MS);
+    accumulator = Math.min(accumulator + (now - lastSim), 10 * tickInterval);
     lastSim = now;
-    const ticks = Math.floor(accumulator / TICK_DT_MS);
+    const ticks = Math.floor(accumulator / tickInterval);
     if (ticks > 0) {
-      accumulator -= ticks * TICK_DT_MS;
+      accumulator -= ticks * tickInterval;
       lastTickAt = now - accumulator;
       // Bursts (post-stall catch-up) glide instead of leaping on screen.
       session.advance(keys.turn(), ticks);
@@ -125,7 +129,7 @@ function start(name: string): void {
       hidden = true;
       overlay.style.display = 'none';
     }
-    const alpha = Math.min((performance.now() - lastTickAt) / TICK_DT_MS, 1);
+    const alpha = Math.min((performance.now() - lastTickAt) / tickInterval, 1);
     const renderState = session.renderSample(alpha, frameDtMs);
     if (window.__paintclash) window.__paintclash.lastRender = renderState;
     scene.update(renderState);

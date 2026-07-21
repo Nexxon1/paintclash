@@ -23,14 +23,16 @@ export const INPUT_FLUSH_TICKS = LIMITS.inputFlushTicks;
 
 /**
  * Base delay behind estimated server time for enemy rendering (spec §6.1).
- * 2 ticks = 100 ms of headroom on a clean link — deliberately tight, because
- * every tick here is directly visible cross-view offset; bursty links are
- * handled by the ADAPTIVE part: whenever the render clock catches the newest
- * snapshot (starvation = enemy freezes a frame, then catches up), the delay
- * grows; it slowly shrinks again while delivery stays smooth. All well
- * inside the genre's ~500 ms tolerance (spec §6.3).
+ * 1.5 ticks = 75 ms of headroom on a clean link — deliberately tight, because
+ * every tick here is directly visible cross-view offset (ticket 17 measured
+ * each interp tick at ~45–50 ms of view lag); bursty links are handled by
+ * the ADAPTIVE part: whenever the render clock catches the newest snapshot
+ * (starvation = enemy freezes a frame, then catches up), the delay grows; it
+ * slowly shrinks again while delivery stays smooth. All well inside the
+ * genre's ~500 ms tolerance (spec §6.3). Soak-gated: production PASS with 0
+ * frozen frames at this value (2026-07-21).
  */
-const INTERP_DELAY_TICKS = 2;
+const INTERP_DELAY_TICKS = 1.5;
 const MAX_EXTRA_DELAY_TICKS = 6;
 /**
  * One starvation EVENT grows the delay by one — a stall starves several
@@ -51,6 +53,18 @@ const OFFSET_SMOOTHING = 0.05;
 
 /** An offset this many ticks off is a real clock break — resync hard. */
 const OFFSET_RESYNC_TICKS = 10;
+
+/**
+ * Sim-cadence servo (ticket 17): the tick-mapped input timeline only stays
+ * aligned if the client produces one seq per SERVER tick — but the server's
+ * real tick rate is not trustworthy 20 Hz (production DOs pace against an
+ * isolate clock that measurably runs ~10% off real time). The sim interval
+ * steers the smoothed server offset back toward its baseline: per tick of
+ * standing error the cadence shifts by SIM_RATE_GAIN, capped via the error
+ * clamp at ±15% — beyond that lies a clock break, which resyncs instead.
+ */
+const SIM_RATE_GAIN = 0.05;
+const MAX_SIM_RATE_ERROR_TICKS = 3;
 
 /** Fastest the enemy timeline may run while catching up (2 = double speed). */
 const MAX_TIMEWARP = 2;
@@ -106,6 +120,8 @@ export class ClientSession {
   private lastSentTurn: TurnSignal = 0;
   /** EMA of (server tick − local tick); null until the first snapshot. */
   private serverOffset: number | null = null;
+  /** Offset level the sim cadence steers back toward (see SIM_RATE_GAIN). */
+  private offsetBaseline: number | null = null;
   /** Rate-limited enemy timeline (see renderSample). */
   private renderTick: number | null = null;
   /** Adaptive addition to INTERP_DELAY_TICKS (starvation-driven). */
@@ -149,10 +165,17 @@ export class ClientSession {
     this.interpolator.add(message.tick, message.players);
     this.lastSnapshotClientTick = this.clientTicks;
     const offsetSample = message.tick - this.clientTicks;
-    this.serverOffset =
-      this.serverOffset === null || Math.abs(offsetSample - this.serverOffset) > OFFSET_RESYNC_TICKS
-        ? offsetSample
-        : this.serverOffset + OFFSET_SMOOTHING * (offsetSample - this.serverOffset);
+    if (
+      this.serverOffset === null ||
+      Math.abs(offsetSample - this.serverOffset) > OFFSET_RESYNC_TICKS
+    ) {
+      // Clock break (first contact, hidden tab, arena reset): adopt the new
+      // level — chasing it with the rate servo would take forever.
+      this.serverOffset = offsetSample;
+      this.offsetBaseline = offsetSample;
+    } else {
+      this.serverOffset += OFFSET_SMOOTHING * (offsetSample - this.serverOffset);
+    }
     const self =
       this.playerId === null ? undefined : message.players.find((p) => p.id === this.playerId);
     if (self && this.predictor) {
@@ -201,6 +224,20 @@ export class ClientSession {
    */
   frame(frameDtMs: number): void {
     this.predictor?.decayError(frameDtMs);
+  }
+
+  /**
+   * Wall-clock milliseconds the driving loop should allot per sim tick —
+   * nominal 50 ms, servo-shifted so the local tick (and with it the seq
+   * timeline) runs at the server's REAL rate, whatever its clock thinks.
+   */
+  simIntervalMs(): number {
+    if (this.serverOffset === null || this.offsetBaseline === null) return TICK_DT_MS;
+    const error = Math.min(
+      MAX_SIM_RATE_ERROR_TICKS,
+      Math.max(-MAX_SIM_RATE_ERROR_TICKS, this.serverOffset - this.offsetBaseline),
+    );
+    return TICK_DT_MS / (1 + SIM_RATE_GAIN * error);
   }
 
   /**

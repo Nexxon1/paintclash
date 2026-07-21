@@ -49,6 +49,35 @@ describe('reconciliation (server corrects, client replays, spec §6.1)', () => {
     expect(predictor.current()?.x).toBeCloseTo(100.45, 5);
   });
 
+  it('adopts the authoritative state when the ack runs AHEAD of every sent seq', () => {
+    // Tick-mapped acks (ticket 17) count processed ticks — during a client
+    // stall they overtake the client's own seq counter. Nothing replays; the
+    // server state is simply the truth.
+    const predictor = new Predictor(ARENA);
+    predictor.reconcile(serverSelf(), 0, TICK_DT_SEC);
+    predictor.applyLocalInput(1, 1, TICK_DT_SEC);
+    predictor.applyLocalInput(2, 1, TICK_DT_SEC);
+    predictor.reconcile(serverSelf({ x: 120, y: 80 }), 30, TICK_DT_SEC);
+    expect(predictor.current()?.x).toBeCloseTo(120, 5);
+    expect(predictor.current()?.y).toBeCloseTo(80, 5);
+  });
+
+  it('survives an ack that rebases BACKWARDS after a server-side resync', () => {
+    // A tick-offset re-anchor rebases the ack onto the client's (older)
+    // timeline once. The pending filter is stateless — replay just resumes
+    // from the new ack, and the pose stays finite and continuous.
+    const predictor = new Predictor(ARENA);
+    predictor.reconcile(serverSelf(), 0, TICK_DT_SEC);
+    for (let seq = 1; seq <= 8; seq++) predictor.applyLocalInput(seq, 0, TICK_DT_SEC);
+    predictor.reconcile(serverSelf({ x: 103.15 }), 7, TICK_DT_SEC); // normal ack
+    predictor.reconcile(serverSelf({ x: 102.25 }), 5, TICK_DT_SEC); // rebased back
+    // Seqs 6–7 were already pruned by the earlier ack and stay gone — only
+    // seq 8 replays; the gap is a one-time divergence the glide absorbs.
+    expect(predictor.current()?.x).toBeCloseTo(102.25 + 0.45, 5);
+    const displayed = predictor.sample(1);
+    expect(Number.isFinite(displayed?.x)).toBe(true);
+  });
+
   it('smooths a server correction instead of snapping (weiches Nachziehen)', () => {
     const predictor = new Predictor(ARENA);
     predictor.reconcile(serverSelf(), 0, TICK_DT_SEC);

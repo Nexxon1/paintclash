@@ -257,3 +257,74 @@ describe('snapshots feed reconciliation + interpolation', () => {
     expect(session.ready()).toBe(true);
   });
 });
+
+describe('sim cadence servos to the server tick rate', () => {
+  // The production DO's Date.now() is self-consistent with its own timers
+  // but can run off real time (measured: 22.2 Hz instead of 20). The input
+  // timeline (seq ≡ client tick, ticket 17) only stays mapped if the client
+  // produces seqs at the SERVER's real rate — so the sim cadence steers the
+  // server-offset back to its baseline instead of assuming 20 Hz wall time.
+
+  it('ticks at the nominal interval while both timelines advance in lockstep', () => {
+    const { session } = harness();
+    joined(session);
+    for (let t = 2; t <= 30; t++) {
+      session.simTick(0);
+      session.receive(encodeSnapshot(t, 0, [selfPlayer()]));
+    }
+    expect(session.simIntervalMs()).toBeCloseTo(50, 5);
+  });
+
+  it('shortens the interval when the server outpaces the local clock', () => {
+    const { session } = harness();
+    joined(session);
+    // Server advances 10% faster than the local tick (the measured skew).
+    let t = 1;
+    for (let i = 1; i <= 80; i++) {
+      if (i % 10 !== 0) session.simTick(0);
+      session.receive(encodeSnapshot(++t, 0, [selfPlayer()]));
+    }
+    expect(session.simIntervalMs()).toBeLessThan(48);
+    expect(session.simIntervalMs()).toBeGreaterThanOrEqual(50 / 1.15 - 1e-9);
+  });
+
+  it('lengthens the interval when the server runs behind the local clock', () => {
+    const { session } = harness();
+    joined(session);
+    // Local clock 10% faster than the server: two local ticks every 9th frame.
+    let t = 1;
+    for (let i = 1; i <= 80; i++) {
+      session.simTick(0);
+      if (i % 9 === 0) session.simTick(0);
+      session.receive(encodeSnapshot(++t, 0, [selfPlayer()]));
+    }
+    expect(session.simIntervalMs()).toBeGreaterThan(52);
+    expect(session.simIntervalMs()).toBeLessThanOrEqual(50 / 0.85 + 1e-9);
+  });
+
+  it('caps the rate adjustment, however large the standing offset error', () => {
+    const { session } = harness();
+    joined(session);
+    // A sudden sub-resync offset shift of 8 ticks, then lockstep again: the
+    // error saturates the clamp instead of scaling the rate without bound.
+    let t = 1;
+    session.receive(encodeSnapshot((t += 9), 0, [selfPlayer()]));
+    for (let i = 0; i < 120; i++) {
+      session.simTick(0);
+      session.receive(encodeSnapshot(++t, 0, [selfPlayer()]));
+    }
+    expect(session.simIntervalMs()).toBeCloseTo(50 / 1.15, 1);
+  });
+
+  it('re-baselines after a hard clock resync instead of chasing the jump', () => {
+    const { session } = harness();
+    joined(session);
+    for (let t = 2; t <= 10; t++) {
+      session.simTick(0);
+      session.receive(encodeSnapshot(t, 0, [selfPlayer()]));
+    }
+    // A clock break far beyond jitter (hidden tab, arena reset): adopt it.
+    session.receive(encodeSnapshot(40, 0, [selfPlayer()]));
+    expect(session.simIntervalMs()).toBeCloseTo(50, 5);
+  });
+});
