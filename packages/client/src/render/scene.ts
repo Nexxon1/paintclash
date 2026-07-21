@@ -59,7 +59,14 @@ class TrailRibbon {
   constructor(color: THREE.Color) {
     this.mesh = new THREE.Mesh(
       this.geometry,
-      new THREE.MeshLambertMaterial({ color, transparent: true, opacity: 0.92 }),
+      // DoubleSide: a collinear reversal twists the ribbon and flips the
+      // local winding — single-sided, such segments simply vanish.
+      new THREE.MeshLambertMaterial({
+        color,
+        transparent: true,
+        opacity: 0.92,
+        side: THREE.DoubleSide,
+      }),
     );
     this.mesh.frustumCulled = false; // grows every frame; culling lags behind
   }
@@ -106,13 +113,15 @@ class TrailRibbon {
       position.setXYZ(i * 2 + 1, curr[0] - nx * w, TRAIL_Y, curr[1] - nz * w);
     }
     for (let i = 0; i < n - 1; i++) {
+      // Wound so the face normal points UP (+y): (L, L+1, R), (R, L+1, R+1)
+      // — the ribbon lies on the ground and is only ever seen from above.
       const a = i * 2;
       index.setX(i * 6, a);
-      index.setX(i * 6 + 1, a + 1);
-      index.setX(i * 6 + 2, a + 2);
+      index.setX(i * 6 + 1, a + 2);
+      index.setX(i * 6 + 2, a + 1);
       index.setX(i * 6 + 3, a + 1);
-      index.setX(i * 6 + 4, a + 3);
-      index.setX(i * 6 + 5, a + 2);
+      index.setX(i * 6 + 4, a + 2);
+      index.setX(i * 6 + 5, a + 3);
     }
     position.needsUpdate = true;
     index.needsUpdate = true;

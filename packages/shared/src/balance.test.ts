@@ -14,7 +14,8 @@ describe('BALANCE', () => {
     expect(BALANCE.spawn.startBlockWU).toBe(6);
     expect(BALANCE.spawn.minDistanceWU).toBe(25);
     expect(BALANCE.trail.widthWU).toBe(1);
-    expect(BALANCE.trail.minFillAreaWU2).toBe(1);
+    // Re-tuned from the §10.4 start value 1 WU² — see balance.ts rationale.
+    expect(BALANCE.trail.minFillAreaWU2).toBe(0.01);
   });
 
   it('ticks at 20 Hz with a fixed 50 ms dt', () => {

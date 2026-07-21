@@ -30,13 +30,29 @@ describe('closeLoop', () => {
     expect(pointInTerritory(3, 3, outcome?.territory ?? [])).toBe(true);
   });
 
-  it('rejects a numerical sliver below the 1 WU² floor (spec §2.2)', () => {
+  it('rejects a numerical sliver below the fill floor (spec §2.2)', () => {
+    // A grazing re-entry enclosing ~0.0007 WU² beyond the own edge.
     const trail: Point[] = [
       [7, 5],
-      [8.4, 5.05],
-      [7, 5.1],
+      [8.2, 5.02],
+      [7, 5.04],
     ];
     expect(closeLoop(ownSquare(), trail, [])).toBeNull();
+  });
+
+  it('fills a deliberate shallow edge-hugging loop well under 1 WU² (user report)', () => {
+    // Out 0.3 WU along the top edge, 2 WU sideways, back in: ~0.6 WU² of
+    // "very small gap" — deliberate, so it must paint (spec §2.2: the floor
+    // only drops numerical slivers; jeder bewusste Loop färbt).
+    const trail: Point[] = [
+      [4, 7.8],
+      [4, 8.3],
+      [6, 8.3],
+      [6, 7.8],
+    ];
+    const outcome = closeLoop(ownSquare(), trail, []);
+    expect(outcome).not.toBeNull();
+    expect(outcome?.gainedArea).toBeCloseTo(0.6, 6);
   });
 
   it('rejects a trail too short to enclose anything', () => {

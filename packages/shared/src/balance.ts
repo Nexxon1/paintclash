@@ -35,9 +35,13 @@ export const BALANCE = Object.freeze({
     widthWU: 1,
     /**
      * Fills gaining less than this are discarded (spec §2.2) — purely to
-     * drop numerical slivers; every deliberate loop paints.
+     * drop numerical slivers; every deliberate loop paints. Re-tuned from
+     * the spec §10.4 start value of 1 WU² (ticket 04): shallow loops hugged
+     * along the own edge deliberately enclose well under 1 WU² and must
+     * fill — the spec's assumption that sub-1-WU² can't be deliberate only
+     * holds for free-standing loops (turn radius 1.6 WU ⇒ ≥ ~8 WU²).
      */
-    minFillAreaWU2: 1,
+    minFillAreaWU2: 0.01,
   }),
 });
 
