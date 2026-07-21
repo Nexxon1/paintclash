@@ -64,6 +64,15 @@ const OFFSET_SMOOTHING = 0.05;
 const OFFSET_RESYNC_TICKS = 10;
 
 /**
+ * Minimum advance before a pose joins a trail polyline. Reconciliation
+ * wobble (worst against walls) moves the rendered pose back and forth by
+ * centimeters — recorded raw, those micro-reversals flip the ribbon's
+ * perpendicular and render as a sawtooth. Real movement covers ~0.15 WU
+ * per 60 Hz frame, so the gate never coarsens genuine curves.
+ */
+const MIN_TRAIL_STEP_WU = 0.1;
+
+/**
  * Sim-cadence servo (ticket 17): the tick-mapped input timeline only stays
  * aligned if the client produces one seq per SERVER tick — but the server's
  * real tick rate is not trustworthy 20 Hz (production DOs pace against an
@@ -150,8 +159,16 @@ export class ClientSession {
   private readonly territories = new Map<number, TerritoryView>();
   /** Fill events since the last renderSample (drained there). */
   private pendingFills: number[] = [];
-  /** Own trail from predicted ticks; cleared by the own fill message. */
+  /**
+   * Own trail from RENDERED frame poses (not tick poses) — appended in
+   * renderSample, so the ribbon is by construction exactly as smooth as the
+   * head on screen: tick-pose vertices would click at 20 Hz through turns
+   * and the bridge to the interpolated head would fold back on itself every
+   * tick (visible tip flicker). Cleared by the own fill message.
+   */
   private ownTrail: Point[] = [];
+  /** Previous rendered pose — seeds a starting own trail (last inside pose). */
+  private ownPrevPose: Point | null = null;
   /** Enemy trails from snapshot poses, tick-stamped for the render timeline. */
   private readonly enemyTrails = new Map<number, StampedPoint[]>();
   /** Last snapshot pose per enemy — seeds a starting trail (last inside pose). */
@@ -281,7 +298,15 @@ export class ClientSession {
           if (prev) trail.push(prev);
           this.enemyTrails.set(p.id, trail);
         }
-        trail.push({ tick, point });
+        const last = trail[trail.length - 1];
+        // Corner-pinned poses barely move — skip sub-step points (they
+        // degenerate the ribbon), but a lone seed still gets its partner.
+        if (
+          !last ||
+          Math.hypot(point[0] - last.point[0], point[1] - last.point[1]) >= MIN_TRAIL_STEP_WU
+        ) {
+          trail.push({ tick, point });
+        }
       }
       this.enemyPrevPose.set(p.id, { tick, point });
     }
@@ -317,15 +342,6 @@ export class ClientSession {
     const seq = this.nextSeq++;
     this.queued.push({ seq, turn });
     this.predictor.applyLocalInput(seq, turn, TICK_DT_SEC);
-    // Own trail follows the predicted head (the one on screen). The server
-    // still owns the fill — the trail only *ends* on its fill message.
-    const predicted = this.predictor.current();
-    const own = this.playerId === null ? undefined : this.territories.get(this.playerId);
-    if (predicted && own) {
-      if (!pointInTerritory(predicted.x, predicted.y, own.territory)) {
-        appendTrailPoint(this.ownTrail, predicted.x, predicted.y);
-      }
-    }
     this.ticksSinceFlush += 1;
     // Flush on the batch cadence — or immediately when the steer direction
     // changes: turn onsets are what latency is felt on, and they are rare
@@ -411,6 +427,7 @@ export class ClientSession {
       );
     }
     const self = this.predictor?.sample(alpha) ?? null;
+    this.trackOwnTrail(self);
     const fills = this.pendingFills;
     this.pendingFills = [];
     return {
@@ -419,23 +436,48 @@ export class ClientSession {
       others,
       arenaSizeWU: this.arenaSizeWU,
       territories: [...this.territories.values()],
-      trails: this.sampleTrails(self, others),
+      trails: this.sampleTrails(others),
       fills,
     };
   }
 
   /**
-   * Trail polylines for this frame. Enemy trails only reveal points up to
-   * the enemy render timeline (they'd lead their delayed heads otherwise);
-   * every trail ends exactly at its player's rendered head, so the ribbon
-   * stays glued to what is on screen.
+   * Extend the own trail with the pose actually drawn this frame. Outside
+   * the own territory every rendered pose joins the ribbon (collinear runs
+   * compact away); a fresh trail is seeded with the previous pose — still
+   * inside on the exit frame — so the ribbon emerges from under the plateau
+   * instead of leaving a gap at the edge (same rule as sim + enemies).
    */
-  private sampleTrails(self: RenderPose | null, others: SnapshotPlayer[]): RenderState['trails'] {
+  private trackOwnTrail(self: RenderPose | null): void {
+    const own = this.playerId === null ? undefined : this.territories.get(this.playerId);
+    if (!self || !own) return;
+    if (!pointInTerritory(self.x, self.y, own.territory)) {
+      if (this.ownTrail.length === 0 && this.ownPrevPose) {
+        this.ownTrail.push(this.ownPrevPose);
+      }
+      const last = this.ownTrail[this.ownTrail.length - 1];
+      // Same sub-step gate as for enemies: reconciliation wobble must not
+      // etch a sawtooth into the ribbon (see MIN_TRAIL_STEP_WU).
+      if (!last || Math.hypot(self.x - last[0], self.y - last[1]) >= MIN_TRAIL_STEP_WU) {
+        appendTrailPoint(this.ownTrail, self.x, self.y);
+      }
+    }
+    this.ownPrevPose = [self.x, self.y];
+  }
+
+  /**
+   * Trail polylines for this frame. The own trail already ends at the pose
+   * drawn this frame (trackOwnTrail); enemy trails only reveal points up to
+   * the enemy render timeline (they'd lead their delayed heads otherwise)
+   * and bridge to the smoothed head, so every ribbon stays glued to what is
+   * on screen.
+   */
+  private sampleTrails(others: SnapshotPlayer[]): RenderState['trails'] {
     const trails: RenderState['trails'] = [];
-    if (self && this.playerId !== null && this.ownTrail.length > 0) {
+    if (this.playerId !== null && this.ownTrail.length >= 2) {
       trails.push({
         playerId: this.playerId,
-        points: [...this.ownTrail.map((p): Point => [p[0], p[1]]), [self.x, self.y]],
+        points: this.ownTrail.map((p): Point => [p[0], p[1]]),
       });
     }
     for (const enemy of others) {

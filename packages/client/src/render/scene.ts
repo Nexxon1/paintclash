@@ -26,9 +26,16 @@ const TRAIL_WIDTH = BALANCE.trail.widthWU;
 /** Fill wave duration (§4.2: the territory "grows" as a height wave). */
 const FILL_WAVE_MS = 450;
 
+/** Hue of the reserved own-player blue (0x2f7fe8 ≈ 214°). */
+const SELF_HUE = 0.594;
+
 function playerColor(id: number): THREE.Color {
   // Stable, well-spread hues until `appearance` lands (ADR-0006 seam).
-  const hue = (id * 0.618034) % 1;
+  let hue = (id * 0.618034) % 1;
+  // Keep enemies clearly apart from the own-blue — id 1 lands almost
+  // exactly on it (verified in the two-player check: own vs. enemy were
+  // indistinguishable). Colliding hues get bumped past it.
+  if (Math.abs(hue - SELF_HUE) < 0.09) hue = (hue + 0.18) % 1;
   return new THREE.Color().setHSL(hue, 0.65, 0.55);
 }
 
@@ -55,8 +62,11 @@ class TrailRibbon {
   readonly mesh: THREE.Mesh;
   private geometry = new THREE.BufferGeometry();
   private capacity = 0;
+  /** Tiny per-player height offset — crossing ribbons must not z-fight. */
+  readonly yOffset: number;
 
-  constructor(color: THREE.Color) {
+  constructor(color: THREE.Color, yOffset: number) {
+    this.yOffset = yOffset;
     this.mesh = new THREE.Mesh(
       this.geometry,
       // DoubleSide: a collinear reversal twists the ribbon and flips the
@@ -109,8 +119,9 @@ class TrailRibbon {
         nz = dx / len;
       }
       const w = TRAIL_WIDTH / 2;
-      position.setXYZ(i * 2, curr[0] + nx * w, TRAIL_Y, curr[1] + nz * w);
-      position.setXYZ(i * 2 + 1, curr[0] - nx * w, TRAIL_Y, curr[1] - nz * w);
+      const y = TRAIL_Y + this.yOffset;
+      position.setXYZ(i * 2, curr[0] + nx * w, y, curr[1] + nz * w);
+      position.setXYZ(i * 2 + 1, curr[0] - nx * w, y, curr[1] - nz * w);
     }
     for (let i = 0; i < n - 1; i++) {
       // Wound so the face normal points UP (+y): (L, L+1, R), (R, L+1, R+1)
@@ -296,7 +307,10 @@ export class ArenaScene {
       seen.add(playerId);
       let ribbon = this.trails.get(playerId);
       if (!ribbon) {
-        ribbon = new TrailRibbon(headColor(playerId, state.selfId));
+        // Height staggered by id (own on top) so crossing ribbons never
+        // z-fight; all offsets stay far below the plateau height.
+        const yOffset = playerId === state.selfId ? 0.02 : ((playerId % 16) + 1) * 0.001;
+        ribbon = new TrailRibbon(headColor(playerId, state.selfId), yOffset);
         this.trails.set(playerId, ribbon);
         this.scene.add(ribbon.mesh);
       }

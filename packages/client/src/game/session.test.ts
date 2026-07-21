@@ -185,22 +185,50 @@ describe('snapshots feed reconciliation + interpolation', () => {
     expect(state.trails.some((t) => t.playerId === 9)).toBe(false);
   });
 
-  it('grows the own trail from predicted ticks once outside, ends it on the fill', () => {
+  it('grows the own trail from rendered frame poses once outside, ends it on the fill', () => {
     const { session } = harness();
     session.receive(encodeWelcome(1, BALANCE.arena.sizeWU));
     session.receive(encodeTerritory(1, 'sync', blockAt(100, 100)));
     // Spawn near the right edge, heading +x: outside after ~5 ticks.
     session.receive(encodeSnapshot(1, 0, [selfPlayer({ x: 101 })]));
-    for (let i = 0; i < 8; i++) session.simTick(0);
-    let trail = session.renderSample(1).trails.find((t) => t.playerId === 1);
+    let trail: { points: [number, number][] } | undefined;
+    for (let i = 0; i < 8; i++) {
+      session.simTick(0);
+      trail = session.renderSample(1).trails.find((t) => t.playerId === 1);
+    }
     if (!trail) throw new Error('own trail missing');
-    // Last point is the rendered head itself.
+    // Seeded with the last pose still INSIDE (same rule as the sim) — the
+    // ribbon emerges from under the plateau instead of leaving a gap.
+    // Block edge is x = 103; ticks land at 101.45 … 102.8 (in), 103.25 (out).
+    expect(trail.points[0]?.[0]).toBeCloseTo(102.8, 5);
+    // Last point is the pose actually drawn this frame (the head itself) —
+    // frame-pose appending is what keeps the ribbon as smooth as the head.
     const head = session.renderSample(1).self;
     expect(trail.points[trail.points.length - 1]?.[0]).toBeCloseTo(head?.x ?? NaN, 5);
     // The server's fill message ends the trail — never the local guess.
-    session.receive(encodeTerritory(1, 'fill', blockAt(100, 100)));
+    // (The grown territory contains the head, as after a real loop close.)
+    session.receive(encodeTerritory(1, 'fill', blockAt(105, 100)));
     trail = session.renderSample(1).trails.find((t) => t.playerId === 1);
     expect(trail).toBeUndefined();
+  });
+
+  it('sub-step render wobble never etches extra points into the own trail', () => {
+    const { session } = harness();
+    session.receive(encodeWelcome(1, BALANCE.arena.sizeWU));
+    session.receive(encodeTerritory(1, 'sync', blockAt(100, 100)));
+    session.receive(encodeSnapshot(1, 0, [selfPlayer({ x: 101 })]));
+    for (let i = 0; i < 8; i++) {
+      session.simTick(0);
+      session.renderSample(1);
+    }
+    const before = session.renderSample(1).trails.find((t) => t.playerId === 1)?.points.length;
+    // Reconciliation-style wobble: the rendered pose slides back and forth
+    // by ~0.05 WU between frames (alpha jitter) — below the step gate.
+    for (const alpha of [0.9, 1, 0.9, 1, 0.9, 1]) {
+      session.renderSample(alpha);
+    }
+    const after = session.renderSample(1).trails.find((t) => t.playerId === 1)?.points.length;
+    expect(after).toBe(before);
   });
 
   it('derives enemy trails from snapshot poses, held back to the render timeline', () => {
