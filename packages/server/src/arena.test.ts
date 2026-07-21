@@ -437,6 +437,74 @@ describe('intent-only validation at the protocol boundary (spec §8.2/8.3)', () 
   });
 });
 
+describe('territory sync (ticket 04, spec §6.1: fill is server-only)', () => {
+  /** Steer intents paced one per tick, like a real client. */
+  function drive(arena: ArenaCore, socket: FakeSocket, id: number, turns: (-1 | 0 | 1)[]): void {
+    for (const turn of turns) {
+      const tick = socket.lastSnapshot().tick;
+      arena.handleFrame(id, encodeInput([{ seq: tick, turn }]));
+      arena.tick(TICK_DT_SEC);
+    }
+  }
+
+  /** Out-and-back: straight out, over-rotate past 180°, straight home. */
+  const loopManeuver = (): (-1 | 0 | 1)[] => [
+    ...Array.from({ length: 12 }, (): 0 => 0),
+    ...Array.from({ length: 12 }, (): 1 => 1),
+    ...Array.from({ length: 40 }, (): 0 => 0),
+  ];
+
+  it('broadcasts a spawned player’s start block to everyone', () => {
+    const arena = new ArenaCore(1);
+    const a = joinedPlayer(arena, 'a');
+    arena.tick(TICK_DT_SEC);
+    const b = joinedPlayer(arena, 'b');
+    arena.tick(TICK_DT_SEC);
+    for (const socket of [a.socket, b.socket]) {
+      const sync = socket
+        .decoded()
+        .find((m) => m.type === 'territory' && m.playerId === b.id && m.reason === 'sync');
+      expect(sync).toBeDefined();
+      if (sync?.type !== 'territory') throw new Error('unreachable');
+      expect(sync.territory.length).toBeGreaterThan(0);
+    }
+  });
+
+  it('sends a joiner every existing territory and active trail, then deltas only', () => {
+    const arena = new ArenaCore(1);
+    const a = joinedPlayer(arena, 'runner');
+    arena.tick(TICK_DT_SEC);
+    // Drive a straight out of its block so a real trail exists.
+    drive(
+      arena,
+      a.socket,
+      a.id,
+      Array.from({ length: 14 }, (): 0 => 0),
+    );
+    const b = joinedPlayer(arena, 'late');
+    const synced = b.socket.decoded();
+    const territory = synced.find((m) => m.type === 'territory' && m.playerId === a.id);
+    expect(territory).toBeDefined();
+    const trail = synced.find((m) => m.type === 'trail' && m.playerId === a.id);
+    if (trail?.type !== 'trail') throw new Error('joiner got no trail sync');
+    expect(trail.points.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('a closed loop broadcasts the grown territory as a fill delta to everyone', () => {
+    const arena = new ArenaCore(20260721);
+    const a = joinedPlayer(arena, 'painter');
+    const witness = joinedPlayer(arena, 'witness');
+    arena.tick(TICK_DT_SEC);
+    drive(arena, a.socket, a.id, loopManeuver());
+    for (const socket of [a.socket, witness.socket]) {
+      const fill = socket
+        .decoded()
+        .find((m) => m.type === 'territory' && m.playerId === a.id && m.reason === 'fill');
+      expect(fill).toBeDefined();
+    }
+  });
+});
+
 describe('same-tick join + disconnect', () => {
   it('cancels the unspawned join — no immortal ghost player', () => {
     const arena = new ArenaCore(1);

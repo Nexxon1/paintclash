@@ -25,6 +25,8 @@
 import {
   decodeClientMessage,
   encodeSnapshot,
+  encodeTerritory,
+  encodeTrail,
   encodeWelcome,
   type InputItem,
   type SnapshotPlayer,
@@ -166,6 +168,13 @@ export class ArenaCore {
         connection.joined = true;
         connection.name = message.name;
         connection.socket.send(encodeWelcome(playerId, this.state.arenaSizeWU));
+        // World sync for the joiner (ticket 04): every existing territory
+        // and every active trail, full — from here on, territory changes
+        // arrive as per-player deltas and trails derive from the snapshots.
+        for (const p of this.state.players) {
+          connection.socket.send(encodeTerritory(p.id, 'sync', p.territory));
+          if (p.trail.length > 0) connection.socket.send(encodeTrail(p.id, p.trail));
+        }
         this.pendingJoins.push(playerId);
       }
       return;
@@ -259,9 +268,33 @@ export class ArenaCore {
       // else: input still in flight — the sim persists the current turn and
       // the ack below moves past this tick regardless ("processed").
     }
-    step(this.state, { joins: this.pendingJoins, leaves: this.pendingLeaves, turns }, dtSec);
+    const spawned = this.pendingJoins;
+    const events = step(
+      this.state,
+      { joins: this.pendingJoins, leaves: this.pendingLeaves, turns },
+      dtSec,
+    );
     this.pendingJoins = [];
     this.pendingLeaves = [];
+
+    // Territory deltas (ticket 04, spec §6.1: fill is server-only — this is
+    // the only source of territory truth). Sent BEFORE the tick's snapshot,
+    // so a fill's trail-clear is already known when its pose arrives.
+    const territoryFrames: Uint8Array[] = [];
+    for (const id of spawned) {
+      const p = this.state.players.find((q) => q.id === id);
+      if (p) territoryFrames.push(encodeTerritory(id, 'sync', p.territory));
+    }
+    for (const id of events.fills) {
+      const p = this.state.players.find((q) => q.id === id);
+      if (p) territoryFrames.push(encodeTerritory(id, 'fill', p.territory));
+    }
+    if (territoryFrames.length > 0) {
+      for (const connection of this.connections.values()) {
+        if (!connection.joined) continue;
+        for (const frame of territoryFrames) connection.socket.send(frame);
+      }
+    }
 
     const players: SnapshotPlayer[] = this.state.players.map((p) => ({
       id: p.id,
@@ -269,8 +302,6 @@ export class ArenaCore {
       y: p.y,
       heading: p.heading,
       turn: p.turn,
-      blockCx: p.blockCx,
-      blockCy: p.blockCy,
     }));
     for (const connection of this.connections.values()) {
       // World state only flows to sockets that actually joined (spec §8.2) —

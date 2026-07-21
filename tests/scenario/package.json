@@ -10,7 +10,8 @@
   "dependencies": {
     "@paintclash/server": "workspace:*",
     "@paintclash/shared": "workspace:*",
-    "@paintclash/sim-client": "workspace:*"
+    "@paintclash/sim-client": "workspace:*",
+    "@paintclash/sim-core": "workspace:*"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.12.0",

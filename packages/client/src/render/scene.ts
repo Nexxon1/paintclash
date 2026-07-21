@@ -1,22 +1,30 @@
 /**
- * three.js scene (spec §4.1/4.3): arena floor, start blocks, heads — rendered
- * with the "Paper.io Modern" perspective tilt (~52° elevation). Pure data
- * sink: `update()` consumes the session's RenderState and never touches game
- * logic. Excluded from unit coverage; the Playwright E2E exercises it.
+ * three.js scene (spec §4.1/4.3): arena floor, territory plateaus, ground
+ * trails, heads — rendered with the "Paper.io Modern" perspective tilt
+ * (~52° elevation). Pure data sink: `update()` consumes the session's
+ * RenderState and never touches game logic. Excluded from unit coverage;
+ * the Playwright E2E exercises it.
  *
  * Sim coords map to three as (x, y_sim) → (x, 0, z=y_sim).
  */
 
-import { BALANCE } from '@paintclash/shared';
+import { BALANCE, type Point, type Territory } from '@paintclash/shared';
 import * as THREE from 'three';
 
 import type { RenderState } from '../game/session.js';
 
 const CAMERA_ELEVATION_RAD = (52 * Math.PI) / 180;
 const CAMERA_DISTANCE = 40;
-const BLOCK_SIZE = BALANCE.spawn.startBlockWU;
 /** Reserved mesh key for the own player (rendered from the predicted pose). */
 const SELF_KEY = -1;
+
+/** Plateau height — a flat, slightly raised surface, not a block (§4.1). */
+const TERRITORY_HEIGHT = 0.35;
+/** Trail ribbons hug the floor (§4.1: 2D line at ground height). */
+const TRAIL_Y = 0.03;
+const TRAIL_WIDTH = BALANCE.trail.widthWU;
+/** Fill wave duration (§4.2: the territory "grows" as a height wave). */
+const FILL_WAVE_MS = 450;
 
 function playerColor(id: number): THREE.Color {
   // Stable, well-spread hues until `appearance` lands (ADR-0006 seam).
@@ -24,16 +32,106 @@ function playerColor(id: number): THREE.Color {
   return new THREE.Color().setHSL(hue, 0.65, 0.55);
 }
 
-interface PlayerMeshes {
-  head: THREE.Mesh;
-  block: THREE.Mesh;
+function headColor(playerId: number, selfId: number | null): THREE.Color {
+  return playerId === selfId ? new THREE.Color(0x2f7fe8) : playerColor(playerId);
+}
+
+/** Ease-out with a slight overshoot — the plateau "pops" up once. */
+function easeOutBack(t: number): number {
+  const c1 = 1.70158;
+  const c3 = c1 + 1;
+  return 1 + c3 * (t - 1) ** 3 + c1 * (t - 1) ** 2;
+}
+
+interface TerritoryMesh {
+  mesh: THREE.Mesh;
+  rev: number;
+  /** performance.now() of the fill that triggered the running wave. */
+  waveStart: number | null;
+}
+
+/** A ground ribbon along a polyline, rebuilt in place with growing buffers. */
+class TrailRibbon {
+  readonly mesh: THREE.Mesh;
+  private geometry = new THREE.BufferGeometry();
+  private capacity = 0;
+
+  constructor(color: THREE.Color) {
+    this.mesh = new THREE.Mesh(
+      this.geometry,
+      new THREE.MeshLambertMaterial({ color, transparent: true, opacity: 0.92 }),
+    );
+    this.mesh.frustumCulled = false; // grows every frame; culling lags behind
+  }
+
+  update(points: Point[]): void {
+    const n = points.length;
+    if (n < 2) {
+      this.geometry.setDrawRange(0, 0);
+      return;
+    }
+    if (n > this.capacity) {
+      this.capacity = Math.max(64, this.capacity * 2, n);
+      this.geometry.dispose();
+      this.geometry = new THREE.BufferGeometry();
+      this.geometry.setAttribute(
+        'position',
+        new THREE.BufferAttribute(new Float32Array(this.capacity * 6), 3),
+      );
+      const indices = new Uint32Array((this.capacity - 1) * 6);
+      this.geometry.setIndex(new THREE.BufferAttribute(indices, 1));
+      this.mesh.geometry = this.geometry;
+    }
+    const position = this.geometry.getAttribute('position') as THREE.BufferAttribute;
+    const index = this.geometry.getIndex();
+    if (!index) return;
+    let nx = 0;
+    let nz = 1;
+    for (let i = 0; i < n; i++) {
+      const curr = points[i];
+      const ahead = points[Math.min(i + 1, n - 1)];
+      const behind = points[Math.max(i - 1, 0)];
+      if (!curr || !ahead || !behind) continue;
+      const dx = ahead[0] - behind[0];
+      const dz = ahead[1] - behind[1];
+      const len = Math.hypot(dx, dz);
+      if (len > 1e-6) {
+        // Perpendicular of the local direction; keep the previous one on
+        // zero-length steps (head standing at the last trail point).
+        nx = -dz / len;
+        nz = dx / len;
+      }
+      const w = TRAIL_WIDTH / 2;
+      position.setXYZ(i * 2, curr[0] + nx * w, TRAIL_Y, curr[1] + nz * w);
+      position.setXYZ(i * 2 + 1, curr[0] - nx * w, TRAIL_Y, curr[1] - nz * w);
+    }
+    for (let i = 0; i < n - 1; i++) {
+      const a = i * 2;
+      index.setX(i * 6, a);
+      index.setX(i * 6 + 1, a + 1);
+      index.setX(i * 6 + 2, a + 2);
+      index.setX(i * 6 + 3, a + 1);
+      index.setX(i * 6 + 4, a + 3);
+      index.setX(i * 6 + 5, a + 2);
+    }
+    position.needsUpdate = true;
+    index.needsUpdate = true;
+    this.geometry.setDrawRange(0, (n - 1) * 6);
+  }
+
+  dispose(): void {
+    this.geometry.dispose();
+    (this.mesh.material as THREE.Material).dispose();
+  }
 }
 
 export class ArenaScene {
   private readonly renderer: THREE.WebGLRenderer;
   private readonly scene = new THREE.Scene();
   private readonly camera: THREE.PerspectiveCamera;
-  private readonly players = new Map<number, PlayerMeshes>();
+  private readonly heads = new Map<number, THREE.Mesh>();
+  private readonly territories = new Map<number, TerritoryMesh>();
+  private readonly trails = new Map<number, TrailRibbon>();
   private floor: THREE.Mesh | null = null;
   private arenaSize = 0;
 
@@ -71,19 +169,22 @@ export class ArenaScene {
       this.buildFloor(state.arenaSizeWU);
     }
 
-    const seen = new Set<number>();
+    this.updateTerritories(state);
+    this.updateTrails(state);
+
+    const seenHeads = new Set<number>();
     for (const p of state.others) {
-      seen.add(p.id);
-      this.pose(p.id, false, p.x, p.y, p.heading, { cx: p.blockCx, cy: p.blockCy });
+      seenHeads.add(p.id);
+      this.poseHead(p.id, state.selfId, p.x, p.y, p.heading);
     }
     if (state.self) {
-      seen.add(SELF_KEY);
-      this.pose(SELF_KEY, true, state.self.x, state.self.y, state.self.heading, state.selfBlock);
+      seenHeads.add(SELF_KEY);
+      this.poseHead(SELF_KEY, state.selfId, state.self.x, state.self.y, state.self.heading);
     }
-    for (const [id, meshes] of this.players) {
-      if (!seen.has(id)) {
-        this.scene.remove(meshes.head, meshes.block);
-        this.players.delete(id);
+    for (const [id, mesh] of this.heads) {
+      if (!seenHeads.has(id)) {
+        this.scene.remove(mesh);
+        this.heads.delete(id);
       }
     }
 
@@ -97,17 +198,120 @@ export class ArenaScene {
     this.renderer.render(this.scene, this.camera);
   }
 
+  /** Territory plateaus: rebuild on revision change, run the fill wave. */
+  private updateTerritories(state: RenderState): void {
+    const now = performance.now();
+    const fills = new Set(state.fills);
+    const seen = new Set<number>();
+    for (const view of state.territories) {
+      seen.add(view.playerId);
+      let entry = this.territories.get(view.playerId);
+      if (entry?.rev !== view.rev) {
+        if (entry) this.removeMesh(entry.mesh);
+        const mesh = this.buildTerritoryMesh(view.territory, view.playerId, state.selfId);
+        entry = { mesh, rev: view.rev, waveStart: entry?.waveStart ?? null };
+        this.territories.set(view.playerId, entry);
+        this.scene.add(mesh);
+      }
+      if (fills.has(view.playerId)) entry.waveStart = now;
+      this.animateWave(entry, now);
+    }
+    for (const [id, entry] of this.territories) {
+      if (!seen.has(id)) {
+        this.removeMesh(entry.mesh);
+        this.territories.delete(id);
+      }
+    }
+  }
+
+  /** Detach a mesh and free its GPU resources. */
+  private removeMesh(mesh: THREE.Mesh): void {
+    this.scene.remove(mesh);
+    mesh.geometry.dispose();
+    (mesh.material as THREE.Material).dispose();
+  }
+
+  /** Height/color wave (§4.2): the plateau pops up and briefly glows. */
+  private animateWave(entry: TerritoryMesh, now: number): void {
+    const material = entry.mesh.material as THREE.MeshLambertMaterial;
+    if (entry.waveStart === null) return;
+    const t = (now - entry.waveStart) / FILL_WAVE_MS;
+    if (t >= 1) {
+      entry.mesh.scale.y = 1;
+      material.emissiveIntensity = 0;
+      entry.waveStart = null;
+      return;
+    }
+    entry.mesh.scale.y = Math.max(0.15, easeOutBack(t));
+    material.emissive = material.color;
+    material.emissiveIntensity = 0.35 * (1 - t);
+  }
+
+  private buildTerritoryMesh(
+    territory: Territory,
+    playerId: number,
+    selfId: number | null,
+  ): THREE.Mesh {
+    const shapes: THREE.Shape[] = [];
+    for (const poly of territory) {
+      const outer = poly[0];
+      if (!outer || outer.length < 3) continue;
+      const shape = new THREE.Shape(outer.map(([x, y]) => new THREE.Vector2(x, y)));
+      for (const hole of poly.slice(1)) {
+        if (hole.length < 3) continue;
+        shape.holes.push(new THREE.Path(hole.map(([x, y]) => new THREE.Vector2(x, y))));
+      }
+      shapes.push(shape);
+    }
+    const geometry = new THREE.ExtrudeGeometry(shapes, {
+      depth: TERRITORY_HEIGHT,
+      bevelEnabled: false,
+    });
+    // Shape XY lies in sim coords; rotate onto the ground (y_sim → z_world,
+    // extrusion → downward) and lift so the plateau sits ON the floor.
+    geometry.rotateX(Math.PI / 2);
+    geometry.translate(0, TERRITORY_HEIGHT, 0);
+    const base = headColor(playerId, selfId);
+    const material = new THREE.MeshLambertMaterial({
+      color: base.clone().offsetHSL(0, -0.15, 0.12),
+      transparent: true,
+      opacity: 0.95,
+    });
+    return new THREE.Mesh(geometry, material);
+  }
+
+  /** Trail ribbons — one per player with a visible trail this frame. */
+  private updateTrails(state: RenderState): void {
+    const seen = new Set<number>();
+    for (const { playerId, points } of state.trails) {
+      seen.add(playerId);
+      let ribbon = this.trails.get(playerId);
+      if (!ribbon) {
+        ribbon = new TrailRibbon(headColor(playerId, state.selfId));
+        this.trails.set(playerId, ribbon);
+        this.scene.add(ribbon.mesh);
+      }
+      ribbon.update(points);
+    }
+    for (const [id, ribbon] of this.trails) {
+      if (!seen.has(id)) {
+        this.scene.remove(ribbon.mesh);
+        ribbon.dispose();
+        this.trails.delete(id);
+      }
+    }
+  }
+
   /** Non-finite poses that were blocked from rendering (debug/diagnosis). */
   poseAnomalies = 0;
 
-  /** Place (and lazily create) one player's head + start block. */
-  private pose(
+  /** Place (and lazily create) one player's head cone. */
+  private poseHead(
     key: number,
-    self: boolean,
+    selfId: number | null,
     x: number,
     y: number,
     heading: number,
-    block: { cx: number; cy: number } | null,
   ): void {
     // A single non-finite value smears mesh triangles across the whole
     // screen (huge single-color blobs). Never let one reach the GPU; count
@@ -119,13 +323,11 @@ export class ArenaScene {
       }
       return;
     }
-    let meshes = this.players.get(key);
-    meshes ??= this.spawnMeshes(key, self);
-    meshes.head.position.set(x, 0.6, y);
+    let head = this.heads.get(key);
+    head ??= this.spawnHead(key, selfId);
+    head.position.set(x, 0.6, y);
     // +z-pointing cone rotated so heading 0 = +x, heading π/2 = +z (=y_sim).
-    meshes.head.rotation.y = Math.PI / 2 - heading;
-    meshes.block.visible = block !== null;
-    if (block) meshes.block.position.set(block.cx, 0.05, block.cy);
+    head.rotation.y = Math.PI / 2 - heading;
   }
 
   private buildFloor(size: number): void {
@@ -148,26 +350,16 @@ export class ArenaScene {
     this.scene.add(walls);
   }
 
-  private spawnMeshes(id: number, self: boolean): PlayerMeshes {
-    const color = self ? new THREE.Color(0x2f7fe8) : playerColor(id);
+  private spawnHead(key: number, selfId: number | null): THREE.Mesh {
+    const color = key === SELF_KEY ? headColor(selfId ?? -2, selfId) : headColor(key, selfId);
     const head = new THREE.Mesh(
       new THREE.ConeGeometry(0.5, 1.4, 12),
       new THREE.MeshLambertMaterial({ color }),
     );
     head.rotation.order = 'YXZ';
     head.geometry.rotateX(Math.PI / 2); // cone points along +z = heading 0 … rotated by heading
-    // Flat, muted ground plate — clearly "owned floor", not a solid object.
-    const block = new THREE.Mesh(
-      new THREE.BoxGeometry(BLOCK_SIZE, 0.1, BLOCK_SIZE),
-      new THREE.MeshLambertMaterial({
-        color: color.clone().offsetHSL(0, -0.3, 0.22),
-        transparent: true,
-        opacity: 0.9,
-      }),
-    );
-    this.scene.add(head, block);
-    const meshes = { head, block };
-    this.players.set(id, meshes);
-    return meshes;
+    this.scene.add(head);
+    this.heads.set(key, head);
+    return head;
   }
 }

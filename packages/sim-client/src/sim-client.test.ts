@@ -1,7 +1,9 @@
-import { TICK_DT_SEC } from '@paintclash/shared';
+import { TICK_DT_SEC, type Territory } from '@paintclash/shared';
 import {
   decodeClientMessage,
   encodeSnapshot,
+  encodeTerritory,
+  encodeTrail,
   encodeWelcome,
   MAX_INPUT_BATCH,
   type SnapshotPlayer,
@@ -17,8 +19,20 @@ function harness(name = 'headless'): { client: SimClient; sent: Uint8Array[] } {
 }
 
 function snapshotPlayer(overrides: Partial<SnapshotPlayer> = {}): SnapshotPlayer {
-  return { id: 1, x: 100, y: 100, heading: 0, turn: 0, blockCx: 100, blockCy: 100, ...overrides };
+  return { id: 1, x: 100, y: 100, heading: 0, turn: 0, ...overrides };
 }
+
+/** 6×6 square around (100, 100). */
+const block: Territory = [
+  [
+    [
+      [97, 97],
+      [103, 97],
+      [103, 103],
+      [97, 103],
+    ],
+  ],
+];
 
 describe('join handshake', () => {
   it('sends a decodable join frame with the name', () => {
@@ -61,6 +75,56 @@ describe('snapshots', () => {
     client.receive(encodeSnapshot(5, 0, [snapshotPlayer({ x: 90 })]));
     expect(client.snapshot?.tick).toBe(9);
     expect(client.self()?.x).toBe(110);
+  });
+});
+
+describe('territory & trail sync (ticket 04)', () => {
+  it('stores territory updates per player and reports their area', () => {
+    const { client } = harness();
+    client.receive(encodeWelcome(1, 200));
+    client.receive(encodeTerritory(1, 'sync', block));
+    expect(client.territoryAreaOf(1)).toBeCloseTo(36, 5);
+    expect(client.territoryAreaOf(2)).toBe(0);
+  });
+
+  it('notifies the territory hook with the decoded update', () => {
+    const { client } = harness();
+    const seen: string[] = [];
+    client.onTerritory = (update) => seen.push(`${String(update.playerId)}:${update.reason}`);
+    client.receive(encodeTerritory(3, 'sync', block));
+    client.receive(encodeTerritory(3, 'fill', block));
+    expect(seen).toEqual(['3:sync', '3:fill']);
+  });
+
+  it('keeps a synced trail until the fill that ends it', () => {
+    const { client } = harness();
+    client.receive(
+      encodeTrail(2, [
+        [1, 2],
+        [3, 4],
+      ]),
+    );
+    expect(client.trails.get(2)).toHaveLength(2);
+    client.receive(encodeTerritory(2, 'sync', block));
+    expect(client.trails.get(2)).toHaveLength(2); // sync ≠ fill
+    client.receive(encodeTerritory(2, 'fill', block));
+    expect(client.trails.has(2)).toBe(false);
+  });
+
+  it('drops territory and trail of players that left the arena', () => {
+    const { client } = harness();
+    client.receive(encodeWelcome(1, 200));
+    client.receive(encodeTerritory(9, 'sync', block));
+    client.receive(
+      encodeTrail(9, [
+        [0, 0],
+        [1, 1],
+        [2, 2],
+      ]),
+    );
+    client.receive(encodeSnapshot(1, 0, [snapshotPlayer()])); // 9 is gone
+    expect(client.territories.has(9)).toBe(false);
+    expect(client.trails.has(9)).toBe(false);
   });
 });
 

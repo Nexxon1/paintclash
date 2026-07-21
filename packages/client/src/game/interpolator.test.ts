@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { Interpolator } from './interpolator.js';
 
 function player(id: number, overrides: Partial<SnapshotPlayer> = {}): SnapshotPlayer {
-  return { id, x: 0, y: 0, heading: 0, turn: 0, blockCx: 0, blockCy: 0, ...overrides };
+  return { id, x: 0, y: 0, heading: 0, turn: 0, ...overrides };
 }
 
 describe('enemy interpolation between snapshots (spec §6.1)', () => {

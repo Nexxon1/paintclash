@@ -13,7 +13,16 @@ import {
   type InputItem,
   type SnapshotPlayer,
 } from '@paintclash/protocol';
-import { BALANCE, LIMITS, TICK_DT_MS, TICK_DT_SEC, type TurnSignal } from '@paintclash/shared';
+import {
+  BALANCE,
+  LIMITS,
+  TICK_DT_MS,
+  TICK_DT_SEC,
+  type Point,
+  type Territory,
+  type TurnSignal,
+} from '@paintclash/shared';
+import { appendTrailPoint, pointInTerritory, territoryArea } from '@paintclash/sim-core';
 
 import { angleDiff, Interpolator } from './interpolator.js';
 import { Predictor, type RenderPose } from './predictor.js';
@@ -94,12 +103,36 @@ const MAX_ENEMY_GLIDE_WU = 8;
 /** Enemy heading may re-align at most this multiple of the sim turn rate. */
 const MAX_ENEMY_TURN_SPEEDUP = 2.2;
 
+/** A trail vertex bound to the server tick it was observed at. */
+interface StampedPoint {
+  tick: number;
+  point: Point;
+}
+
+/** One player's territory for rendering; `rev` bumps on every replacement. */
+export interface TerritoryView {
+  playerId: number;
+  territory: Territory;
+  /** Monotonic per-player revision — the scene rebuilds meshes on change. */
+  rev: number;
+}
+
 export interface RenderState {
   self: RenderPose | null;
-  /** Center of the own 6×6 start block, once spawned. */
-  selfBlock: { cx: number; cy: number } | null;
+  /** Own player id, once welcomed — keys the own entries below. */
+  selfId: number | null;
   others: SnapshotPlayer[];
   arenaSizeWU: number | null;
+  /** Every known territory, own included (ticket 04). */
+  territories: TerritoryView[];
+  /**
+   * Trail polylines to draw (ticket 04), each ending at its player's
+   * rendered head: the own one from predicted ticks, enemy ones from
+   * snapshot poses held back to the enemy render timeline.
+   */
+  trails: { playerId: number; points: Point[] }[];
+  /** Players whose fill landed since the last sample (wave animation). */
+  fills: number[];
 }
 
 export class ClientSession {
@@ -113,7 +146,16 @@ export class ClientSession {
   private queued: InputItem[] = [];
   private nextSeq = 1; // server acks 0 = "nothing yet"
   private ticksSinceFlush = 0;
-  private selfBlock: { cx: number; cy: number } | null = null;
+  /** Latest known territory + revision per player (server-only truth, §6.1). */
+  private readonly territories = new Map<number, TerritoryView>();
+  /** Fill events since the last renderSample (drained there). */
+  private pendingFills: number[] = [];
+  /** Own trail from predicted ticks; cleared by the own fill message. */
+  private ownTrail: Point[] = [];
+  /** Enemy trails from snapshot poses, tick-stamped for the render timeline. */
+  private readonly enemyTrails = new Map<number, StampedPoint[]>();
+  /** Last snapshot pose per enemy — seeds a starting trail (last inside pose). */
+  private readonly enemyPrevPose = new Map<number, StampedPoint>();
   /** Local sim ticks since start — the smooth clock everything renders on. */
   private clientTicks = 0;
   /** Turn value of the last flushed tick — direction changes flush eagerly. */
@@ -160,9 +202,42 @@ export class ClientSession {
       this.predictor = new Predictor(message.arenaSizeWU);
       return;
     }
+    if (message.type === 'territory') {
+      const previous = this.territories.get(message.playerId);
+      this.territories.set(message.playerId, {
+        playerId: message.playerId,
+        territory: message.territory,
+        rev: (previous?.rev ?? 0) + 1,
+      });
+      if (message.reason === 'fill') {
+        // A fill ends the trail that drew it (spec §2.2) — authoritative,
+        // never inferred from poses.
+        if (message.playerId === this.playerId) this.ownTrail = [];
+        else this.enemyTrails.delete(message.playerId);
+        // Animate only real growth — a discarded sliver loop (spec §2.2
+        // floor) still clears the trail but earns no wave.
+        const grew =
+          previous === undefined ||
+          territoryArea(message.territory) > territoryArea(previous.territory) + 1e-9;
+        if (grew) this.pendingFills.push(message.playerId);
+      }
+      return;
+    }
+    if (message.type === 'trail') {
+      // Join-time full sync of a standing trail. No tick stamps on the wire:
+      // stamp 0 renders the whole history immediately, appends stamp on.
+      if (message.playerId !== this.playerId) {
+        this.enemyTrails.set(
+          message.playerId,
+          message.points.map((point) => ({ tick: 0, point })),
+        );
+      }
+      return;
+    }
     const latest = this.interpolator.latestTick();
     if (latest !== null && message.tick <= latest) return;
     this.interpolator.add(message.tick, message.players);
+    this.trackEnemyTrails(message.tick, message.players);
     this.lastSnapshotClientTick = this.clientTicks;
     const offsetSample = message.tick - this.clientTicks;
     if (
@@ -179,8 +254,42 @@ export class ClientSession {
     const self =
       this.playerId === null ? undefined : message.players.find((p) => p.id === this.playerId);
     if (self && this.predictor) {
-      this.selfBlock = { cx: self.blockCx, cy: self.blockCy };
       this.predictor.reconcile(self, message.ackSeq, TICK_DT_SEC);
+    }
+  }
+
+  /**
+   * Derive enemy trails from the poses every snapshot already carries — the
+   * same rule the sim runs (outside the own territory ⇒ the pose extends the
+   * trail, seeded with the last inside pose), so no extra wire traffic is
+   * needed. Clearing is never inferred: only the fill message ends a trail.
+   */
+  private trackEnemyTrails(tick: number, players: SnapshotPlayer[]): void {
+    const present = new Set<number>();
+    for (const p of players) {
+      present.add(p.id);
+      if (p.id === this.playerId) continue;
+      const territory = this.territories.get(p.id)?.territory;
+      const point: Point = [p.x, p.y];
+      // Before the territory sync lands there is no reliable inside-test —
+      // and no trail either (the sync precedes the first pose, ticket 04).
+      if (territory && !pointInTerritory(p.x, p.y, territory)) {
+        let trail = this.enemyTrails.get(p.id);
+        if (!trail || trail.length === 0) {
+          trail = [];
+          const prev = this.enemyPrevPose.get(p.id);
+          if (prev) trail.push(prev);
+          this.enemyTrails.set(p.id, trail);
+        }
+        trail.push({ tick, point });
+      }
+      this.enemyPrevPose.set(p.id, { tick, point });
+    }
+    // Players gone from the snapshot left the arena; their land is neutral.
+    for (const map of [this.territories, this.enemyTrails, this.enemyPrevPose] as const) {
+      for (const id of map.keys()) {
+        if (!present.has(id) && id !== this.playerId) map.delete(id);
+      }
     }
   }
 
@@ -208,6 +317,15 @@ export class ClientSession {
     const seq = this.nextSeq++;
     this.queued.push({ seq, turn });
     this.predictor.applyLocalInput(seq, turn, TICK_DT_SEC);
+    // Own trail follows the predicted head (the one on screen). The server
+    // still owns the fill — the trail only *ends* on its fill message.
+    const predicted = this.predictor.current();
+    const own = this.playerId === null ? undefined : this.territories.get(this.playerId);
+    if (predicted && own) {
+      if (!pointInTerritory(predicted.x, predicted.y, own.territory)) {
+        appendTrailPoint(this.ownTrail, predicted.x, predicted.y);
+      }
+    }
     this.ticksSinceFlush += 1;
     // Flush on the batch cadence — or immediately when the steer direction
     // changes: turn onsets are what latency is felt on, and they are rare
@@ -292,12 +410,46 @@ export class ClientSession {
         frameDtMs,
       );
     }
+    const self = this.predictor?.sample(alpha) ?? null;
+    const fills = this.pendingFills;
+    this.pendingFills = [];
     return {
-      self: this.predictor?.sample(alpha) ?? null,
-      selfBlock: this.selfBlock,
+      self,
+      selfId: this.playerId,
       others,
       arenaSizeWU: this.arenaSizeWU,
+      territories: [...this.territories.values()],
+      trails: this.sampleTrails(self, others),
+      fills,
     };
+  }
+
+  /**
+   * Trail polylines for this frame. Enemy trails only reveal points up to
+   * the enemy render timeline (they'd lead their delayed heads otherwise);
+   * every trail ends exactly at its player's rendered head, so the ribbon
+   * stays glued to what is on screen.
+   */
+  private sampleTrails(self: RenderPose | null, others: SnapshotPlayer[]): RenderState['trails'] {
+    const trails: RenderState['trails'] = [];
+    if (self && this.playerId !== null && this.ownTrail.length > 0) {
+      trails.push({
+        playerId: this.playerId,
+        points: [...this.ownTrail.map((p): Point => [p[0], p[1]]), [self.x, self.y]],
+      });
+    }
+    for (const enemy of others) {
+      const stamped = this.enemyTrails.get(enemy.id);
+      if (!stamped || stamped.length === 0) continue;
+      const points: Point[] = [];
+      for (const { tick, point } of stamped) {
+        if (this.renderTick !== null && tick > this.renderTick) break;
+        points.push([point[0], point[1]]);
+      }
+      points.push([enemy.x, enemy.y]);
+      if (points.length >= 2) trails.push({ playerId: enemy.id, points });
+    }
+    return trails;
   }
 
   /**

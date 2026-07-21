@@ -51,6 +51,15 @@ test('a player joins and steers the head with the keyboard', async ({ page }) =>
   // The canvas is live and sized.
   const canvas = page.locator('#game');
   await expect(canvas).toBeVisible();
+
+  // Territory sync reached the browser client (ticket 04): the own start
+  // block arrived and renders as a real polygon.
+  const ownTerritory = await page.evaluate(() => {
+    const state = window.__paintclash?.lastRender;
+    return state?.territories.find((t) => t.playerId === state.selfId)?.territory ?? null;
+  });
+  expect(ownTerritory).not.toBeNull();
+  expect(ownTerritory?.[0]?.[0]?.length ?? 0).toBeGreaterThanOrEqual(4);
 });
 
 test('movement renders smoothly — no reconciliation jerks, no frozen enemies', async ({

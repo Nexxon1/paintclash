@@ -1,6 +1,7 @@
 import { SELF } from 'cloudflare:test';
-import { BALANCE, type TurnSignal } from '@paintclash/shared';
+import { BALANCE, type Point, type Territory, type TurnSignal } from '@paintclash/shared';
 import { SimClient } from '@paintclash/sim-client';
+import { closeLoop, pointInTerritory, territoryArea } from '@paintclash/sim-core';
 import { describe, expect, it } from 'vitest';
 
 /**
@@ -105,20 +106,101 @@ describe('walking skeleton over the real wire', () => {
     try {
       await until(() => a.client.self(), 'alice spawn');
       await until(() => b.client.self(), 'bob spawn');
-      const bId = b.client.playerId;
-      const bothSeen = await until(
-        () => a.client.snapshot?.players.find((p) => p.id === bId),
-        'alice seeing bob',
+      const aId = a.client.playerId ?? -1;
+      const bId = b.client.playerId ?? -1;
+      // Territory syncs carry the start blocks (ticket 04) — their centers
+      // are the spawn spots, stable while both heads move on.
+      const aBlock = await until(() => a.client.territories.get(aId), "alice's own territory");
+      const bBlock = await until(() => a.client.territories.get(bId), "bob's territory at alice");
+      const [ax, ay] = ringCenter(aBlock);
+      const [bx, by] = ringCenter(bBlock);
+      expect(Math.hypot(bx - ax, by - ay)).toBeGreaterThanOrEqual(
+        BALANCE.spawn.minDistanceWU - 1e-3,
       );
-      const aSelf = a.client.self();
-      if (!aSelf) throw new Error('alice lost herself');
-      // Spawn min distance (spec §2.3) held across the wire (f32 tolerance;
-      // both heads have moved a little since spawning).
-      const dist = Math.hypot(bothSeen.blockCx - aSelf.blockCx, bothSeen.blockCy - aSelf.blockCy);
-      expect(dist).toBeGreaterThanOrEqual(BALANCE.spawn.minDistanceWU - 1);
     } finally {
       a.ws.close();
       b.ws.close();
+    }
+
+    function ringCenter(territory: Territory): Point {
+      const ring = territory[0]?.[0] ?? [];
+      let cx = 0;
+      let cy = 0;
+      for (const [x, y] of ring) {
+        cx += x / ring.length;
+        cy += y / ring.length;
+      }
+      return [cx, cy];
+    }
+  });
+
+  it('a driven loop grows the territory by the enclosed area (ticket 04, spec §2.2)', async () => {
+    const { client, ws } = await connect('painter');
+    try {
+      await until(() => client.self(), 'spawn snapshot');
+      const id = client.playerId ?? -1;
+      const spawnBlock = await until(() => client.territories.get(id), 'own territory sync');
+      expect(territoryArea(spawnBlock)).toBeCloseTo(BALANCE.spawn.startBlockWU ** 2, 3);
+      const before: Territory = structuredClone(spawnBlock);
+
+      // Out-and-back: straight out, over-rotate past 180°, straight home —
+      // paced one intent per authoritative tick like a real client.
+      const plan: TurnSignal[] = [
+        ...Array.from({ length: 12 }, (): TurnSignal => 0),
+        ...Array.from({ length: 12 }, (): TurnSignal => 1),
+        ...Array.from({ length: 60 }, (): TurnSignal => 0),
+      ];
+      let sent = 0;
+      // Reconstruct the trail exactly like the sim does (last inside pose
+      // seeds it, poses append while outside) — from the same snapshots the
+      // server sends everyone.
+      const trail: Point[] = [];
+      let prev: Point | null = null;
+      let filled = false;
+      let closedTrail: Point[] | null = null;
+      client.onTerritory = (update) => {
+        if (update.playerId === id && update.reason === 'fill') filled = true;
+      };
+      client.onSnapshot = (snapshot) => {
+        const self = snapshot.players.find((p) => p.id === id);
+        if (!self) return;
+        const pose: Point = [self.x, self.y];
+        if (filled && closedTrail === null && trail.length > 0) {
+          // The fill's own tick: this pose is the loop-closing inside pose.
+          closedTrail = [...trail, pose];
+        }
+        if (!filled) {
+          if (pointInTerritory(self.x, self.y, before)) {
+            trail.length = 0;
+          } else {
+            if (trail.length === 0 && prev) trail.push(prev);
+            trail.push(pose);
+          }
+        }
+        prev = pose;
+        if (sent < plan.length) {
+          client.queueTurn(plan[sent] ?? 0);
+          client.flush();
+          sent += 1;
+        }
+      };
+      await until(() => (closedTrail ? true : null), 'the loop to close over the wire', 20000);
+      client.onSnapshot = null;
+      client.onTerritory = null;
+
+      const after = await until(() => client.territories.get(id), 'grown territory');
+      const gained = territoryArea(after) - territoryArea(before);
+      // The trail actually left the block and the capture is real.
+      expect(gained).toBeGreaterThanOrEqual(BALANCE.trail.minFillAreaWU2);
+      // Cross-check the server's polygon fill against an independent local
+      // reconstruction from wire poses (f32) — same rules, same result.
+      const reconstructed = closeLoop(before, closedTrail ?? [], []);
+      if (!reconstructed) throw new Error('local reconstruction captured nothing');
+      expect(gained).toBeCloseTo(reconstructed.gainedArea, 1);
+      // The trail is gone after the fill (spec §2.2: it ends with the loop).
+      expect(client.trails.has(id)).toBe(false);
+    } finally {
+      ws.close();
     }
   });
 

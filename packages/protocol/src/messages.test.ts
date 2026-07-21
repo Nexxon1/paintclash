@@ -1,4 +1,4 @@
-import type { TurnSignal } from '@paintclash/shared';
+import type { Point, Territory, TurnSignal } from '@paintclash/shared';
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 
@@ -8,10 +8,13 @@ import {
   encodeInput,
   encodeJoin,
   encodeSnapshot,
+  encodeTerritory,
+  encodeTrail,
   encodeWelcome,
   MAX_CLIENT_FRAME_BYTES,
   MAX_INPUT_BATCH,
   MAX_NAME_BYTES,
+  MAX_TRAIL_POINTS,
   PROTOCOL_VERSION,
   type SnapshotPlayer,
 } from './index.js';
@@ -24,6 +27,12 @@ const f32 = fc.float({
   min: Math.fround(-1e6),
   max: Math.fround(1e6),
 });
+const pointArb = fc.tuple(f32, f32) as fc.Arbitrary<Point>;
+const ringArb = fc.array(pointArb, { minLength: 3, maxLength: 12 });
+const territoryArb: fc.Arbitrary<Territory> = fc.array(
+  fc.array(ringArb, { minLength: 1, maxLength: 3 }),
+  { maxLength: 4 },
+);
 
 describe('round-trip (decode ∘ encode = id, spec §9.1)', () => {
   it('join', () => {
@@ -75,8 +84,6 @@ describe('round-trip (decode ∘ encode = id, spec §9.1)', () => {
       y: f32,
       heading: fc.float({ noNaN: true, noDefaultInfinity: true, min: 0, max: Math.fround(6.283) }),
       turn: turnArb,
-      blockCx: f32,
-      blockCy: f32,
     });
     fc.assert(
       fc.property(
@@ -90,11 +97,38 @@ describe('round-trip (decode ∘ encode = id, spec §9.1)', () => {
       ),
     );
   });
+
+  it('territory', () => {
+    fc.assert(
+      fc.property(
+        fc.integer({ min: 0, max: 0xffff }),
+        fc.constantFrom<'sync' | 'fill'>('sync', 'fill'),
+        territoryArb,
+        (playerId, reason, territory) => {
+          const decoded = decodeServerMessage(encodeTerritory(playerId, reason, territory));
+          expect(decoded).toEqual({ type: 'territory', playerId, reason, territory });
+        },
+      ),
+    );
+  });
+
+  it('trail', () => {
+    fc.assert(
+      fc.property(
+        fc.integer({ min: 0, max: 0xffff }),
+        fc.array(pointArb, { maxLength: 200 }),
+        (playerId, points) => {
+          const decoded = decodeServerMessage(encodeTrail(playerId, points));
+          expect(decoded).toEqual({ type: 'trail', playerId, points });
+        },
+      ),
+    );
+  });
 });
 
 describe('golden bytes (wire format pinned, spec §9.1)', () => {
   it('join "Ada"', () => {
-    expect(Array.from(encodeJoin('Ada'))).toEqual([0x01, 0x01, 0x03, 0x41, 0x64, 0x61]);
+    expect(Array.from(encodeJoin('Ada'))).toEqual([0x01, 0x02, 0x03, 0x41, 0x64, 0x61]);
   });
 
   it('input batch [seq 7 turn -1, seq 8 turn 1]', () => {
@@ -114,15 +148,7 @@ describe('golden bytes (wire format pinned, spec §9.1)', () => {
   });
 
   it('snapshot tick 1, ack 2, one player', () => {
-    const player: SnapshotPlayer = {
-      id: 3,
-      x: 1,
-      y: 2,
-      heading: 0,
-      turn: 1,
-      blockCx: 1,
-      blockCy: 2,
-    };
+    const player: SnapshotPlayer = { id: 3, x: 1, y: 2, heading: 0, turn: 1 };
     expect(Array.from(encodeSnapshot(1, 2, [player]))).toEqual([
       0x11, // opcode
       0x01,
@@ -149,14 +175,82 @@ describe('golden bytes (wire format pinned, spec §9.1)', () => {
       0x00,
       0x00, // heading = 0f
       0x01, // turn
+    ]);
+  });
+
+  it('territory fill, player 3, one triangle', () => {
+    const territory: Territory = [
+      [
+        [
+          [1, 2],
+          [3, 2],
+          [1, 4],
+        ],
+      ],
+    ];
+    expect(Array.from(encodeTerritory(3, 'fill', territory))).toEqual([
+      0x12, // opcode
+      0x03,
+      0x00, // playerId
+      0x01, // reason fill
+      0x01, // poly count
+      0x01, // ring count
+      0x03,
+      0x00, // point count
       0x00,
       0x00,
       0x80,
-      0x3f, // blockCx = 1f
+      0x3f, // 1f
       0x00,
       0x00,
       0x00,
-      0x40, // blockCy = 2f
+      0x40, // 2f
+      0x00,
+      0x00,
+      0x40,
+      0x40, // 3f
+      0x00,
+      0x00,
+      0x00,
+      0x40, // 2f
+      0x00,
+      0x00,
+      0x80,
+      0x3f, // 1f
+      0x00,
+      0x00,
+      0x80,
+      0x40, // 4f
+    ]);
+  });
+
+  it('trail player 7, two points', () => {
+    const points: Point[] = [
+      [1, 2],
+      [3, 4],
+    ];
+    expect(Array.from(encodeTrail(7, points))).toEqual([
+      0x13, // opcode
+      0x07,
+      0x00, // playerId
+      0x02,
+      0x00, // point count
+      0x00,
+      0x00,
+      0x80,
+      0x3f, // 1f
+      0x00,
+      0x00,
+      0x00,
+      0x40, // 2f
+      0x00,
+      0x00,
+      0x40,
+      0x40, // 3f
+      0x00,
+      0x00,
+      0x80,
+      0x40, // 4f
     ]);
   });
 });
@@ -259,17 +353,89 @@ describe('malformed frames are rejected, never thrown (spec §8.2)', () => {
     snapshot[9] = 1;
     expect(decodeServerMessage(snapshot)).toBeNull();
     // Snapshot carrying an out-of-range turn.
-    const player: SnapshotPlayer = {
-      id: 1,
-      x: 0,
-      y: 0,
-      heading: 0,
-      turn: 0,
-      blockCx: 0,
-      blockCy: 0,
-    };
+    const player: SnapshotPlayer = { id: 1, x: 0, y: 0, heading: 0, turn: 0 };
     const bad = new Uint8Array(encodeSnapshot(1, 1, [player]));
     bad[10 + 14] = 9; // player turn byte
     expect(decodeServerMessage(bad)).toBeNull();
+  });
+
+  const triangle: Territory = [
+    [
+      [
+        [0, 0],
+        [1, 0],
+        [0, 1],
+      ],
+    ],
+  ];
+
+  it('rejects malformed territory frames', () => {
+    // Cut off before the header ends.
+    expect(decodeServerMessage(new Uint8Array([0x12, 0x01, 0x00, 0x00]))).toBeNull();
+    const ok = encodeTerritory(1, 'sync', triangle);
+    // Truncated mid-ring.
+    expect(decodeServerMessage(ok.subarray(0, ok.length - 4))).toBeNull();
+    // Trailing garbage.
+    expect(decodeServerMessage(new Uint8Array([...ok, 0xff]))).toBeNull();
+    // Unknown reason byte.
+    const badReason = new Uint8Array(ok);
+    badReason[3] = 2;
+    expect(decodeServerMessage(badReason)).toBeNull();
+    // A poly claiming zero rings.
+    const zeroRings = new Uint8Array(ok);
+    zeroRings[5] = 0;
+    expect(decodeServerMessage(zeroRings)).toBeNull();
+    // A ring claiming fewer than 3 points.
+    const twoPoints = new Uint8Array(ok);
+    twoPoints[6] = 2;
+    expect(decodeServerMessage(twoPoints)).toBeNull();
+    // A poly count pointing past the end of the frame.
+    const morePolys = new Uint8Array(ok);
+    morePolys[4] = 2;
+    expect(decodeServerMessage(morePolys)).toBeNull();
+  });
+
+  it('rejects malformed trail frames', () => {
+    expect(decodeServerMessage(new Uint8Array([0x13, 0x01, 0x00, 0x02]))).toBeNull();
+    const ok = encodeTrail(1, [
+      [0, 0],
+      [1, 1],
+    ]);
+    expect(decodeServerMessage(ok.subarray(0, ok.length - 1))).toBeNull();
+    expect(decodeServerMessage(new Uint8Array([...ok, 0xff]))).toBeNull();
+  });
+
+  it('an empty trail round-trips (clear semantics)', () => {
+    expect(decodeServerMessage(encodeTrail(9, []))).toEqual({
+      type: 'trail',
+      playerId: 9,
+      points: [],
+    });
+  });
+
+  it('an empty territory round-trips (landless player)', () => {
+    expect(decodeServerMessage(encodeTerritory(9, 'sync', []))).toEqual({
+      type: 'territory',
+      playerId: 9,
+      reason: 'sync',
+      territory: [],
+    });
+  });
+
+  it('encodeTerritory refuses geometry beyond the wire counts', () => {
+    const hugePolys: Territory = Array.from({ length: 256 }, () => triangle[0] ?? []);
+    expect(() => encodeTerritory(1, 'sync', hugePolys)).toThrow(RangeError);
+    const hugeRings: Territory = [Array.from({ length: 256 }, () => triangle[0]?.[0] ?? [])];
+    expect(() => encodeTerritory(1, 'sync', hugeRings)).toThrow(RangeError);
+    const hugeRing: Territory = [[Array.from({ length: 0x10000 }, (): Point => [0, 0])]];
+    expect(() => encodeTerritory(1, 'sync', hugeRing)).toThrow(RangeError);
+  });
+
+  it('encodeTrail keeps the newest points at the wire cap', () => {
+    const points = Array.from({ length: MAX_TRAIL_POINTS + 5 }, (_, i): Point => [i, 0]);
+    const decoded = decodeServerMessage(encodeTrail(1, points));
+    if (decoded?.type !== 'trail') throw new Error('expected a trail');
+    expect(decoded.points).toHaveLength(MAX_TRAIL_POINTS);
+    expect(decoded.points[decoded.points.length - 1]?.[0]).toBe(Math.fround(MAX_TRAIL_POINTS + 4));
   });
 });

@@ -8,6 +8,7 @@ import {
   GOLDEN_TICKS,
   goldenScript,
 } from './fixtures/golden-replay.js';
+import { territoryArea } from './geometry.js';
 import { cloneSimState, createSimState, hashSimState, type SimState } from './state.js';
 import { step, type TickInputs } from './step.js';
 
@@ -57,6 +58,19 @@ describe('replay determinism', () => {
   it('matches the checked-in golden end hash', () => {
     const end = runScript(GOLDEN_SEED, goldenScript(), GOLDEN_TICKS);
     expect(hashSimState(end)).toBe(GOLDEN_END_HASH);
+  });
+
+  it('the golden replay provably crosses the fill path (ticket 04)', () => {
+    const state = createSimState(GOLDEN_SEED);
+    const script = goldenScript();
+    let fills = 0;
+    for (let t = 0; t < GOLDEN_TICKS; t++) {
+      fills += step(state, script.get(t) ?? {}, TICK_DT_SEC).fills.length;
+    }
+    expect(fills).toBeGreaterThanOrEqual(1);
+    // Player 1's out-and-back maneuver captured real area beyond its block.
+    const p1 = state.players.find((p) => p.id === 1);
+    expect(territoryArea(p1?.territory ?? [])).toBeGreaterThan(36);
   });
 });
 

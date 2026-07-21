@@ -1,7 +1,9 @@
-import { BALANCE } from '@paintclash/shared';
+import { BALANCE, type Territory } from '@paintclash/shared';
 import {
   decodeClientMessage,
   encodeSnapshot,
+  encodeTerritory,
+  encodeTrail,
   encodeWelcome,
   type SnapshotPlayer,
 } from '@paintclash/protocol';
@@ -16,11 +18,26 @@ function harness(): { session: ClientSession; sent: Uint8Array[] } {
 }
 
 function selfPlayer(overrides: Partial<SnapshotPlayer> = {}): SnapshotPlayer {
-  return { id: 1, x: 100, y: 100, heading: 0, turn: 0, blockCx: 100, blockCy: 100, ...overrides };
+  return { id: 1, x: 100, y: 100, heading: 0, turn: 0, ...overrides };
+}
+
+/** 6×6 block around (cx, cy). */
+function blockAt(cx: number, cy: number): Territory {
+  return [
+    [
+      [
+        [cx - 3, cy - 3],
+        [cx + 3, cy - 3],
+        [cx + 3, cy + 3],
+        [cx - 3, cy + 3],
+      ],
+    ],
+  ];
 }
 
 function joined(session: ClientSession): void {
   session.receive(encodeWelcome(1, BALANCE.arena.sizeWU));
+  session.receive(encodeTerritory(1, 'sync', blockAt(100, 100)));
   session.receive(encodeSnapshot(1, 0, [selfPlayer()]));
 }
 
@@ -107,11 +124,125 @@ describe('snapshots feed reconciliation + interpolation', () => {
     expect(pose.self?.x).toBeCloseTo(100.9, 3);
   });
 
-  it('exposes the own start block for rendering', () => {
+  it('exposes every synced territory with a revision that bumps per change', () => {
     const { session } = harness();
-    expect(session.renderSample(1).selfBlock).toBeNull();
+    expect(session.renderSample(1).territories).toEqual([]);
     joined(session);
-    expect(session.renderSample(1).selfBlock).toEqual({ cx: 100, cy: 100 });
+    session.receive(encodeTerritory(2, 'sync', blockAt(50, 50)));
+    session.receive(encodeSnapshot(2, 0, [selfPlayer(), selfPlayer({ id: 2, x: 50, y: 50 })]));
+    let state = session.renderSample(1);
+    expect(state.selfId).toBe(1);
+    expect(state.territories.map((t) => t.playerId).sort()).toEqual([1, 2]);
+    const before = state.territories.find((t) => t.playerId === 2)?.rev;
+    session.receive(encodeTerritory(2, 'fill', blockAt(50, 50)));
+    state = session.renderSample(1);
+    const after = state.territories.find((t) => t.playerId === 2)?.rev;
+    expect(after).toBe((before ?? 0) + 1);
+  });
+
+  it('reports growing fills once, for the wave animation', () => {
+    const { session } = harness();
+    joined(session);
+    session.receive(encodeTerritory(2, 'sync', blockAt(50, 50)));
+    expect(session.renderSample(1).fills).toEqual([]); // sync is no fill
+    const grown: Territory = [[...(blockAt(50, 50)[0] ?? [])], [...(blockAt(70, 50)[0] ?? [])]];
+    session.receive(encodeTerritory(2, 'fill', grown));
+    expect(session.renderSample(1).fills).toEqual([2]);
+    expect(session.renderSample(1).fills).toEqual([]); // drained
+  });
+
+  it('a discarded sliver fill clears the trail but earns no wave (spec §2.2 floor)', () => {
+    const { session } = harness();
+    joined(session);
+    session.receive(encodeTerritory(2, 'sync', blockAt(50, 100)));
+    // Enemy walks out of its block so a derived trail exists.
+    for (let t = 2; t <= 6; t++) {
+      const x = 50 + (t - 2) * 2;
+      session.receive(encodeSnapshot(t, 0, [selfPlayer(), selfPlayer({ id: 2, x, y: 100 })]));
+      session.simTick(0);
+    }
+    expect(session.renderSample(0, 50).trails.some((t) => t.playerId === 2)).toBe(true);
+    // The loop closes but captured nothing — territory unchanged.
+    session.receive(encodeTerritory(2, 'fill', blockAt(50, 100)));
+    const state = session.renderSample(0, 50);
+    expect(state.fills).toEqual([]);
+    expect(state.trails.some((t) => t.playerId === 2)).toBe(false);
+  });
+
+  it('drops territory and trails of players that left the arena', () => {
+    const { session } = harness();
+    joined(session);
+    session.receive(encodeTerritory(9, 'sync', blockAt(50, 50)));
+    session.receive(
+      encodeTrail(9, [
+        [40, 40],
+        [41, 40],
+      ]),
+    );
+    session.receive(encodeSnapshot(2, 0, [selfPlayer()])); // 9 is gone
+    const state = session.renderSample(1);
+    expect(state.territories.some((t) => t.playerId === 9)).toBe(false);
+    expect(state.trails.some((t) => t.playerId === 9)).toBe(false);
+  });
+
+  it('grows the own trail from predicted ticks once outside, ends it on the fill', () => {
+    const { session } = harness();
+    session.receive(encodeWelcome(1, BALANCE.arena.sizeWU));
+    session.receive(encodeTerritory(1, 'sync', blockAt(100, 100)));
+    // Spawn near the right edge, heading +x: outside after ~5 ticks.
+    session.receive(encodeSnapshot(1, 0, [selfPlayer({ x: 101 })]));
+    for (let i = 0; i < 8; i++) session.simTick(0);
+    let trail = session.renderSample(1).trails.find((t) => t.playerId === 1);
+    if (!trail) throw new Error('own trail missing');
+    // Last point is the rendered head itself.
+    const head = session.renderSample(1).self;
+    expect(trail.points[trail.points.length - 1]?.[0]).toBeCloseTo(head?.x ?? NaN, 5);
+    // The server's fill message ends the trail — never the local guess.
+    session.receive(encodeTerritory(1, 'fill', blockAt(100, 100)));
+    trail = session.renderSample(1).trails.find((t) => t.playerId === 1);
+    expect(trail).toBeUndefined();
+  });
+
+  it('derives enemy trails from snapshot poses, held back to the render timeline', () => {
+    const { session } = harness();
+    joined(session);
+    session.receive(encodeTerritory(2, 'sync', blockAt(50, 100)));
+    // Enemy leaves its block heading +x: inside at 52, outside from 54.
+    for (let t = 2; t <= 8; t++) {
+      const x = 50 + (t - 2) * 2;
+      session.receive(encodeSnapshot(t, 0, [selfPlayer(), selfPlayer({ id: 2, x, y: 100 })]));
+      session.simTick(0);
+    }
+    const state = session.renderSample(0, 50);
+    const trail = state.trails.find((t) => t.playerId === 2);
+    if (!trail) throw new Error('enemy trail missing');
+    // Seeded with the last inside pose (52) …
+    expect(trail.points[0]?.[0]).toBeCloseTo(52, 5);
+    // … and its last point is the enemy's rendered (delayed) head.
+    const enemy = state.others.find((o) => o.id === 2);
+    expect(trail.points[trail.points.length - 1]?.[0]).toBeCloseTo(enemy?.x ?? NaN, 5);
+    // The rendered head trails the newest snapshot (interp delay) — and so
+    // does the revealed trail.
+    expect(enemy?.x ?? NaN).toBeLessThan(62);
+  });
+
+  it('adopts a full trail sync for players already on their way (late join)', () => {
+    const { session } = harness();
+    joined(session);
+    session.receive(encodeTerritory(2, 'sync', blockAt(50, 100)));
+    session.receive(
+      encodeTrail(2, [
+        [53, 100],
+        [60, 100],
+        [60, 106],
+      ]),
+    );
+    session.receive(encodeSnapshot(2, 0, [selfPlayer(), selfPlayer({ id: 2, x: 60, y: 107 })]));
+    const trail = session.renderSample(1).trails.find((t) => t.playerId === 2);
+    if (!trail) throw new Error('synced trail missing');
+    // All synced points render immediately, head appended.
+    expect(trail.points.length).toBeGreaterThanOrEqual(4);
+    expect(trail.points[0]).toEqual([53, 100]);
   });
 
   it('exposes other players at an interpolation delay', () => {

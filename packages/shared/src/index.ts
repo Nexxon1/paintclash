@@ -6,4 +6,4 @@
  */
 export { BALANCE, TICK_DT_MS, TICK_DT_SEC, TICK_HZ } from './balance.js';
 export { LIMITS } from './limits.js';
-export type { TurnSignal } from './types.js';
+export type { Point, Poly, Ring, Territory, TurnSignal } from './types.js';

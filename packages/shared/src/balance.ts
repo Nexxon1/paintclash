@@ -29,6 +29,16 @@ export const BALANCE = Object.freeze({
     /** Best-effort minimum distance to enemy heads/territory at spawn. */
     minDistanceWU: 25,
   }),
+  /** Trail & fill (spec §10.4). */
+  trail: Object.freeze({
+    /** Rendered trail width — the continuous analog of splix' 1-tile trail. */
+    widthWU: 1,
+    /**
+     * Fills gaining less than this are discarded (spec §2.2) — purely to
+     * drop numerical slivers; every deliberate loop paints.
+     */
+    minFillAreaWU2: 1,
+  }),
 });
 
 /** Simulation tickrate (spec §6.2): 20 Hz — the splix-proven sweet spot. */

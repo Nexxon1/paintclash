@@ -5,4 +5,4 @@
  *
  * @see spec §5.1, §9.1, CONTEXT.md
  */
-export { SimClient, type Snapshot } from './sim-client.js';
+export { SimClient, type Snapshot, type TerritoryUpdate } from './sim-client.js';

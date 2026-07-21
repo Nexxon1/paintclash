@@ -13,6 +13,8 @@ describe('BALANCE', () => {
     expect(BALANCE.movement.turnRateDegPerSec).toBe(320);
     expect(BALANCE.spawn.startBlockWU).toBe(6);
     expect(BALANCE.spawn.minDistanceWU).toBe(25);
+    expect(BALANCE.trail.widthWU).toBe(1);
+    expect(BALANCE.trail.minFillAreaWU2).toBe(1);
   });
 
   it('ticks at 20 Hz with a fixed 50 ms dt', () => {
@@ -26,10 +28,11 @@ describe('BALANCE', () => {
     expect(Object.isFrozen(BALANCE.arena)).toBe(true);
     expect(Object.isFrozen(BALANCE.movement)).toBe(true);
     expect(Object.isFrozen(BALANCE.spawn)).toBe(true);
+    expect(Object.isFrozen(BALANCE.trail)).toBe(true);
   });
 
   it('has only positive, finite magnitudes', () => {
-    const groups = [BALANCE.arena, BALANCE.movement, BALANCE.spawn];
+    const groups = [BALANCE.arena, BALANCE.movement, BALANCE.spawn, BALANCE.trail];
     for (const group of groups) {
       for (const value of Object.values(group)) {
         expect(Number.isFinite(value)).toBe(true);

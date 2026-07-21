@@ -13,7 +13,7 @@
 
 import type { SnapshotPlayer } from '@paintclash/protocol';
 import type { TurnSignal } from '@paintclash/shared';
-import { advancePlayer, type PlayerSim } from '@paintclash/sim-core';
+import { advancePlayer } from '@paintclash/sim-core';
 
 import { angleDiff, lerpAngle } from './interpolator.js';
 
@@ -44,8 +44,8 @@ export interface RenderPose {
 export class Predictor {
   private readonly arenaSizeWU: number;
   private pending: { seq: number; turn: TurnSignal }[] = [];
-  private prev: PlayerSim | null = null;
-  private curr: PlayerSim | null = null;
+  private prev: SnapshotPlayer | null = null;
+  private curr: SnapshotPlayer | null = null;
   private errorX = 0;
   private errorY = 0;
   private errorH = 0;
@@ -55,7 +55,7 @@ export class Predictor {
   }
 
   /** The predicted state at the current sim tick (no smoothing applied). */
-  current(): PlayerSim | null {
+  current(): SnapshotPlayer | null {
     return this.curr;
   }
 
@@ -78,7 +78,7 @@ export class Predictor {
   reconcile(self: SnapshotPlayer, ackSeq: number, dtSec: number): void {
     const before = this.curr ? { ...this.curr } : null;
     this.pending = this.pending.filter((input) => input.seq > ackSeq);
-    const replayed: PlayerSim = { ...self };
+    const replayed: SnapshotPlayer = { ...self };
     for (const input of this.pending) {
       replayed.turn = input.turn;
       advancePlayer(replayed, this.arenaSizeWU, dtSec);

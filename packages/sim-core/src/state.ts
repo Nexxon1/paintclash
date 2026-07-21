@@ -4,14 +4,19 @@
  * (ADR-0002: one shared truth, ADR-0003: pure step over this state).
  */
 
-import { BALANCE, type TurnSignal } from '@paintclash/shared';
+import { BALANCE, type Point, type Territory, type TurnSignal } from '@paintclash/shared';
 
+import { cloneTerritory } from './geometry.js';
 import { seedRng, type RngState } from './rng.js';
 
-export type { TurnSignal };
+export type { Point, Territory, TurnSignal };
 
-export interface PlayerSim {
-  id: number;
+/**
+ * The pose fields movement acts on — exactly what client prediction replays
+ * (spec §6.1). Kept separate from `PlayerSim` so the predictor never has to
+ * fake a territory.
+ */
+export interface HeadPose {
   /** Head position in WU. */
   x: number;
   y: number;
@@ -19,9 +24,18 @@ export interface PlayerSim {
   heading: number;
   /** Last received steer intent — persists until replaced (coalescing). */
   turn: TurnSignal;
-  /** Center of the 6×6 start block (the walking skeleton's "territory"). */
-  blockCx: number;
-  blockCy: number;
+}
+
+export interface PlayerSim extends HeadPose {
+  id: number;
+  /** Owned land (CONTEXT: Gebiet); starts as the 6×6 spawn block. */
+  territory: Territory;
+  /**
+   * Path since leaving the own territory (CONTEXT: Trail); empty while
+   * inside. First point is the last pose *inside* — the loop ring connects
+   * to the territory without on-boundary degeneracy.
+   */
+  trail: Point[];
 }
 
 export interface SimState {
@@ -46,19 +60,34 @@ export function cloneSimState(state: SimState): SimState {
     tick: state.tick,
     rng: state.rng,
     arenaSizeWU: state.arenaSizeWU,
-    players: state.players.map((p) => ({ ...p })),
+    players: state.players.map((p) => ({
+      ...p,
+      territory: cloneTerritory(p.territory),
+      trail: p.trail.map((q): Point => [q[0], q[1]]),
+    })),
   };
 }
 
 /**
  * Canonical FNV-1a hash over every state bit. Two states hash equal iff the
  * replay was bit-identical — the property the replay-determinism tests pin
- * down (spec §9.2).
+ * down (spec §9.2). Structure counts (polys/rings/points) are hashed too, so
+ * differently-shaped geometry can never collide by coordinate coincidence.
  */
 export function hashSimState(state: SimState): string {
   const numbers: number[] = [state.tick, state.rng, state.arenaSizeWU];
   for (const p of state.players) {
-    numbers.push(p.id, p.x, p.y, p.heading, p.turn, p.blockCx, p.blockCy);
+    numbers.push(p.id, p.x, p.y, p.heading, p.turn);
+    numbers.push(p.territory.length);
+    for (const poly of p.territory) {
+      numbers.push(poly.length);
+      for (const ring of poly) {
+        numbers.push(ring.length);
+        for (const [x, y] of ring) numbers.push(x, y);
+      }
+    }
+    numbers.push(p.trail.length);
+    for (const [x, y] of p.trail) numbers.push(x, y);
   }
   const bytes = new DataView(new ArrayBuffer(numbers.length * 8));
   numbers.forEach((n, i) => {

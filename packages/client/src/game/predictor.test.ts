@@ -7,7 +7,7 @@ import { Predictor } from './predictor.js';
 const ARENA = 200;
 
 function serverSelf(overrides: Partial<SnapshotPlayer> = {}): SnapshotPlayer {
-  return { id: 1, x: 100, y: 100, heading: 0, turn: 0, blockCx: 100, blockCy: 100, ...overrides };
+  return { id: 1, x: 100, y: 100, heading: 0, turn: 0, ...overrides };
 }
 
 describe('prediction (client runs sim-core locally, spec §6.1)', () => {
