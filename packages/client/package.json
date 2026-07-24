@@ -11,6 +11,7 @@
     "@paintclash/protocol": "workspace:*",
     "@paintclash/shared": "workspace:*",
     "@paintclash/sim-core": "workspace:*",
+    "polyclip-ts": "^0.16.8",
     "three": "^0.185.1"
   },
   "devDependencies": {

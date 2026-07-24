@@ -18,7 +18,7 @@ import type { DeathCause, Point, Ring, Territory, TurnSignal } from '@paintclash
 export type { DeathCause };
 
 /** Bumped on every incompatible wire change; joins carry it. */
-export const PROTOCOL_VERSION = 3;
+export const PROTOCOL_VERSION = 4;
 
 /** Nickname cap on the wire: 16 code points, ≤ 64 UTF-8 bytes. */
 export const MAX_NAME_CHARS = 16;
@@ -230,13 +230,15 @@ export function encodeTrail(playerId: number, points: readonly Point[]): Uint8Ar
  * client (ticket 05 "Tod-Event + Kill-Event"). The victim's respawn arrives
  * as the territory sync + snapshot of the same tick.
  */
+const DEATH_CAUSES = ['trailCut', 'headOn', 'totalLoss'] as const satisfies readonly DeathCause[];
+
 export function encodeDeath(victimId: number, killerId: number, cause: DeathCause): Uint8Array {
   const frame = new Uint8Array(DEATH_FRAME_BYTES);
   const view = new DataView(frame.buffer);
   frame[0] = OP_DEATH;
   view.setUint16(1, victimId, true);
   view.setUint16(3, killerId, true);
-  frame[5] = cause === 'headOn' ? 1 : 0;
+  frame[5] = DEATH_CAUSES.indexOf(cause);
   return frame;
 }
 
@@ -369,13 +371,13 @@ export function decodeServerMessage(frame: Uint8Array): ServerMessage | null {
     }
     case OP_DEATH: {
       if (frame.length !== DEATH_FRAME_BYTES) return null;
-      const causeByte = view.getUint8(5);
-      if (causeByte > 1) return null;
+      const cause = DEATH_CAUSES[view.getUint8(5)];
+      if (cause === undefined) return null;
       return {
         type: 'death',
         victimId: view.getUint16(1, true),
         killerId: view.getUint16(3, true),
-        cause: causeByte === 1 ? 'headOn' : 'trailCut',
+        cause,
       };
     }
     default:

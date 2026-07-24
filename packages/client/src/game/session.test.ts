@@ -213,30 +213,6 @@ describe('snapshots feed reconciliation + interpolation', () => {
     expect(trail).toBeUndefined();
   });
 
-  it('marks trail points over foreign territory (drawn on top until the 06 carve)', () => {
-    const { session } = harness();
-    session.receive(encodeWelcome(1, BALANCE.arena.sizeWU));
-    session.receive(encodeTerritory(1, 'sync', blockAt(100, 100)));
-    session.receive(encodeTerritory(2, 'sync', blockAt(110, 100))); // 107..113
-    session.receive(
-      encodeSnapshot(1, 0, [selfPlayer({ x: 101 }), selfPlayer({ id: 2, x: 110, y: 110 })]),
-    );
-    let lifts: boolean[] = [];
-    let points: [number, number][] = [];
-    for (let i = 0; i < 16; i++) {
-      session.simTick(0);
-      const trail = session.renderSample(1).trails.find((t) => t.playerId === 1);
-      lifts = trail?.lifts ?? [];
-      points = trail?.points ?? [];
-    }
-    // The head is now over the enemy block; those points are lifted, the
-    // neutral stretch before it is not.
-    expect(lifts.some((l) => l)).toBe(true);
-    expect(lifts[0]).toBe(false);
-    const firstLifted = lifts.findIndex((l) => l);
-    expect(points[firstLifted]?.[0]).toBeGreaterThan(107 - 0.5);
-  });
-
   it('sub-step render wobble never etches extra points into the own trail', () => {
     const { session } = harness();
     session.receive(encodeWelcome(1, BALANCE.arena.sizeWU));

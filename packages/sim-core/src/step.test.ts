@@ -275,7 +275,7 @@ describe('loop close → fill (spec §2.2)', () => {
     expect(territoryArea(p.territory)).toBeCloseTo(36, 6);
   });
 
-  it('the capture never takes foreign land (stealing is ticket 06)', () => {
+  it('the capture steals enclosed foreign land (spec §2.2, ticket 06)', () => {
     const player = playerOnBlock(1, 102, 103.4, (3 * Math.PI) / 2);
     player.trail = [
       [102, 100],
@@ -286,13 +286,15 @@ describe('loop close → fill (spec §2.2)', () => {
     ];
     const enemy = playerAt(2, 106, 103, 0); // block (103..109)×(100..106)
     const state = stateWith(player, enemy);
-    step(state, {}, TICK_DT_SEC);
+    const events = step(state, {}, TICK_DT_SEC);
     const p = state.players[0];
     const e = state.players[1];
     if (!p || !e) throw new Error('players vanished');
-    // Enemy is untouched; own gain excludes the overlap.
-    expect(territoryArea(e.territory)).toBeCloseTo(36, 6);
-    expect(pointInTerritory(105, 103, p.territory)).toBe(false);
+    // The enclosed slice x∈[103,106], y∈[100,106] (18 WU²) changed hands.
+    expect(events.steals).toEqual([2]);
+    expect(territoryArea(e.territory)).toBeCloseTo(18, 4);
+    expect(pointInTerritory(105, 103, p.territory)).toBe(true);
+    expect(pointInTerritory(105, 103, e.territory)).toBe(false);
   });
 });
 
@@ -318,15 +320,19 @@ describe('area invariants under random play (spec §9.2, fast-check)', () => {
           for (const intent of intents) {
             const events = step(state, { turns: [intent] }, TICK_DT_SEC);
             const died = new Set(events.deaths.map((d) => d.victimId));
+            const stolen = new Set(events.steals);
             let total = 0;
             for (const p of state.players) {
               const area = territoryArea(p.territory);
               if (died.has(p.id)) {
-                // A death resets to the fresh start block (ticket 05) —
-                // the only sanctioned shrink until stealing (ticket 06).
+                // A death resets to the fresh start block (ticket 05).
                 expect(area).toBeLessThanOrEqual(BALANCE.spawn.startBlockWU ** 2 + 1e-6);
+              } else if (stolen.has(p.id)) {
+                // A steal (ticket 06) is the only sanctioned shrink outside
+                // death — and it never reaches zero (that would be a death).
+                expect(area).toBeGreaterThan(1e-9);
               } else {
-                // Never negative, never shrinking (nothing takes land yet).
+                // Never negative, never shrinking.
                 expect(area).toBeGreaterThanOrEqual((lastArea.get(p.id) ?? 0) - 1e-6);
               }
               lastArea.set(p.id, area);

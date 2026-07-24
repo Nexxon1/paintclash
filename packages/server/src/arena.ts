@@ -281,14 +281,23 @@ export class ArenaCore {
 
     // Event frames of this tick, sent BEFORE its snapshot. Deaths first
     // (ticket 05): a client clears the victim's trail on the death frame,
-    // then the respawn arrives — territory sync (deaths + spawns), fill
-    // deltas (ticket 04, spec §6.1: the only source of territory truth) —
-    // so everything is known when the tick's poses land.
+    // then the respawn arrives — territory syncs (deaths + spawns + steal
+    // survivors, ticket 06), fill deltas (ticket 04, spec §6.1: the only
+    // source of territory truth) — so everything is known when the tick's
+    // poses land. Steal syncs precede the fill: the loser shrinks before
+    // the winner covers the same ground.
     const eventFrames: Uint8Array[] = [];
     for (const death of events.deaths) {
       eventFrames.push(encodeDeath(death.victimId, death.killerId, death.cause));
     }
-    for (const id of [...events.deaths.map((d) => d.victimId), ...spawned]) {
+    // A Set keeps the order and drops duplicates (a same-tick spawn that
+    // immediately lost land would otherwise sync twice).
+    const syncIds = new Set([
+      ...events.deaths.map((d) => d.victimId),
+      ...spawned,
+      ...events.steals,
+    ]);
+    for (const id of syncIds) {
       const p = this.state.players.find((q) => q.id === id);
       if (p) eventFrames.push(encodeTerritory(id, 'sync', p.territory));
     }

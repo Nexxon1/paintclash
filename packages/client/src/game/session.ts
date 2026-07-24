@@ -129,14 +129,6 @@ const RECENT_POSES_CAP = 24;
 interface StampedPoint {
   tick: number;
   point: Point;
-  /** Lies over foreign territory — drawn on top of the plateau (interim). */
-  lift?: boolean;
-}
-
-/** A recorded trail vertex; `lift` = it lies over foreign territory. */
-interface TrailPoint {
-  point: Point;
-  lift: boolean;
 }
 
 /** One death event, surfaced to the renderer/sound seam (ticket 05/11). */
@@ -165,11 +157,11 @@ export interface RenderState {
   /**
    * Trail polylines to draw (ticket 04), each ending at its player's
    * rendered head: the own one from rendered frame poses, enemy ones from
-   * snapshot poses held back to the enemy render timeline. `lifts[i]` marks
-   * points over foreign territory — drawn on top of the plateau there
-   * (interim until ticket 06's carve-through groove).
+   * snapshot poses held back to the enemy render timeline. Over foreign
+   * plateaus the scene carves a ground-level groove along these same
+   * polylines (ticket 06) — the ribbon always hugs the floor.
    */
-  trails: { playerId: number; points: Point[]; lifts: boolean[] }[];
+  trails: { playerId: number; points: Point[] }[];
   /** Players whose fill landed since the last sample (wave animation). */
   fills: number[];
   /**
@@ -209,7 +201,7 @@ export class ClientSession {
    * points always lie behind it, so the ribbon tip stays glued to the head
    * without the 0.1 WU gate quantizing it.
    */
-  private ownTrail: TrailPoint[] = [];
+  private ownTrail: Point[] = [];
   /** Recent rendered poses — a fresh trail is seeded backward from these. */
   private readonly ownRecent: Point[] = [];
   /** Enemy trails from snapshot poses, tick-stamped for the render timeline. */
@@ -289,11 +281,7 @@ export class ClientSession {
       if (message.playerId !== this.playerId) {
         this.enemyTrails.set(
           message.playerId,
-          message.points.map((point) => ({
-            tick: 0,
-            point,
-            lift: this.overForeignLand(point[0], point[1], message.playerId),
-          })),
+          message.points.map((point) => ({ tick: 0, point })),
         );
       }
       return;
@@ -379,7 +367,7 @@ export class ClientSession {
           !last ||
           Math.hypot(point[0] - last.point[0], point[1] - last.point[1]) >= MIN_TRAIL_STEP_WU
         ) {
-          trail.push({ tick, point, lift: this.overForeignLand(point[0], point[1], p.id) });
+          trail.push({ tick, point });
         }
       }
       this.pushRecent(p.id, tick, point);
@@ -556,15 +544,6 @@ export class ClientSession {
     };
   }
 
-  /** Is this point on land owned by anyone but `exceptId`? (lift flag) */
-  private overForeignLand(x: number, y: number, exceptId: number): boolean {
-    for (const view of this.territories.values()) {
-      if (view.playerId === exceptId) continue;
-      if (pointInTerritory(x, y, view.territory)) return true;
-    }
-    return false;
-  }
-
   /**
    * Extend the own trail with the pose actually drawn this frame. Outside
    * the own territory every rendered pose joins the ribbon (collinear runs
@@ -582,17 +561,14 @@ export class ClientSession {
         this.ownTrail = this.seedFromRecent(
           this.ownRecent.map((point): StampedPoint => ({ tick: 0, point })),
           own.territory,
-        ).map(({ point }): TrailPoint => ({ point, lift: false }));
+        ).map(({ point }) => point);
       }
       const last = this.ownTrail[this.ownTrail.length - 1];
       // Sub-step gate: reconciliation wobble must not etch a sawtooth into
       // the ribbon (see MIN_TRAIL_STEP_WU). The live head pose is appended
       // at sample time instead — the tip never lags behind the gate.
-      if (
-        !last ||
-        Math.hypot(self.x - last.point[0], self.y - last.point[1]) >= MIN_TRAIL_STEP_WU
-      ) {
-        this.pushOwnPoint([self.x, self.y], this.overForeignLand(self.x, self.y, this.playerId));
+      if (!last || Math.hypot(self.x - last[0], self.y - last[1]) >= MIN_TRAIL_STEP_WU) {
+        this.pushOwnPoint([self.x, self.y]);
       }
     }
     const lastRecent = this.ownRecent[this.ownRecent.length - 1];
@@ -610,20 +586,21 @@ export class ClientSession {
    * into one segment (mirrors sim-core's appendTrailPoint) so straight
    * cruising stays O(1) points instead of one vertex per 0.1 WU.
    */
-  private pushOwnPoint(point: Point, lift: boolean): void {
+  private pushOwnPoint(point: Point): void {
     const last = this.ownTrail[this.ownTrail.length - 1];
     const beforeLast = this.ownTrail[this.ownTrail.length - 2];
-    if (last && beforeLast && last.lift === lift && beforeLast.lift === lift) {
-      const ax = last.point[0] - beforeLast.point[0];
-      const ay = last.point[1] - beforeLast.point[1];
-      const bx = point[0] - last.point[0];
-      const by = point[1] - last.point[1];
+    if (last && beforeLast) {
+      const ax = last[0] - beforeLast[0];
+      const ay = last[1] - beforeLast[1];
+      const bx = point[0] - last[0];
+      const by = point[1] - last[1];
       if (ax * bx + ay * by > 0 && Math.abs(ax * by - ay * bx) < 1e-9) {
-        last.point = point;
+        last[0] = point[0];
+        last[1] = point[1];
         return;
       }
     }
-    this.ownTrail.push({ point, lift });
+    this.ownTrail.push(point);
   }
 
   /**
@@ -636,25 +613,20 @@ export class ClientSession {
   private sampleTrails(self: RenderPose | null, others: SnapshotPlayer[]): RenderState['trails'] {
     const trails: RenderState['trails'] = [];
     if (self && this.playerId !== null && this.ownTrail.length >= 1) {
-      const points = this.ownTrail.map(({ point }): Point => [point[0], point[1]]);
-      const lifts = this.ownTrail.map(({ lift }) => lift);
+      const points = this.ownTrail.map((point): Point => [point[0], point[1]]);
       points.push([self.x, self.y]);
-      lifts.push(this.overForeignLand(self.x, self.y, this.playerId));
-      if (points.length >= 2) trails.push({ playerId: this.playerId, points, lifts });
+      if (points.length >= 2) trails.push({ playerId: this.playerId, points });
     }
     for (const enemy of others) {
       const stamped = this.enemyTrails.get(enemy.id);
       if (!stamped || stamped.length === 0) continue;
       const points: Point[] = [];
-      const lifts: boolean[] = [];
-      for (const { tick, point, lift } of stamped) {
+      for (const { tick, point } of stamped) {
         if (this.renderTick !== null && tick > this.renderTick) break;
         points.push([point[0], point[1]]);
-        lifts.push(lift ?? false);
       }
       points.push([enemy.x, enemy.y]);
-      lifts.push(this.overForeignLand(enemy.x, enemy.y, enemy.id));
-      if (points.length >= 2) trails.push({ playerId: enemy.id, points, lifts });
+      if (points.length >= 2) trails.push({ playerId: enemy.id, points });
     }
     return trails;
   }

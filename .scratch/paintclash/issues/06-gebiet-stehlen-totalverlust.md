@@ -4,12 +4,26 @@
 
 **Blocked by:** 04, 05.
 
-**Status:** ready-for-agent
+**Status:** resolved (2026-07-24)
 
-- [ ] `sim-core`: Fill über fremdes Gebiet überfärbt/stiehlt es; **Totalverlust-Tod**, wenn ein Gebiet real auf 0 fällt; eingeschlossene Köpfe sterben **nicht** durchs Einschließen.
-- [ ] `client`: sichtbare Übernahme fremden Gebiets; **Trail-Carve** durch erhöhtes 3D-Gebiet (Rinne auf Bodenhöhe).
-- [ ] Property-Test: keine negative Fläche / > Karte; Summe aller Anteile + neutral bleibt 100 %.
-- [ ] Szenario-Test: Spieler A färbt B komplett weg → B stirbt (Totalverlust), auch mit Kopf im Rest-Gebiet; ein eingeschlossener Kopf überlebt, bis seine Fläche 0 erreicht.
-- [ ] CI grün inkl. Coverage (§9.7).
+- [x] `sim-core`: Fill über fremdes Gebiet überfärbt/stiehlt es; **Totalverlust-Tod**, wenn ein Gebiet real auf 0 fällt; eingeschlossene Köpfe sterben **nicht** durchs Einschließen.
+- [x] `client`: sichtbare Übernahme fremden Gebiets; **Trail-Carve** durch erhöhtes 3D-Gebiet (Rinne auf Bodenhöhe).
+- [x] Property-Test: keine negative Fläche / > Karte; Summe aller Anteile + neutral bleibt 100 %.
+- [x] Szenario-Test: Spieler A färbt B komplett weg → B stirbt (Totalverlust), auch mit Kopf im Rest-Gebiet; ein eingeschlossener Kopf überlebt, bis seine Fläche 0 erreicht.
+- [x] CI grün inkl. Coverage (§9.7) — alle Gates lokal grün (typecheck, lint, format, 263 Unit/Property, 12 Szenario ×2, Coverage-Böden, Build, 4 E2E).
 
 _Referenz: spec §2.1–2.2, §4.1–4.2._
+
+## Answer
+
+Stehlen + Totalverlust über den ganzen Stack, alle Kernentscheidungen:
+
+- **Steal-Semantik in `closeLoop`** (`sim-core/fill.ts`): union(Gebiet, Loop) → **alle Löcher füllen** (alles Eingeschlossene ist erobert — neutrale Taschen UND fremdes Land) → die Eroberung wird per `difference` aus jedem überlappten Fremd-Gebiet **ausgestanzt**. Gebiete bleiben paarweise disjunkt per Konstruktion; die 100-%-Invariante gilt weiter (property-getestet inkl. „Gegner verliert exakt die Überlappung"). Der **Annulus ist Geschichte**: Umschließen fremder Blöcke erobert sie ganz; gespeicherte Gebiete sind seither faktisch **lochfrei** (Spawn-Blöcke weichen fremdem Land aus, statt es zu lochen; ein Steal beißt zusammenhängend vom Rand) — wichtig, weil das Loch-Füllen sonst fremd-gedeckte Löcher ohne Einschluss stehlen würde (Review-Befund, in `fill.ts` dokumentiert).
+- **Atomare Verwirkung:** wirft der Clipper bei irgendeinem Schritt (Union ODER eine der Fremd-Differenzen) oder liefert korrupte Topologie, verfällt der **gesamte** Fang deterministisch — nie ein halb angewendeter Steal (Erweiterung der ADR-0007-Verwirkung).
+- **Bit-Stabilität Unbeteiligter:** ein vom Loop unberührtes Fremd-Gebiet kommt als **dieselbe Referenz** zurück (Flächenvergleich unter Debris-Schwelle) — kein Phantom-Hash-Drift, keine überflüssigen Gebiets-Syncs. Der Golden-Replay-Hash `82bff39b` blieb dadurch **unverändert** (das Refactoring reproduziert Nicht-Steal-Fills bit-identisch).
+- **Totalverlust-Tod in `step`:** Übergang „Gebiet nicht-leer → leer" beim Steal ⇒ `Death { cause: 'totalLoss', killerId: Füller }`, **während der Fill-Phase** — vor `detectDeaths`. Pro Opfer zählt die früheste Ursache (Dedup); der Trail eines Totalverlust-Toten schneidet im selben Tick noch (Simultaneität wie Ticket 05). Danach regulärer Respawn. Landlose (pathologisches Spawn-Gedränge, Fläche war schon 0) sterben **nicht** durch einen Fill — nur echte Übergänge töten.
+- **`TickEvents.steals`:** Überlebende Steal-Opfer (geschrumpft, nicht null) — der Server sendet genau ihnen eine Gebiets-Nachricht `sync` (dedupliziert gegen Tote/Spawns, **vor** dem `fill`-Frame des Gewinners: der Verlierer schrumpft, bevor der Gewinner denselben Boden deckt). Eingeschlossene Köpfe überleben per Konstruktion — ein frisch Beklauter steht ggf. auf fremdem Land und beginnt seinen Trail beim nächsten eigenen `trackTrail`-Durchlauf (ein-Tick-Karenz je nach Array-Position, deterministisch; verschwindet mit Ticket 07).
+- **Protocol v3 → 4:** Todesursache-Byte erweitert (`trailCut`=0, `headOn`=1, `totalLoss`=2), Golden Bytes + Decoder-Validierung angepasst.
+- **Client Trail-Carve** (`render/carve.ts` + `scene.ts`): echte Geometrie statt des Interims-Lifts — fremde Trails werden als Band (Segment-Quads, an den Enden um die halbe Breite verlängert → Gelenke abgedeckt) per polyclip-`difference` aus dem Plateau-Polygon gestanzt; die Ribbon läuft immer auf Bodenhöhe in der Rinne. Drosselung pro Plateau (50 ms), bbox-Vorfilter, Fingerprint der querenden Trails als Rebuild-Key; Clipper-Fehler ⇒ ungeschnittenes Plateau (Kosmetik schlägt nie den Frame tot). Der eigene Trail schneidet das **eigene** Plateau nicht (der vergrabene Ribbon-Start bliebe sonst sichtbar). Sichtbare Übernahme = Gebiets-Syncs ersetzen die Plateaus beider Seiten; die Fill-Welle des Gewinners läuft über den Zugewinn.
+- **Szenario-Tests** (`tests/scenario/steal.test.ts`): Voll-Wipe (geparkter B, Kopf durchgehend im eigenen Gebiet → `totalLoss`, Killer A, frischer Respawn) und Teil-Steal (B wächst erst einen **Lobe** aus der späteren Einschluss-Zone heraus, A umringt nur den Original-Block → B überlebt eingeschlossen auf dem Rest). Die Choreografie (Waypoint-Autopilot) ist **fuzz-validiert**: 500/500 Seeds bei 0–3 Ticks Feedback-Lag gegen sim-core. Erkenntnisse aus dem Fuzzing, die im Test stecken: Rückweg über einen **12-WU-Parallel-Korridor** (bei weit entferntem Ziel sind Hin- und Rückweg sonst fast parallel → Selbstschnitt), **Dogleg-Align** vor dem Aufbruch (heilt den zufälligen Start-Heading-Bogen per Wieder-Eintritt), **Wand-Nudge** beim Parken (Block bündig an der Wand ließe < 1 WU Lücke → Kopf-an-Kopf mit dem vorbeigleitenden Räuber), Selbstheilung per Replan nach jedem unerwarteten Tod. Die Grenze „überlebt **bis** Fläche 0" deckt über die Leitung das Testpaar ab (Voll-Wipe stirbt mit eingeschlossenem Kopf / Teil-Steal überlebt eingeschlossen); das punktgenaue Ausfahren eines Überlebenden auf null bleibt bewusst den sim-core-Unit-Tests überlassen (ein dritter Raid über die Leitung kauft nur Flake-Fläche).
+- **CONTEXT.md** nachgeführt: Tod (Auflösungsreihenfolge inkl. Totalverlust), Tod-Event (`totalLoss`), Snap-Gitter (atomare Verwirkung, Annulus gestrichen), neuer Begriff **Trail-Carve**.

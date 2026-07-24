@@ -5,19 +5,25 @@
  * predicates): deterministic pure float math, verified in the ticket-04
  * spike against shared edges, chord overlaps, bowties and garbage rings.
  *
- * Capture semantics of the base version (no stealing until ticket 06):
+ * Capture semantics (stealing since ticket 06):
  *
  *   1. union(territory, loop polygon)   — loop = trail + straight chord
- *   2. fill the union's holes           — pockets enclosed between loop and
- *                                         territory are captured land
- *   3. carve every foreign territory    — foreign land is never taken, and
- *                                         a fully encircled block re-appears
- *                                         as a hole (annulus capture)
+ *   2. fill the union's holes           — everything enclosed is captured:
+ *                                         neutral pockets AND foreign land
+ *                                         (überfärbt/gestohlen, spec §2.2)
+ *   3. carve the capture out of every   — territories stay pairwise
+ *      overlapped foreign territory       disjoint; a foreign territory
+ *                                         reduced to nothing is the step's
+ *                                         total-loss verdict
  *
- * Step 3 re-carves any pre-existing hole still backed by foreign land, so
- * filling *all* holes in step 2 is sound. A hole orphaned by its owner
- * leaving stays neutral until some later fill consolidates it — deliberate:
- * enclosed neutral land is only ever taken by closing a loop.
+ * The whole capture is atomic: if any boolean op fails or returns corrupt
+ * topology, the entire fill — steal included — is forfeited deterministically
+ * instead of crashing the tick or leaving half-applied land. Stored
+ * territories stay hole-free: every fill's own output is hole-filled, spawn
+ * blocks are carved to AVOID foreign land (never to hole it), and a steal
+ * removes a connected, boundary-touching bite. That invariant matters —
+ * step 2 fills every hole of the union, so a hole backed by foreign land
+ * would be stolen without being enclosed; none can exist.
  */
 
 import { BALANCE, type Point, type Ring, type Territory } from '@paintclash/shared';
@@ -33,6 +39,13 @@ export interface FillOutcome {
   territory: Territory;
   /** Net captured area in WU² — always ≥ BALANCE.trail.minFillAreaWU2. */
   gainedArea: number;
+  /**
+   * The foreign territories after the steal, index-aligned with the `others`
+   * input. An entry the loop did not touch keeps its input reference —
+   * uninvolved players stay bit-identical (replay hash, no phantom syncs).
+   * An entry reduced to `[]` lost everything: the total-loss verdict.
+   */
+  others: Territory[];
 }
 
 /**
@@ -41,10 +54,11 @@ export interface FillOutcome {
  * pose back inside; the implicit chord back to the start closes the ring.
  *
  * Returns `null` when nothing is captured: the enclosed area is below the
- * 1 WU² sliver floor, the trail is too short to enclose anything, or the
- * loop ring is so degenerate (heavy self-overlap) that the clipper fails —
- * then the capture is forfeited deterministically instead of crashing the
- * tick. Callers reset the trail either way.
+ * sliver floor, the trail is too short to enclose anything, or any boolean
+ * op fails/corrupts (verified failure mode: massive self-overlap) — then the
+ * capture is forfeited deterministically, steal included, instead of
+ * crashing the tick or leaving half-applied land. Callers reset the trail
+ * either way.
  */
 export function closeLoop(
   territory: Territory,
@@ -55,28 +69,39 @@ export function closeLoop(
   // All clipper inputs live on the snap lattice (see geometry.ts) — raw
   // float trails go on it here; territories are prior lattice outputs.
   const loop: Territory = [[trail.map((p): Point => [snapWU(p[0]), snapWU(p[1])])]];
-  let captured: Territory;
+  let captured: Territory | null;
+  const updatedOthers: Territory[] = [];
   try {
     const merged = union(territory, loop);
-    // Fill every hole: enclosed pockets are captured (step 3 re-carves any
-    // hole that is actually foreign land).
+    // Fill every hole: everything enclosed is captured — neutral pockets and
+    // foreign land alike (spec §2.2: überfärbt/gestohlen).
     const filled: Territory = [];
     for (const poly of merged) {
       const outer = poly[0];
       if (outer !== undefined) filled.push([outer]);
     }
-    const foreign = others.filter((t) => t.length > 0);
-    captured = foreign.length > 0 ? difference(filled, ...foreign) : filled;
+    captured = cleanClipperOutput(filled);
+    if (captured === null) return null;
+    for (const other of others) {
+      if (other.length === 0) {
+        updatedOthers.push(other);
+        continue;
+      }
+      const carvedOther = cleanClipperOutput(difference(other, captured));
+      if (carvedOther === null) return null;
+      // Same area ⇒ same land (the difference only ever removes): keep the
+      // input reference so untouched territories stay bit-identical.
+      const stolen = territoryArea(other) - territoryArea(carvedOther);
+      updatedOthers.push(stolen < DEBRIS_AREA_WU2 ? other : carvedOther);
+    }
   } catch {
-    // polyclip could not resolve the ring (verified failure mode: massive
-    // self-overlap). Deterministic for identical inputs — replay-safe.
+    // polyclip could not resolve the geometry. Deterministic for identical
+    // inputs — replay-safe.
     return null;
   }
-  const cleaned = cleanClipperOutput(captured);
-  if (cleaned === null) return null;
-  const gainedArea = territoryArea(cleaned) - territoryArea(territory);
+  const gainedArea = territoryArea(captured) - territoryArea(territory);
   if (!(gainedArea >= BALANCE.trail.minFillAreaWU2)) return null;
-  return { territory: cleaned, gainedArea };
+  return { territory: captured, gainedArea, others: updatedOthers };
 }
 
 /**

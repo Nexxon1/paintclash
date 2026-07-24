@@ -12,6 +12,13 @@ import { BALANCE, type Point, type Territory } from '@paintclash/shared';
 import * as THREE from 'three';
 
 import type { RenderState } from '../game/session.js';
+import {
+  boundsOverlap,
+  CARVE_WIDTH_WU,
+  carveTerritory,
+  pointsBounds,
+  territoryBounds,
+} from './carve.js';
 
 const CAMERA_ELEVATION_RAD = (52 * Math.PI) / 180;
 const CAMERA_DISTANCE = 40;
@@ -22,16 +29,17 @@ const SELF_KEY = -1;
 const TERRITORY_HEIGHT = 0.35;
 /** Trail ribbons hug the floor (§4.1: 2D line at ground height). */
 const TRAIL_Y = 0.03;
-/**
- * Ribbon height over FOREIGN territory: on top of the plateau, so the line
- * stays visible while crossing enemy land. Interim look — ticket 06 replaces
- * it with the real carve-through groove (§4.1: territory sinks under the
- * trail).
- */
-const TRAIL_LIFT_Y = TERRITORY_HEIGHT + 0.03;
 const TRAIL_WIDTH = BALANCE.trail.widthWU;
 /** Fill wave duration (§4.2: the territory "grows" as a height wave). */
 const FILL_WAVE_MS = 450;
+/**
+ * Minimum time between carve rebuilds of one plateau (§4.1 carve-through:
+ * crossing trails cut a ground-level groove into the plateau geometry).
+ * Recarving is a polygon difference + mesh rebuild — tick cadence is plenty;
+ * between rebuilds the groove front trails the head by < 0.5 WU, visually
+ * hidden under the head cone.
+ */
+const CARVE_THROTTLE_MS = 50;
 
 /** Hue of the reserved own-player blue (0x2f7fe8 ≈ 214°). */
 const SELF_HUE = 0.594;
@@ -60,6 +68,10 @@ function easeOutBack(t: number): number {
 interface TerritoryMesh {
   mesh: THREE.Mesh;
   rev: number;
+  /** Fingerprint of the trail bands carved into this plateau. */
+  carveKey: string;
+  /** performance.now() of the last carve rebuild (throttling). */
+  carveBuiltAt: number;
   /** performance.now() of the fill that triggered the running wave. */
   waveStart: number | null;
 }
@@ -88,7 +100,7 @@ class TrailRibbon {
     this.mesh.frustumCulled = false; // grows every frame; culling lags behind
   }
 
-  update(points: Point[], lifts: boolean[]): void {
+  update(points: Point[]): void {
     const n = points.length;
     if (n < 2) {
       this.geometry.setDrawRange(0, 0);
@@ -126,9 +138,9 @@ class TrailRibbon {
         nz = dx / len;
       }
       const w = TRAIL_WIDTH / 2;
-      // Lifted vertices ride on top of foreign plateaus; the segment between
-      // a ground and a lifted point renders as a short ramp up the edge.
-      const y = (lifts[i] ? TRAIL_LIFT_Y : TRAIL_Y) + this.yOffset;
+      // Always at ground height — over foreign plateaus the ribbon runs in
+      // the carve-through groove (see updateTerritories).
+      const y = TRAIL_Y + this.yOffset;
       position.setXYZ(i * 2, curr[0] + nx * w, y, curr[1] + nz * w);
       position.setXYZ(i * 2 + 1, curr[0] - nx * w, y, curr[1] - nz * w);
     }
@@ -227,18 +239,50 @@ export class ArenaScene {
     this.renderer.render(this.scene, this.camera);
   }
 
-  /** Territory plateaus: rebuild on revision change, run the fill wave. */
+  /**
+   * Territory plateaus: rebuild on revision change or when the trail bands
+   * crossing them moved (carve-through groove, §4.1 — rate-limited per
+   * plateau), run the fill wave.
+   */
   private updateTerritories(state: RenderState): void {
     const now = performance.now();
     const fills = new Set(state.fills);
     const seen = new Set<number>();
+    const trailBounds = state.trails.map((trail) => ({
+      trail,
+      bounds: pointsBounds(trail.points),
+    }));
     for (const view of state.territories) {
       seen.add(view.playerId);
+      // Trails of OTHER players near this plateau carve it; the owner's own
+      // trail never does (it only ever touches the plateau at its buried
+      // exit seed — carving there would expose the ribbon start).
+      const viewBounds = territoryBounds(view.territory);
+      const bands: Point[][] = [];
+      let carveKey = '';
+      for (const { trail, bounds } of trailBounds) {
+        if (trail.playerId === view.playerId || !bounds || !viewBounds) continue;
+        if (!boundsOverlap(bounds, viewBounds, CARVE_WIDTH_WU / 2)) continue;
+        bands.push(trail.points);
+        const tip = trail.points[trail.points.length - 1];
+        carveKey += `${String(trail.playerId)}:${String(trail.points.length)}:${tip?.[0].toFixed(2) ?? ''},${tip?.[1].toFixed(2) ?? ''};`;
+      }
       let entry = this.territories.get(view.playerId);
-      if (entry?.rev !== view.rev) {
+      const carveDue =
+        entry !== undefined &&
+        entry.carveKey !== carveKey &&
+        now - entry.carveBuiltAt >= CARVE_THROTTLE_MS;
+      if (entry?.rev !== view.rev || carveDue) {
         if (entry) this.removeMesh(entry.mesh);
-        const mesh = this.buildTerritoryMesh(view.territory, view.playerId, state.selfId);
-        entry = { mesh, rev: view.rev, waveStart: entry?.waveStart ?? null };
+        const carved = bands.length > 0 ? carveTerritory(view.territory, bands) : view.territory;
+        const mesh = this.buildTerritoryMesh(carved, view.playerId, state.selfId);
+        entry = {
+          mesh,
+          rev: view.rev,
+          carveKey,
+          carveBuiltAt: now,
+          waveStart: entry?.waveStart ?? null,
+        };
         this.territories.set(view.playerId, entry);
         this.scene.add(mesh);
       }
@@ -312,7 +356,7 @@ export class ArenaScene {
   /** Trail ribbons — one per player with a visible trail this frame. */
   private updateTrails(state: RenderState): void {
     const seen = new Set<number>();
-    for (const { playerId, points, lifts } of state.trails) {
+    for (const { playerId, points } of state.trails) {
       seen.add(playerId);
       let ribbon = this.trails.get(playerId);
       if (!ribbon) {
@@ -323,7 +367,7 @@ export class ArenaScene {
         this.trails.set(playerId, ribbon);
         this.scene.add(ribbon.mesh);
       }
-      ribbon.update(points, lifts);
+      ribbon.update(points);
     }
     for (const [id, ribbon] of this.trails) {
       if (!seen.has(id)) {

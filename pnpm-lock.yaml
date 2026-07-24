@@ -98,6 +98,9 @@ importers:
       '@paintclash/sim-core':
         specifier: workspace:*
         version: link:../sim-core
+      polyclip-ts:
+        specifier: ^0.16.8
+        version: 0.16.8
       three:
         specifier: ^0.185.1
         version: 0.185.1

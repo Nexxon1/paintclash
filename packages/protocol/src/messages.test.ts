@@ -131,7 +131,7 @@ describe('round-trip (decode ∘ encode = id, spec §9.1)', () => {
       fc.property(
         fc.integer({ min: 0, max: 0xffff }),
         fc.integer({ min: 0, max: 0xffff }),
-        fc.constantFrom<'trailCut' | 'headOn'>('trailCut', 'headOn'),
+        fc.constantFrom<'trailCut' | 'headOn' | 'totalLoss'>('trailCut', 'headOn', 'totalLoss'),
         (victimId, killerId, cause) => {
           const decoded = decodeServerMessage(encodeDeath(victimId, killerId, cause));
           expect(decoded).toEqual({ type: 'death', victimId, killerId, cause });
@@ -143,8 +143,8 @@ describe('round-trip (decode ∘ encode = id, spec §9.1)', () => {
 
 describe('golden bytes (wire format pinned, spec §9.1)', () => {
   it('join "Ada"', () => {
-    // Version byte 0x03 — bumped for the death message (ticket 05).
-    expect(Array.from(encodeJoin('Ada'))).toEqual([0x01, 0x03, 0x03, 0x41, 0x64, 0x61]);
+    // Version byte 0x04 — bumped for the total-loss death cause (ticket 06).
+    expect(Array.from(encodeJoin('Ada'))).toEqual([0x01, 0x04, 0x03, 0x41, 0x64, 0x61]);
   });
 
   it('input batch [seq 7 turn -1, seq 8 turn 1]', () => {
@@ -278,6 +278,17 @@ describe('golden bytes (wire format pinned, spec §9.1)', () => {
       0x09,
       0x00, // killerId
       0x01, // cause headOn
+    ]);
+  });
+
+  it('death victim 4, killer 9, total loss', () => {
+    expect(Array.from(encodeDeath(4, 9, 'totalLoss'))).toEqual([
+      0x14, // opcode
+      0x04,
+      0x00, // victimId
+      0x09,
+      0x00, // killerId
+      0x02, // cause totalLoss
     ]);
   });
 });
@@ -439,7 +450,7 @@ describe('malformed frames are rejected, never thrown (spec §8.2)', () => {
     expect(decodeServerMessage(new Uint8Array([...ok, 0x00]))).toBeNull();
     // Unknown cause byte.
     const badCause = new Uint8Array(ok);
-    badCause[5] = 2;
+    badCause[5] = 3;
     expect(decodeServerMessage(badCause)).toBeNull();
   });
 

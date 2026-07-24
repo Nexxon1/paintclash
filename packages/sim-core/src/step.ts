@@ -31,13 +31,21 @@ export interface TickInputs {
 export interface TickEvents {
   /**
    * Players that closed a loop this tick — their trail reset and their
-   * territory was replaced (or kept, for sub-1-WU² slivers, spec §2.2).
+   * territory was replaced (or kept, for sub-sliver loops, spec §2.2).
    */
   fills: number[];
+  /**
+   * Players whose territory lost land to a fill this tick and who still
+   * hold some (ticket 06) — the server re-syncs exactly these. A player
+   * stolen down to nothing is a total-loss death instead (in `deaths`,
+   * whose respawn sync covers the territory change).
+   */
+  steals: number[];
   /**
    * Deaths of this tick (spec §2.1), already applied: each victim's old
    * land is neutral and they respawned on a fresh start block. Fills
    * resolve first — closing the loop in the same tick saves the runner.
+   * Total-loss deaths (ticket 06) precede the collision deaths.
    */
   deaths: Death[];
 }
@@ -179,16 +187,39 @@ function trackTrail(
   if (!inside) return;
   // Loop closed. Fills earlier in this tick's iteration order are already
   // visible to later ones — deterministic by the stable player order.
-  const others = state.players.filter((q) => q.id !== p.id).map((q) => q.territory);
-  const outcome = closeLoop(p.territory, p.trail, others);
-  if (outcome) p.territory = outcome.territory;
+  const others = state.players.filter((q) => q.id !== p.id);
+  const outcome = closeLoop(
+    p.territory,
+    p.trail,
+    others.map((q) => q.territory),
+  );
+  if (outcome) {
+    p.territory = outcome.territory;
+    others.forEach((victim, i) => {
+      const updated = outcome.others[i];
+      if (updated === undefined || updated === victim.territory) return;
+      const hadLand = victim.territory.length > 0;
+      victim.territory = updated;
+      // Stolen to nothing = total-loss death (spec §2.1) — the enclosure
+      // itself never kills, running out of land does. A victim whose head
+      // was just enclosed keeps standing (now on foreign land); their trail
+      // starts when their own trackTrail sees them outside — same tick for
+      // players later in the array, next tick for earlier ones (both
+      // deterministic; the one-tick head-on grace vanishes with ticket 07).
+      if (updated.length === 0 && hadLand) {
+        events.deaths.push({ victimId: victim.id, killerId: p.id, cause: 'totalLoss' });
+      } else if (!events.steals.includes(victim.id)) {
+        events.steals.push(victim.id);
+      }
+    });
+  }
   p.trail = [];
   events.fills.push(p.id);
 }
 
 /** One authoritative tick: leaves → joins → intents → movement → trails/fills → deaths. */
 export function step(state: SimState, inputs: TickInputs, dtSec: number): TickEvents {
-  const events: TickEvents = { fills: [], deaths: [] };
+  const events: TickEvents = { fills: [], steals: [], deaths: [] };
   if (inputs.leaves) {
     for (const id of inputs.leaves) {
       const idx = state.players.findIndex((p) => p.id === id);
@@ -212,7 +243,19 @@ export function step(state: SimState, inputs: TickInputs, dtSec: number): TickEv
     advancePlayer(p, state.arenaSizeWU, dtSec);
     trackTrail(state, p, prevX, prevY, events);
   }
-  events.deaths = detectDeaths(state.players);
+  // Collision deaths join the total-loss deaths the fills above produced.
+  // A total-loss victim's trail still cuts this tick (simultaneity, ticket
+  // 05) — but they die only once, under the earlier cause.
+  const dying = new Set(events.deaths.map((d) => d.victimId));
+  for (const death of detectDeaths(state.players)) {
+    if (!dying.has(death.victimId)) {
+      events.deaths.push(death);
+      dying.add(death.victimId);
+    }
+  }
+  // A steal survivor who still died this tick (e.g. cut while their land
+  // shrank) is a death, not a steal — the respawn sync covers them.
+  events.steals = events.steals.filter((id) => !dying.has(id));
   applyDeaths(state, events.deaths);
   state.tick += 1;
   return events;

@@ -1,10 +1,11 @@
-import { BALANCE, LIMITS, TICK_DT_SEC } from '@paintclash/shared';
+import { BALANCE, LIMITS, TICK_DT_SEC, type Point } from '@paintclash/shared';
 import {
   decodeServerMessage,
   encodeInput,
   encodeJoin,
   type ServerMessage,
 } from '@paintclash/protocol';
+import { territoryArea, type SimState } from '@paintclash/sim-core';
 import { describe, expect, it } from 'vitest';
 
 import { ArenaCore } from './arena.js';
@@ -556,6 +557,115 @@ describe('death broadcast (ticket 05, spec §2.1)', () => {
     }
     // The victim respawned: still present in the following snapshot.
     expect(a.socket.lastSnapshot().players.map((p) => p.id)).toContain(a.id);
+  });
+});
+
+describe('steal broadcast (ticket 06, spec §2.2)', () => {
+  /**
+   * Random spawns sit ≥ 25 WU apart — no scripted drive can steal within a
+   * unit test's patience. Poise the sim state directly instead (white-box,
+   * same geometry as sim-core's steal tests): filler one step from re-entry
+   * with the loop ring laid, victim parked on its block inside it.
+   */
+  function poise(arena: ArenaCore, fillerId: number, victimId: number, ring: Point[]): void {
+    const { state } = arena as unknown as { state: SimState };
+    const filler = state.players.find((p) => p.id === fillerId);
+    const victim = state.players.find((p) => p.id === victimId);
+    if (!filler || !victim) throw new Error('players not spawned');
+    Object.assign(filler, { x: 100, y: 103.3, heading: (3 * Math.PI) / 2, turn: 0 });
+    filler.territory = [
+      [
+        [
+          [97, 97],
+          [103, 97],
+          [103, 103],
+          [97, 103],
+        ],
+      ],
+    ];
+    filler.trail = ring.map(([x, y]): Point => [x, y]);
+    Object.assign(victim, { x: 110, y: 110, heading: 0, turn: 0 });
+    victim.territory = [
+      [
+        [
+          [107, 107],
+          [113, 107],
+          [113, 113],
+          [107, 113],
+        ],
+      ],
+    ];
+    victim.trail = [];
+  }
+
+  function freshPair(): {
+    arena: ArenaCore;
+    filler: { socket: FakeSocket; id: number };
+    victim: { socket: FakeSocket; id: number };
+  } {
+    const arena = new ArenaCore(1);
+    const filler = joinedPlayer(arena, 'filler');
+    const victim = joinedPlayer(arena, 'victim');
+    arena.tick(TICK_DT_SEC); // both spawned
+    return { arena, filler, victim };
+  }
+
+  it('a partial steal broadcasts the shrunken territory as a sync before the fill', () => {
+    const { arena, filler, victim } = freshPair();
+    poise(arena, filler.id, victim.id, [
+      [102, 100],
+      [120, 100],
+      [120, 109],
+      [100, 109],
+      [100, 103.3],
+    ]);
+    const seenBefore = victim.socket.sent.length;
+    arena.tick(TICK_DT_SEC);
+    const fresh = victim.socket.decoded().slice(seenBefore);
+    expect(fresh.some((m) => m.type === 'death')).toBe(false);
+    const syncAt = fresh.findIndex(
+      (m) => m.type === 'territory' && m.playerId === victim.id && m.reason === 'sync',
+    );
+    const fillAt = fresh.findIndex(
+      (m) => m.type === 'territory' && m.playerId === filler.id && m.reason === 'fill',
+    );
+    expect(syncAt).toBeGreaterThanOrEqual(0);
+    expect(fillAt).toBeGreaterThan(syncAt);
+    const sync = fresh[syncAt];
+    if (sync?.type !== 'territory') throw new Error('unreachable');
+    // The block lost its enclosed southern strip: 36 − 12.
+    expect(territoryArea(sync.territory)).toBeCloseTo(24, 4);
+  });
+
+  it('a total loss broadcasts one death, then one respawn sync — never a duplicate', () => {
+    const { arena, filler, victim } = freshPair();
+    poise(arena, filler.id, victim.id, [
+      [102, 100],
+      [120, 100],
+      [120, 120],
+      [100, 120],
+      [100, 103.3],
+    ]);
+    const seenBefore = filler.socket.sent.length;
+    arena.tick(TICK_DT_SEC);
+    const fresh = filler.socket.decoded().slice(seenBefore);
+    const deathAt = fresh.findIndex((m) => m.type === 'death');
+    expect(deathAt).toBeGreaterThanOrEqual(0);
+    expect(fresh[deathAt]).toEqual({
+      type: 'death',
+      victimId: victim.id,
+      killerId: filler.id,
+      cause: 'totalLoss',
+    });
+    const victimSyncs = fresh.filter(
+      (m) => m.type === 'territory' && m.playerId === victim.id && m.reason === 'sync',
+    );
+    expect(victimSyncs).toHaveLength(1);
+    const sync = victimSyncs[0];
+    if (sync?.type !== 'territory') throw new Error('unreachable');
+    // The respawn block, not the wiped land.
+    expect(territoryArea(sync.territory)).toBeCloseTo(BALANCE.spawn.startBlockWU ** 2, 4);
+    expect(fresh.indexOf(sync)).toBeGreaterThan(deathAt);
   });
 });
 

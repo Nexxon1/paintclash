@@ -1,5 +1,6 @@
 import { BALANCE, type Point, type Territory } from '@paintclash/shared';
 import fc from 'fast-check';
+import { intersection } from 'polyclip-ts';
 import { describe, expect, it } from 'vitest';
 
 import { closeLoop } from './fill.js';
@@ -69,9 +70,9 @@ describe('closeLoop', () => {
     ).toBeNull();
   });
 
-  it('never captures foreign territory — the gain is clipped (ticket 06 changes this)', () => {
-    // Enemy block adjacent to the loop area: the loop [7..12]×[5..10]
-    // overlaps the enemy square (10..14)×(4..8) — that part is not captured.
+  it('steals the enclosed slice of a foreign territory (spec §2.2, ticket 06)', () => {
+    // Enemy block (10..14)×(4..8); the loop encloses [7..12]×[5..10] — the
+    // overlap x∈[10,12], y∈[5,8] (6 WU²) changes hands.
     const enemy: Territory = [[squareRing(12, 6, 2)]];
     const trail: Point[] = [
       [7, 5],
@@ -82,12 +83,16 @@ describe('closeLoop', () => {
     ];
     const outcome = closeLoop(ownSquare(), trail, [enemy]);
     expect(outcome).not.toBeNull();
-    // Enemy overlap with the enclosed rect: x∈[10,12], y∈[5,8] = 6.
-    expect(outcome?.gainedArea).toBeCloseTo(22 - 6, 6);
-    expect(pointInTerritory(11, 6, outcome?.territory ?? [])).toBe(false);
+    // The full enclosure counts, stolen land included: 25 − 3 own overlap.
+    expect(outcome?.gainedArea).toBeCloseTo(22, 6);
+    expect(pointInTerritory(11, 6, outcome?.territory ?? [])).toBe(true);
+    // The enemy keeps exactly the un-enclosed remainder.
+    expect(territoryArea(outcome?.others[0] ?? [])).toBeCloseTo(10, 6);
+    expect(pointInTerritory(11, 6, outcome?.others[0] ?? [])).toBe(false);
+    expect(pointInTerritory(13, 6, outcome?.others[0] ?? [])).toBe(true);
   });
 
-  it('encircling a foreign block yields an annulus — hole kept, heads survive by land', () => {
+  it('encircling a foreign block captures it whole — no annulus, the block changes hands', () => {
     const enemy: Territory = [[squareRing(15, 15, 2)]]; // (13..17)² = 16
     const trail: Point[] = [
       [7, 5],
@@ -98,12 +103,30 @@ describe('closeLoop', () => {
     ];
     const outcome = closeLoop(ownSquare(), trail, [enemy]);
     expect(outcome).not.toBeNull();
-    // Loop polygon 398, own overlap 7 → union 427; enemy carved back: −16.
-    expect(territoryArea(outcome?.territory ?? [])).toBeCloseTo(411, 6);
-    expect(outcome?.gainedArea).toBeCloseTo(375, 6);
-    // Enclosed neutral land is captured, the enemy block is not.
+    // Loop polygon 398, own overlap 7 → union 427 — enclosed neutral land
+    // AND the enclosed enemy block are captured (spec §2.2: überfärbt).
+    expect(territoryArea(outcome?.territory ?? [])).toBeCloseTo(427, 6);
+    expect(outcome?.gainedArea).toBeCloseTo(391, 6);
     expect(pointInTerritory(10, 15, outcome?.territory ?? [])).toBe(true);
-    expect(pointInTerritory(15, 15, outcome?.territory ?? [])).toBe(false);
+    expect(pointInTerritory(15, 15, outcome?.territory ?? [])).toBe(true);
+    // The enemy is left with nothing — the total-loss verdict is step's job.
+    expect(outcome?.others[0]).toEqual([]);
+  });
+
+  it('returns a foreign territory untouched by the loop as the same reference', () => {
+    // Bit-stable state for uninvolved players: no phantom hash change, no
+    // pointless territory sync.
+    const enemy: Territory = [[squareRing(25, 25, 2)]];
+    const trail: Point[] = [
+      [7, 5],
+      [12, 5],
+      [12, 10],
+      [7, 10],
+      [7, 7],
+    ];
+    const outcome = closeLoop(ownSquare(), trail, [enemy]);
+    expect(outcome).not.toBeNull();
+    expect(outcome?.others[0]).toBe(enemy);
   });
 
   it('captures pockets enclosed between loop and territory (hole-filling)', () => {
@@ -200,7 +223,7 @@ describe('closeLoop', () => {
     );
   });
 
-  it('property: with an enemy in the field, the gain never overlaps it', () => {
+  it('property: stealing conserves land — the enemy loses exactly the overlap, stays disjoint', () => {
     const coord = fc.double({ min: 0, max: 30, noNaN: true });
     const enemy: Territory = [[squareRing(20, 20, 4)]];
     fc.assert(
@@ -208,15 +231,17 @@ describe('closeLoop', () => {
         const trail: Point[] = [[7, 5], ...rawTrail.map(([x, y]): Point => [x, y]), [5, 5]];
         const outcome = closeLoop(ownSquare(), trail, [enemy]);
         if (outcome) {
-          // Sample the enemy interior — none of it may have changed hands.
-          for (const [x, y] of [
-            [18, 18],
-            [20, 20],
-            [23.5, 23.5],
-            [17, 23],
-          ]) {
-            expect(pointInTerritory(x ?? 0, y ?? 0, outcome.territory)).toBe(false);
-          }
+          const after = outcome.others[0] ?? [];
+          // Never grows, never negative.
+          const lost = 64 - territoryArea(after);
+          expect(lost).toBeGreaterThanOrEqual(-1e-6);
+          // Filler and shrunken enemy stay pairwise disjoint …
+          expect(
+            territoryArea(intersection(outcome.territory, after) as Territory),
+          ).toBeLessThanOrEqual(1e-6);
+          // … and the enemy lost exactly what the filler now holds of it.
+          const overlap = territoryArea(intersection(outcome.territory, enemy));
+          expect(lost).toBeCloseTo(overlap, 6);
         }
       }),
       { numRuns: 150 },

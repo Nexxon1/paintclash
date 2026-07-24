@@ -8,10 +8,11 @@ export type TurnSignal = -1 | 0 | 1;
 
 /**
  * Why a player died (spec §2.1) — spoken identically by `sim-core` (the
- * verdict), `protocol` (the wire cause byte) and the clients. The
- * Totalverlust cause joins with ticket 06.
+ * verdict), `protocol` (the wire cause byte) and the clients. `totalLoss` =
+ * the whole territory was painted away (ticket 06): territory is the life
+ * line, the head's own position grants no reprieve.
  */
-export type DeathCause = 'trailCut' | 'headOn';
+export type DeathCause = 'trailCut' | 'headOn' | 'totalLoss';
 
 /**
  * Continuous-world geometry (spec §2.2: polygon-based fill). The shapes are
@@ -27,8 +28,10 @@ export type Ring = Point[];
 
 /**
  * One connected territory piece: outer ring first, then hole rings (even-odd).
- * Holes are real gameplay: a loop around a *foreign* block captures the ring
- * around it but not the block itself (spec §2.2 — stealing lands in ticket 06).
+ * Since stealing (ticket 06) stored territories are hole-free in practice — a
+ * loop captures everything it encloses, and losing land only ever bites from
+ * the boundary inward. The hole shape stays: clipper output and the wire
+ * speak it, and `validPolyTopology` guards it.
  */
 export type Poly = Ring[];
 
