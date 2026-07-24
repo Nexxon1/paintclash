@@ -11,6 +11,12 @@ export interface Env {
   readonly ASSETS: { fetch(request: Request): Promise<Response> };
   readonly COMMIT_SHA: string;
   readonly ARENA: DurableObjectNamespace;
+  /**
+   * Dev-only arena-size override in WU (`wrangler dev --var ARENA_SIZE_WU:50`)
+   * — a small field makes death/fill mechanics testable in seconds. Never set
+   * on deploys: production always plays BALANCE.arena.sizeWU.
+   */
+  readonly ARENA_SIZE_WU?: string;
 }
 
 /** Health-probe payload — small, dependency-free, trivially assertable. */

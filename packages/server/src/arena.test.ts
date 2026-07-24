@@ -62,6 +62,14 @@ describe('join handshake', () => {
     expect(welcome).toEqual({ type: 'welcome', playerId: id, arenaSizeWU: BALANCE.arena.sizeWU });
   });
 
+  it('a custom arena size (dev override, private rooms) reaches the welcome', () => {
+    const arena = new ArenaCore(1, 50);
+    const { socket } = joinedPlayer(arena);
+    const welcome = socket.decoded().find((m) => m.type === 'welcome');
+    if (welcome?.type !== 'welcome') throw new Error('no welcome');
+    expect(welcome.arenaSizeWU).toBe(50);
+  });
+
   it('spawns the player on the next tick and snapshots them to everyone', () => {
     const arena = new ArenaCore(1);
     const { socket, id } = joinedPlayer(arena);

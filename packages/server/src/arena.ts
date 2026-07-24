@@ -80,8 +80,9 @@ export class ArenaCore {
   private pendingJoins: number[] = [];
   private pendingLeaves: number[] = [];
 
-  constructor(seed: number) {
-    this.state = createSimState(seed);
+  /** `arenaSizeWU` overrides the BALANCE default (dev/testing, private rooms). */
+  constructor(seed: number, arenaSizeWU?: number) {
+    this.state = createSimState(seed, arenaSizeWU);
   }
 
   get connectionCount(): number {

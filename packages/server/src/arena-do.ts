@@ -21,7 +21,20 @@ import { TICK_DT_MS, TICK_DT_SEC } from '@paintclash/shared';
 
 import { ArenaCore } from './arena.js';
 
-export class ArenaDO extends DurableObject {
+import type { Env } from './router.js';
+
+/**
+ * Parse the dev-only ARENA_SIZE_WU override (see `Env`). Anything outside a
+ * sane playable band falls back to the BALANCE default — an operator typo
+ * must not produce a 1-WU or NaN-sized arena.
+ */
+function arenaSizeOverride(raw: string | undefined): number | undefined {
+  if (raw === undefined) return undefined;
+  const size = Number(raw);
+  return Number.isFinite(size) && size >= 10 && size <= 1000 ? size : undefined;
+}
+
+export class ArenaDO extends DurableObject<Env> {
   private arena: ArenaCore | null = null;
   private readonly socketIds = new Map<WebSocket, number>();
   private ticking = false;
@@ -34,7 +47,10 @@ export class ArenaDO extends DurableObject {
     const [client, server] = [pair[0], pair[1]];
     this.ctx.acceptWebSocket(server);
 
-    this.arena ??= new ArenaCore(crypto.getRandomValues(new Uint32Array(1))[0] ?? 1);
+    this.arena ??= new ArenaCore(
+      crypto.getRandomValues(new Uint32Array(1))[0] ?? 1,
+      arenaSizeOverride(this.env.ARENA_SIZE_WU),
+    );
     const arena = this.arena;
     const playerId = arena.connect({
       send: (frame) => {

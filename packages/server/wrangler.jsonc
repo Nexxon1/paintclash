@@ -29,6 +29,9 @@
     // Overridden per deploy with the real git SHA via `--var COMMIT_SHA:<sha>`;
     // `dev` is the fallback for `wrangler dev` / dry-runs.
     "COMMIT_SHA": "dev",
+    // Optional dev-only override: `wrangler dev --var ARENA_SIZE_WU:50` runs a
+    // small arena for fast local mechanics testing (root script `dev:small`).
+    // Deliberately NOT set here — deploys always play the BALANCE size.
   },
   "observability": {
     "enabled": true,
