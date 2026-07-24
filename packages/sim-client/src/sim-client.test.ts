@@ -1,6 +1,7 @@
 import { TICK_DT_SEC, type Territory } from '@paintclash/shared';
 import {
   decodeClientMessage,
+  encodeDeath,
   encodeSnapshot,
   encodeTerritory,
   encodeTrail,
@@ -125,6 +126,29 @@ describe('territory & trail sync (ticket 04)', () => {
     client.receive(encodeSnapshot(1, 0, [snapshotPlayer()])); // 9 is gone
     expect(client.territories.has(9)).toBe(false);
     expect(client.trails.has(9)).toBe(false);
+  });
+});
+
+describe('death events (ticket 05)', () => {
+  it('records the death, ends the victim’s trail, and notifies the hook', () => {
+    const { client } = harness();
+    client.receive(encodeWelcome(1, 200));
+    client.receive(
+      encodeTrail(2, [
+        [1, 2],
+        [3, 4],
+      ]),
+    );
+    const seen: string[] = [];
+    client.onDeath = (death) =>
+      seen.push(`${String(death.victimId)}<${String(death.killerId)}:${death.cause}`);
+    client.receive(encodeDeath(2, 1, 'headOn'));
+    expect(seen).toEqual(['2<1:headOn']);
+    expect(client.trails.has(2)).toBe(false);
+    expect(client.deaths).toEqual([{ type: 'death', victimId: 2, killerId: 1, cause: 'headOn' }]);
+    // The respawn block arrives as a normal sync right after.
+    client.receive(encodeTerritory(2, 'sync', block));
+    expect(client.territoryAreaOf(2)).toBeCloseTo(36, 5);
   });
 });
 

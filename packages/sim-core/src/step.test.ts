@@ -299,7 +299,7 @@ describe('loop close → fill (spec §2.2)', () => {
 describe('area invariants under random play (spec §9.2, fast-check)', () => {
   const turnArb = fc.constantFrom<-1 | 0 | 1>(-1, 0, 1);
 
-  it('areas stay monotone, disjoint, and sum + neutral = 100 %', () => {
+  it('areas stay monotone between deaths, disjoint, and sum + neutral = 100 %', () => {
     fc.assert(
       fc.property(
         fc.integer(),
@@ -316,12 +316,19 @@ describe('area invariants under random play (spec §9.2, fast-check)', () => {
             state.players.map((p) => [p.id, territoryArea(p.territory)]),
           );
           for (const intent of intents) {
-            step(state, { turns: [intent] }, TICK_DT_SEC);
+            const events = step(state, { turns: [intent] }, TICK_DT_SEC);
+            const died = new Set(events.deaths.map((d) => d.victimId));
             let total = 0;
             for (const p of state.players) {
               const area = territoryArea(p.territory);
-              // Never negative, never shrinking (nothing takes land yet).
-              expect(area).toBeGreaterThanOrEqual((lastArea.get(p.id) ?? 0) - 1e-6);
+              if (died.has(p.id)) {
+                // A death resets to the fresh start block (ticket 05) —
+                // the only sanctioned shrink until stealing (ticket 06).
+                expect(area).toBeLessThanOrEqual(BALANCE.spawn.startBlockWU ** 2 + 1e-6);
+              } else {
+                // Never negative, never shrinking (nothing takes land yet).
+                expect(area).toBeGreaterThanOrEqual((lastArea.get(p.id) ?? 0) - 1e-6);
+              }
               lastArea.set(p.id, area);
               total += area;
             }

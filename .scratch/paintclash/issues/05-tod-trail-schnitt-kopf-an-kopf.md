@@ -4,17 +4,34 @@
 
 **Blocked by:** 04.
 
-**Status:** ready-for-agent
+**Status:** resolved (2026-07-24)
 
-- [ ] `sim-core`: Trail-Schnitt-Kollision (fremd **und** selbst) mit Kopf-/Kollisionsradius 0,5 WU; Kopf-an-Kopf-Auflösung (draußen stirbt; im eigenen Gebiet sicher; beide draußen → beide tot); Tod → gesamtes Gebiet **neutral**.
-- [ ] `protocol`: Tod-Event + Kill-Event.
-- [ ] `server`: autoritative Todesauflösung pro Tick; sauberer Respawn (Startblock, Mindestabstand).
-- [ ] `client`: Tod bewusst **schlicht** (Gebiet wird neutral); Respawn. Visuelle Aufwertung = spätere Ausbaustufe.
-- [ ] Property-Test: Tod ⇒ Gebiet komplett neutral.
-- [ ] Szenario-Test: zwei Sim-Clients — einer schneidet den Trail des anderen → korrekter Toter; Kopf-an-Kopf-Fälle inkl. „beide draußen → beide tot".
-- [ ] CI grün inkl. Coverage (§9.7).
+- [x] `sim-core`: Trail-Schnitt-Kollision (fremd **und** selbst) mit Kopf-/Kollisionsradius 0,5 WU; Kopf-an-Kopf-Auflösung (draußen stirbt; im eigenen Gebiet sicher; beide draußen → beide tot); Tod → gesamtes Gebiet **neutral**.
+- [x] `protocol`: Tod-Event + Kill-Event.
+- [x] `server`: autoritative Todesauflösung pro Tick; sauberer Respawn (Startblock, Mindestabstand).
+- [x] `client`: Tod bewusst **schlicht** (Gebiet wird neutral); Respawn. Visuelle Aufwertung = spätere Ausbaustufe.
+- [x] Property-Test: Tod ⇒ Gebiet komplett neutral.
+- [x] Szenario-Test: zwei Sim-Clients — einer schneidet den Trail des anderen → korrekter Toter; Kopf-an-Kopf-Fälle inkl. „beide draußen → beide tot".
+- [x] CI grün inkl. Coverage (§9.7).
 
 _Referenz: spec §2.1, §10.4; CONTEXT „Tod"._
+
+## Answer
+
+Tod-Mechanik über den ganzen Stack, alle Kernentscheidungen:
+
+- **Auflösung pro Tick in zwei Pässen** (`detectDeaths` in `sim-core/collision.ts`): erst **alle Trail-Schnitte simultan** gegen denselben Post-Movement-Zustand (auch ein selbst sterbender Kopf schneidet noch), dann **Kopf-an-Kopf nur unter den nicht Geschnittenen**. Der zweite Punkt ist die Verfolgungsjagd-Regel: ein Trail endet immer am Kopf seines Besitzers geklebt — wer jemanden auf dessen eigener Linie stellt, schneidet (Opfer stirbt) und darf nicht zusätzlich am Kopf des frisch Geschnittenen „Kopf-an-Kopf" sterben. Kopf-an-Kopf-Tode maskieren einander **nicht** (drei Köpfe an einem Punkt → alle drei tot). Deterministisch: Opfer in Spielerreihenfolge, erster Killer gewinnt die Zuschreibung.
+- **Kollisionssemantik** (Auslegung von §10.4 „Kopf-/Kollisionsradius 0,5 WU (halbe Trail-Breite)"): Trail-Schnitt = Kopf-**Zentrum** ≤ 0,5 WU neben der Trail-**Mittellinie** (das gerenderte 1-WU-Band ist exakt die Kill-Zone); Kopf-an-Kopf = Zentren ≤ 1,0 WU (zwei 0,5-Scheiben berühren sich). Statische Tests pro Tick reichen: max. 0,45 WU Schritt (bzw. 0,9 relativ) kann keine der Zonen durchtunneln.
+- **Selbstschnitt-Karenz** `BALANCE.trail.selfCutGraceWU = 4,5` (Weglänge hinter dem Kopf, Grenzsegment wird geschnitten, nicht übersprungen): nötig, weil der eigene Trail am Kopf klebt (Distanz 0) — und v. a. weil die **sanfte Barriere** einen angepinnten Kopf beim Abdrehen über die eigene Wand-Spur zurückschiebt (Kontakt bis ~4,2 WU Weg zurück; ohne Karenz wäre das ein Rand-Tod durch die Hintertür, Widerspruch zu §2.4). Obergrenze geometrisch hart: unterhalb π·Wenderadius ≈ 5,06 WU ist echte Selbstberührung bei gedeckelter Kurvenrate unmöglich (Min-Distanz 2r·sin(s/2r)), der engste echte Selbstschnitt (voller Kreis) kontaktiert bei ~9,6 WU → bleibt tödlich. Beides property-/unit-getestet (Wand-Abdrehen überlebt; Vollkreis stirbt ~Tick 22). Fremde Trails: **keine** Karenz — dadurch ist auch der Frontalzusammenstoß tief unter 0,5 WU ein beidseitiger Schnitt (gleiche Konsequenz wie Kopf-an-Kopf).
+- **Reihenfolge im Tick: Fills vor Toden** — wer den Loop im selben Tick schließt, ist drinnen, trail-los und **gerettet** (spielerfreundlich, deterministisch; property-getestet). Tod-Anwendung: **alle** Opfer-Gebiete werden zuerst neutral geräumt, dann respawnt jedes Opfer in-place (Array-Position bleibt — Iterationsreihenfolge ist Determinismus-Vertrag) über die reguläre Spawn-Logik (Mindestabstand 25 WU best effort, RNG aus dem Sim-State → replay-sicher), `turn` = 0.
+- **Protocol:** ein `death`-Frame (Opcode 0x14: Opfer u16, Killer u16, Ursache u8) = **Tod-Event und Kill-Event in einem** — der Client des Killers erkennt seinen Kill an `killerId`; Selbstschnitt: `killerId` = Opfer. `PROTOCOL_VERSION` 2 → 3. Sende-Reihenfolge pro Tick: Tod-Frames → Gebiets-Syncs (Respawn-Blöcke, dann Spawns, dann Fill-Deltas) → Snapshot; ein Client, der beim Tod-Frame aufräumt, hat beim Eintreffen der Pose schon den frischen Block.
+- **Client bewusst schlicht:** Tod-Frame beendet autoritativ den Trail des Opfers (eigener + abgeleitete Gegner-Trails, Recent-Ringe, Anzeige-Pose); die **eigene Prediction schneidet hart** auf die Respawn-Pose um (`Predictor.snap()` beim ersten Reconcile nach dem Tod — ein Respawn ist ein Teleport, kein Gleitflug); Gegner-Respawns schnappen über die vorhandene Teleport-Schwelle. `RenderState.deaths` (drainendes Event-Feld) ist die Naht für SFX (Ticket 11) und spätere Tod-Visuals.
+- **Typen-Hygiene:** `DeathCause` lebt in `shared` (eine Quelle, ADR-0002); `sim-core` exportiert `Death { victimId, killerId, cause }`; Karenz + Radius in `BALANCE` (§10.6) inkl. Fenster-Assertion (2r < Karenz < π·Wenderadius) in `balance.test.ts`.
+- **Golden-Replay absichtlich regeneriert** (Hash `82bff39b`): Tode sind jetzt Semantik — das Fixture-Skript wurde umgebaut (Fill-Manöver zuerst, gehaltene Kurven münden in Selbstschnitte) und der Replay-Test erzwingt `fills ≥ 1` **und** `deaths ≥ 1`. Flächen-Property angepasst: monoton **zwischen** Toden, Tod = Reset auf ≤ Startblock.
+- **Szenario-Tests (workerd, echte Wire, Feedback-Steuerung wegen zufälliger Spawns):** (1) Jäger kreuzt den Trail des Flüchtenden über einen **statischen** Trail-Ankerpunkt → exakt der Verfolgte stirbt (`trailCut`, Killer = Jäger), respawnt frisch; ein zurückweichendes Ziel wäre eine Gleichgeschwindigkeits-Verfolgung, die mit Lenk-Deadband knapp außerhalb der 0,5 WU verhungert. (2) Beidseitige **Lead-Pursuit** (reines Verfolgen kann in einen stabilen 2r-Orbit einrasten) → Frontaltreffer, **beide tot im selben Tick** (Tick-Stempel der Tod-Frames). (3) Verteidiger **kreist stationär im eigenen Block** (Bang-Bang um den Blockmittelpunkt → Loiter-Radius ~1,6 < 3) → Angreifer stirbt, Verteidiger unverwundbar.
+- **CI-Relevantes lokal grün:** 249 Unit-Tests inkl. Coverage-Gates (sim-core 95er-Schwelle), 10 Szenario-Tests, Typecheck, Lint, Prettier. Playwright-E2E nicht lokal gefahren (wrangler dev stallt unter WSL2) — läuft in CI.
+- **Zu den Comments unten (Rewind):** 05 fällt Urteile bewusst gegen den Server-Tick-Zustand — das ist die Basis-Auflösung. `detectDeaths` ist dafür eine **reine Query über Spieler-Sichten** ohne State/RNG/Uhr: Ticket 07 ruft sie mit **zurückgespulten** Posen auf; die geforderten Szenario-Pflichttests („weicht auf seinem Schirm aus → überlebt") gehören zu 07.
+- **Watch-Items:** (a) Mehrfach-Wandgezappel (3+ Pässe über dieselbe Wandstelle) ist ein echter Selbstschnitt — regelrein, im Playtest beobachten; (b) bei tiefem Frontal-Overlap meldet die Ursache `trailCut` statt `headOn` (gleiches Ergebnis, beide sterben) — reine Telemetrie-Nuance.
 
 ## Comments
 

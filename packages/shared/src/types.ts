@@ -7,6 +7,13 @@
 export type TurnSignal = -1 | 0 | 1;
 
 /**
+ * Why a player died (spec §2.1) — spoken identically by `sim-core` (the
+ * verdict), `protocol` (the wire cause byte) and the clients. The
+ * Totalverlust cause joins with ticket 06.
+ */
+export type DeathCause = 'trailCut' | 'headOn';
+
+/**
  * Continuous-world geometry (spec §2.2: polygon-based fill). The shapes are
  * polyclip-ts-compatible so sim-core's boolean ops consume them verbatim;
  * `protocol` and `client` share them without depending on sim-core.

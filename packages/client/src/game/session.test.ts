@@ -1,6 +1,7 @@
 import { BALANCE, type Territory } from '@paintclash/shared';
 import {
   decodeClientMessage,
+  encodeDeath,
   encodeSnapshot,
   encodeTerritory,
   encodeTrail,
@@ -276,6 +277,65 @@ describe('snapshots feed reconciliation + interpolation', () => {
     // The rendered head trails the newest snapshot (interp delay) — and so
     // does the revealed trail.
     expect(enemy?.x ?? NaN).toBeLessThan(62);
+  });
+
+  it('an own death snaps the head to the respawn and drops the trail (ticket 05)', () => {
+    const { session } = harness();
+    session.receive(encodeWelcome(1, BALANCE.arena.sizeWU));
+    session.receive(encodeTerritory(1, 'sync', blockAt(100, 100)));
+    session.receive(encodeSnapshot(1, 0, [selfPlayer({ x: 101 })]));
+    // Drive out of the block so an own trail exists.
+    for (let i = 0; i < 8; i++) {
+      session.simTick(0);
+      session.renderSample(1);
+    }
+    expect(session.renderSample(1).trails.some((t) => t.playerId === 1)).toBe(true);
+    // Death: frame → respawn territory → snapshot with the respawn pose,
+    // exactly the server's per-tick order.
+    session.receive(encodeDeath(1, 2, 'trailCut'));
+    session.receive(encodeTerritory(1, 'sync', blockAt(30, 170)));
+    session.receive(encodeSnapshot(9, 8, [selfPlayer({ x: 30, y: 170 })]));
+    const state = session.renderSample(1);
+    // Deliberately plain: the head CUTS to the respawn — no cross-map glide.
+    expect(state.self?.x).toBeCloseTo(30, 4);
+    expect(state.self?.y).toBeCloseTo(170, 4);
+    // The old trail died with the player.
+    expect(state.trails.some((t) => t.playerId === 1)).toBe(false);
+    // The death event surfaces once (sound/UX seam, ticket 11) and drains.
+    expect(state.deaths).toEqual([{ victimId: 1, killerId: 2, cause: 'trailCut' }]);
+    expect(session.renderSample(1).deaths).toEqual([]);
+  });
+
+  it('an enemy death drops its trail immediately and teleports it on catch-up', () => {
+    const { session } = harness();
+    joined(session);
+    session.receive(encodeTerritory(2, 'sync', blockAt(50, 100)));
+    // Enemy leaves its block heading +x — a derived trail builds up.
+    for (let t = 2; t <= 8; t++) {
+      const x = 50 + (t - 2) * 2;
+      session.receive(encodeSnapshot(t, 0, [selfPlayer(), selfPlayer({ id: 2, x, y: 100 })]));
+      session.simTick(0);
+      session.renderSample(0, 50);
+    }
+    expect(session.renderSample(0, 50).trails.some((t) => t.playerId === 2)).toBe(true);
+    session.receive(encodeDeath(2, 2, 'trailCut'));
+    session.receive(encodeTerritory(2, 'sync', blockAt(150, 150)));
+    // The trail is gone the moment the death frame lands — never inferred.
+    expect(session.renderSample(0, 50).trails.some((t) => t.playerId === 2)).toBe(false);
+    expect(session.renderSample(0, 50).deaths).toEqual([]); // drained above
+    // Feed the respawn poses until the delayed render timeline catches up.
+    for (let t = 9; t <= 18; t++) {
+      session.receive(encodeSnapshot(t, 0, [selfPlayer(), selfPlayer({ id: 2, x: 150, y: 150 })]));
+      session.simTick(0);
+      session.renderSample(0, 50);
+    }
+    const enemy = session.renderSample(0, 50).others.find((o) => o.id === 2);
+    if (!enemy) throw new Error('enemy vanished');
+    // Teleport-grade distance snaps — no cross-map rubber banding.
+    expect(enemy.x).toBeCloseTo(150, 4);
+    expect(enemy.y).toBeCloseTo(150, 4);
+    // No trail reappears: the head is inside its fresh block.
+    expect(session.renderSample(0, 50).trails.some((t) => t.playerId === 2)).toBe(false);
   });
 
   it('adopts a full trail sync for players already on their way (late join)', () => {

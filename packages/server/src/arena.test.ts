@@ -505,6 +505,52 @@ describe('territory sync (ticket 04, spec §6.1: fill is server-only)', () => {
   });
 });
 
+describe('death broadcast (ticket 05, spec §2.1)', () => {
+  /** Steer intents paced one per tick, like a real client. */
+  function drive(arena: ArenaCore, socket: FakeSocket, id: number, turns: (-1 | 0 | 1)[]): void {
+    for (const turn of turns) {
+      const tick = socket.lastSnapshot().tick;
+      arena.handleFrame(id, encodeInput([{ seq: tick, turn }]));
+      arena.tick(TICK_DT_SEC);
+    }
+  }
+
+  /** Straight out of the block, then a held max-rate circle → self-cut. */
+  const selfCutManeuver = (): (-1 | 0 | 1)[] => [
+    ...Array.from({ length: 14 }, (): 0 => 0),
+    ...Array.from({ length: 30 }, (): 1 => 1),
+  ];
+
+  it('broadcasts the death to everyone, then the respawn block as a sync', () => {
+    const arena = new ArenaCore(20260721);
+    const a = joinedPlayer(arena, 'circler');
+    const witness = joinedPlayer(arena, 'witness');
+    arena.tick(TICK_DT_SEC);
+    drive(arena, a.socket, a.id, selfCutManeuver());
+    for (const socket of [a.socket, witness.socket]) {
+      const messages = socket.decoded();
+      const deathAt = messages.findIndex((m) => m.type === 'death');
+      expect(deathAt).toBeGreaterThanOrEqual(0);
+      const death = messages[deathAt];
+      if (death?.type !== 'death') throw new Error('unreachable');
+      expect(death).toEqual({
+        type: 'death',
+        victimId: a.id,
+        killerId: a.id,
+        cause: 'trailCut',
+      });
+      // The respawn territory follows the death frame — a client that clears
+      // the victim's state on death has the fresh block by snapshot time.
+      const syncAfter = messages
+        .slice(deathAt + 1)
+        .find((m) => m.type === 'territory' && m.playerId === a.id && m.reason === 'sync');
+      expect(syncAfter).toBeDefined();
+    }
+    // The victim respawned: still present in the following snapshot.
+    expect(a.socket.lastSnapshot().players.map((p) => p.id)).toContain(a.id);
+  });
+});
+
 describe('same-tick join + disconnect', () => {
   it('cancels the unspawned join — no immortal ghost player', () => {
     const arena = new ArenaCore(1);

@@ -5,6 +5,7 @@
 export {
   decodeClientMessage,
   decodeServerMessage,
+  encodeDeath,
   encodeInput,
   encodeJoin,
   encodeSnapshot,
@@ -18,6 +19,7 @@ export {
   MAX_TRAIL_POINTS,
   PROTOCOL_VERSION,
   type ClientMessage,
+  type DeathCause,
   type InputItem,
   type ServerMessage,
   type SnapshotPlayer,

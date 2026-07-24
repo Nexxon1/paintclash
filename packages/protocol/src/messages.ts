@@ -13,10 +13,12 @@
  * simply sent on interest-entry instead of join.
  */
 
-import type { Point, Ring, Territory, TurnSignal } from '@paintclash/shared';
+import type { DeathCause, Point, Ring, Territory, TurnSignal } from '@paintclash/shared';
+
+export type { DeathCause };
 
 /** Bumped on every incompatible wire change; joins carry it. */
-export const PROTOCOL_VERSION = 2;
+export const PROTOCOL_VERSION = 3;
 
 /** Nickname cap on the wire: 16 code points, ≤ 64 UTF-8 bytes. */
 export const MAX_NAME_CHARS = 16;
@@ -41,6 +43,9 @@ const OP_WELCOME = 0x10;
 const OP_SNAPSHOT = 0x11;
 const OP_TERRITORY = 0x12;
 const OP_TRAIL = 0x13;
+const OP_DEATH = 0x14;
+
+const DEATH_FRAME_BYTES = 6; // op + u16 victim + u16 killer + u8 cause
 
 const INPUT_ITEM_BYTES = 5; // u32 seq + i8 turn
 const SNAPSHOT_PLAYER_BYTES = 15; // u16 id + 3×f32 + i8 turn
@@ -70,7 +75,8 @@ export type ServerMessage =
   | { type: 'welcome'; playerId: number; arenaSizeWU: number }
   | { type: 'snapshot'; tick: number; ackSeq: number; players: SnapshotPlayer[] }
   | { type: 'territory'; playerId: number; reason: TerritoryReason; territory: Territory }
-  | { type: 'trail'; playerId: number; points: Point[] };
+  | { type: 'trail'; playerId: number; points: Point[] }
+  | { type: 'death'; victimId: number; killerId: number; cause: DeathCause };
 
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder('utf-8', { fatal: false, ignoreBOM: false });
@@ -219,6 +225,22 @@ export function encodeTrail(playerId: number, points: readonly Point[]): Uint8Ar
 }
 
 /**
+ * One death (spec §2.1): who died and who caused it — `killerId` equals
+ * `victimId` for a self-cut. Doubles as the kill event on the killer's
+ * client (ticket 05 "Tod-Event + Kill-Event"). The victim's respawn arrives
+ * as the territory sync + snapshot of the same tick.
+ */
+export function encodeDeath(victimId: number, killerId: number, cause: DeathCause): Uint8Array {
+  const frame = new Uint8Array(DEATH_FRAME_BYTES);
+  const view = new DataView(frame.buffer);
+  frame[0] = OP_DEATH;
+  view.setUint16(1, victimId, true);
+  view.setUint16(3, killerId, true);
+  frame[5] = cause === 'headOn' ? 1 : 0;
+  return frame;
+}
+
+/**
  * Decode a frame arriving *from* a client. Returns `null` on anything that
  * is not a perfectly-formed frame — wrong opcode, wrong length, out-of-range
  * values — so the server can drop it without a try/catch.
@@ -344,6 +366,17 @@ export function decodeServerMessage(frame: Uint8Array): ServerMessage | null {
         points.push([view.getFloat32(offset, true), view.getFloat32(offset + 4, true)]);
       }
       return { type: 'trail', playerId: view.getUint16(1, true), points };
+    }
+    case OP_DEATH: {
+      if (frame.length !== DEATH_FRAME_BYTES) return null;
+      const causeByte = view.getUint8(5);
+      if (causeByte > 1) return null;
+      return {
+        type: 'death',
+        victimId: view.getUint16(1, true),
+        killerId: view.getUint16(3, true),
+        cause: causeByte === 1 ? 'headOn' : 'trailCut',
+      };
     }
     default:
       return null;

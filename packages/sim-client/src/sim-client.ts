@@ -11,6 +11,7 @@ import {
   encodeJoin,
   MAX_INPUT_BATCH,
   type InputItem,
+  type ServerMessage,
   type SnapshotPlayer,
   type TerritoryReason,
 } from '@paintclash/protocol';
@@ -29,6 +30,8 @@ export interface TerritoryUpdate {
   territory: Territory;
 }
 
+export type DeathUpdate = Extract<ServerMessage, { type: 'death' }>;
+
 export class SimClient {
   /** Own id once the welcome arrived. */
   playerId: number | null = null;
@@ -46,6 +49,10 @@ export class SimClient {
   onSnapshot: ((snapshot: Snapshot) => void) | null = null;
   /** Test hook: called for every territory update (spawn sync or fill). */
   onTerritory: ((update: TerritoryUpdate) => void) | null = null;
+  /** Every death seen, in arrival order (ticket 05). */
+  readonly deaths: DeathUpdate[] = [];
+  /** Test hook: called for every death event. */
+  onDeath: ((death: DeathUpdate) => void) | null = null;
 
   private readonly send: (frame: Uint8Array) => void;
   private readonly name: string;
@@ -83,6 +90,14 @@ export class SimClient {
     }
     if (message.type === 'trail') {
       this.trails.set(message.playerId, message.points);
+      return;
+    }
+    if (message.type === 'death') {
+      // The victim's trail died with them; the respawn block follows as a
+      // territory sync, the fresh pose in the same tick's snapshot.
+      this.trails.delete(message.victimId);
+      this.deaths.push(message);
+      this.onDeath?.(message);
       return;
     }
     if (this.snapshot && message.tick <= this.snapshot.tick) return;

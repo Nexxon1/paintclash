@@ -60,17 +60,24 @@ describe('replay determinism', () => {
     expect(hashSimState(end)).toBe(GOLDEN_END_HASH);
   });
 
-  it('the golden replay provably crosses the fill path (ticket 04)', () => {
+  it('the golden replay provably crosses the fill and death paths (tickets 04/05)', () => {
     const state = createSimState(GOLDEN_SEED);
     const script = goldenScript();
     let fills = 0;
+    let deaths = 0;
+    let p1PeakArea = 0;
     for (let t = 0; t < GOLDEN_TICKS; t++) {
-      fills += step(state, script.get(t) ?? {}, TICK_DT_SEC).fills.length;
+      const events = step(state, script.get(t) ?? {}, TICK_DT_SEC);
+      fills += events.fills.length;
+      deaths += events.deaths.length;
+      const p1 = state.players.find((p) => p.id === 1);
+      p1PeakArea = Math.max(p1PeakArea, territoryArea(p1?.territory ?? []));
     }
     expect(fills).toBeGreaterThanOrEqual(1);
-    // Player 1's out-and-back maneuver captured real area beyond its block.
-    const p1 = state.players.find((p) => p.id === 1);
-    expect(territoryArea(p1?.territory ?? [])).toBeGreaterThan(36);
+    // Player 1's out-and-back maneuver captured real area beyond its block …
+    expect(p1PeakArea).toBeGreaterThan(36);
+    // … and the held turns end in self-cuts: the death path is exercised too.
+    expect(deaths).toBeGreaterThanOrEqual(1);
   });
 });
 

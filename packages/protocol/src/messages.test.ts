@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import {
   decodeClientMessage,
   decodeServerMessage,
+  encodeDeath,
   encodeInput,
   encodeJoin,
   encodeSnapshot,
@@ -124,11 +125,26 @@ describe('round-trip (decode ∘ encode = id, spec §9.1)', () => {
       ),
     );
   });
+
+  it('death', () => {
+    fc.assert(
+      fc.property(
+        fc.integer({ min: 0, max: 0xffff }),
+        fc.integer({ min: 0, max: 0xffff }),
+        fc.constantFrom<'trailCut' | 'headOn'>('trailCut', 'headOn'),
+        (victimId, killerId, cause) => {
+          const decoded = decodeServerMessage(encodeDeath(victimId, killerId, cause));
+          expect(decoded).toEqual({ type: 'death', victimId, killerId, cause });
+        },
+      ),
+    );
+  });
 });
 
 describe('golden bytes (wire format pinned, spec §9.1)', () => {
   it('join "Ada"', () => {
-    expect(Array.from(encodeJoin('Ada'))).toEqual([0x01, 0x02, 0x03, 0x41, 0x64, 0x61]);
+    // Version byte 0x03 — bumped for the death message (ticket 05).
+    expect(Array.from(encodeJoin('Ada'))).toEqual([0x01, 0x03, 0x03, 0x41, 0x64, 0x61]);
   });
 
   it('input batch [seq 7 turn -1, seq 8 turn 1]', () => {
@@ -251,6 +267,17 @@ describe('golden bytes (wire format pinned, spec §9.1)', () => {
       0x00,
       0x80,
       0x40, // 4f
+    ]);
+  });
+
+  it('death victim 4, killer 9, head-on', () => {
+    expect(Array.from(encodeDeath(4, 9, 'headOn'))).toEqual([
+      0x14, // opcode
+      0x04,
+      0x00, // victimId
+      0x09,
+      0x00, // killerId
+      0x01, // cause headOn
     ]);
   });
 });
@@ -403,6 +430,17 @@ describe('malformed frames are rejected, never thrown (spec §8.2)', () => {
     ]);
     expect(decodeServerMessage(ok.subarray(0, ok.length - 1))).toBeNull();
     expect(decodeServerMessage(new Uint8Array([...ok, 0xff]))).toBeNull();
+  });
+
+  it('rejects malformed death frames', () => {
+    const ok = encodeDeath(4, 9, 'trailCut');
+    // Truncated / trailing garbage.
+    expect(decodeServerMessage(ok.subarray(0, ok.length - 1))).toBeNull();
+    expect(decodeServerMessage(new Uint8Array([...ok, 0x00]))).toBeNull();
+    // Unknown cause byte.
+    const badCause = new Uint8Array(ok);
+    badCause[5] = 2;
+    expect(decodeServerMessage(badCause)).toBeNull();
   });
 
   it('an empty trail round-trips (clear semantics)', () => {

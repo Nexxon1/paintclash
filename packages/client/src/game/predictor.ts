@@ -106,6 +106,19 @@ export class Predictor {
   }
 
   /**
+   * Drop every correction offset and re-anchor the render segment on the
+   * current prediction: the next sample shows it verbatim. For poses that
+   * must CUT, not glide — a death respawn is a teleport, and gliding it
+   * across the map would read as flying (ticket 05: Tod bewusst schlicht).
+   */
+  snap(): void {
+    this.errorX = 0;
+    this.errorY = 0;
+    this.errorH = 0;
+    if (this.curr) this.prev = { ...this.curr };
+  }
+
+  /**
    * Run `fn` (e.g. a burst of catch-up inputs after a stall) and fold the
    * entire resulting pose change into the offsets: the rendered pose stays
    * where it was and glides — the burst never appears as one giant frame.

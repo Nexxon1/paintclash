@@ -15,27 +15,25 @@ export const GOLDEN_TICKS = 400;
  * Scripted arena life: staggered joins, weaving turns, one leave — and a
  * deliberate out-and-back maneuver for player 1 (straight out, half turn,
  * straight back) so the replay provably crosses the trail → loop → fill
- * path (asserted in replay.test.ts, ticket 04).
+ * path (asserted in replay.test.ts, ticket 04). Since ticket 05 the held
+ * turns later in the script matter too: a sustained max-rate turn outside
+ * the own land circles into the own trail — the replay provably crosses
+ * the death → respawn path as well. The fill runs FIRST (ticks 12–40), so
+ * no death can steal it.
  */
 export function goldenScript(): Map<number, TickInputs> {
   const script = new Map<number, TickInputs>();
   script.set(0, { joins: [1] });
   script.set(10, { joins: [2] });
-  script.set(20, { joins: [3], turns: [{ id: 1, turn: 1 }] });
-  script.set(60, { turns: [{ id: 2, turn: -1 }] });
-  script.set(90, {
-    turns: [
-      { id: 1, turn: 0 },
-      { id: 3, turn: 1 },
-    ],
-  });
   // Player 1 out-and-back: 12 straight ticks leave the block for sure
   // (5.4 WU > half diagonal 4.24), ~11 turning ticks flip the heading
   // (16°/tick), then straight retraces a parallel track 3.2 WU beside the
   // outbound one — back across the 6-WU-wide block.
-  script.set(100, { turns: [{ id: 1, turn: 0 }] });
-  script.set(112, { turns: [{ id: 1, turn: 1 }] });
-  script.set(123, { turns: [{ id: 1, turn: 0 }] });
+  script.set(12, { turns: [{ id: 1, turn: 1 }] });
+  script.set(20, { joins: [3] });
+  script.set(23, { turns: [{ id: 1, turn: 0 }] });
+  script.set(60, { turns: [{ id: 2, turn: -1 }] });
+  script.set(90, { turns: [{ id: 3, turn: 1 }] });
   script.set(150, { leaves: [2] });
   script.set(151, { joins: [4] });
   script.set(200, {
@@ -50,7 +48,8 @@ export function goldenScript(): Map<number, TickInputs> {
 
 /**
  * Expected `hashSimState` after GOLDEN_TICKS — pinned once, guarded forever.
- * Regenerated for ticket 04 (trail + loop + fill entered the state and the
- * hash): a deliberate semantics change, not drift.
+ * Regenerated for ticket 05 (deaths entered the sim: the held turns above now
+ * end in self-cut deaths + respawns): a deliberate semantics change, not
+ * drift. Previous: '779967a5' (ticket 04).
  */
-export const GOLDEN_END_HASH = '779967a5';
+export const GOLDEN_END_HASH = '82bff39b';

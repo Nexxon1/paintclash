@@ -78,6 +78,18 @@ describe('reconciliation (server corrects, client replays, spec §6.1)', () => {
     expect(Number.isFinite(displayed?.x)).toBe(true);
   });
 
+  it('snap() cuts every correction offset — a death respawn teleports honestly (ticket 05)', () => {
+    const predictor = new Predictor(ARENA);
+    predictor.reconcile(serverSelf(), 0, TICK_DT_SEC);
+    predictor.applyLocalInput(1, 0, TICK_DT_SEC);
+    // The respawn pose lands far away — normally this would glide/jump mixed.
+    predictor.reconcile(serverSelf({ x: 30, y: 170 }), 1, TICK_DT_SEC);
+    predictor.snap();
+    const displayed = predictor.sample(1);
+    expect(displayed?.x).toBeCloseTo(30, 5);
+    expect(displayed?.y).toBeCloseTo(170, 5);
+  });
+
   it('smooths a server correction instead of snapping (weiches Nachziehen)', () => {
     const predictor = new Predictor(ARENA);
     predictor.reconcile(serverSelf(), 0, TICK_DT_SEC);

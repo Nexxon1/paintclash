@@ -10,6 +10,7 @@ import {
   encodeInput,
   encodeJoin,
   MAX_INPUT_BATCH,
+  type DeathCause,
   type InputItem,
   type SnapshotPlayer,
 } from '@paintclash/protocol';
@@ -138,6 +139,13 @@ interface TrailPoint {
   lift: boolean;
 }
 
+/** One death event, surfaced to the renderer/sound seam (ticket 05/11). */
+export interface DeathView {
+  victimId: number;
+  killerId: number;
+  cause: DeathCause;
+}
+
 /** One player's territory for rendering; `rev` bumps on every replacement. */
 export interface TerritoryView {
   playerId: number;
@@ -164,6 +172,12 @@ export interface RenderState {
   trails: { playerId: number; points: Point[]; lifts: boolean[] }[];
   /** Players whose fill landed since the last sample (wave animation). */
   fills: number[];
+  /**
+   * Deaths since the last sample (ticket 05). Deliberately plain for now:
+   * the territory turning neutral + the pose cut ARE the death visuals;
+   * this is the seam for sound (ticket 11) and later flourish.
+   */
+  deaths: DeathView[];
 }
 
 export class ClientSession {
@@ -181,6 +195,10 @@ export class ClientSession {
   private readonly territories = new Map<number, TerritoryView>();
   /** Fill events since the last renderSample (drained there). */
   private pendingFills: number[] = [];
+  /** Death events since the last renderSample (drained there). */
+  private pendingDeaths: DeathView[] = [];
+  /** The own death's respawn must CUT, not glide — set until reconciled. */
+  private snapOnReconcile = false;
   /**
    * Own trail from RENDERED frame poses (not tick poses) — appended in
    * renderSample, so the ribbon is by construction exactly as smooth as the
@@ -280,6 +298,28 @@ export class ClientSession {
       }
       return;
     }
+    if (message.type === 'death') {
+      // The trail died with the player — authoritative, like the fill's
+      // clear. The respawn block (territory sync) and pose (snapshot)
+      // follow in the same tick's frames.
+      if (message.victimId === this.playerId) {
+        this.ownTrail = [];
+        this.ownRecent.length = 0;
+        this.snapOnReconcile = true;
+      } else {
+        this.enemyTrails.delete(message.victimId);
+        this.enemyRecent.delete(message.victimId);
+        // Forget the shown pose too: the respawn teleport must cut, not
+        // rubber-band across the arena at glide speed.
+        this.enemyPoses.delete(message.victimId);
+      }
+      this.pendingDeaths.push({
+        victimId: message.victimId,
+        killerId: message.killerId,
+        cause: message.cause,
+      });
+      return;
+    }
     const latest = this.interpolator.latestTick();
     if (latest !== null && message.tick <= latest) return;
     this.interpolator.add(message.tick, message.players);
@@ -301,6 +341,11 @@ export class ClientSession {
       this.playerId === null ? undefined : message.players.find((p) => p.id === this.playerId);
     if (self && this.predictor) {
       this.predictor.reconcile(self, message.ackSeq, TICK_DT_SEC);
+      if (this.snapOnReconcile) {
+        // First authoritative pose after the own death: the respawn.
+        this.predictor.snap();
+        this.snapOnReconcile = false;
+      }
     }
   }
 
@@ -497,6 +542,8 @@ export class ClientSession {
     this.trackOwnTrail(self);
     const fills = this.pendingFills;
     this.pendingFills = [];
+    const deaths = this.pendingDeaths;
+    this.pendingDeaths = [];
     return {
       self,
       selfId: this.playerId,
@@ -505,6 +552,7 @@ export class ClientSession {
       territories: [...this.territories.values()],
       trails: this.sampleTrails(self, others),
       fills,
+      deaths,
     };
   }
 

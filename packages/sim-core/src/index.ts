@@ -3,6 +3,7 @@
  * authoritative server and client prediction (ADR-0002/0003). No network, no
  * rendering, no wall clock and no ambient RNG.
  */
+export { detectDeaths, type Death } from './collision.js';
 export { closeLoop, type FillOutcome } from './fill.js';
 export { pointInTerritory, territoryArea } from './geometry.js';
 export { nextRandom, seedRng, type RngState } from './rng.js';

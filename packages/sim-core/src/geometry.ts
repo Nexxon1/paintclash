@@ -86,7 +86,7 @@ export function pointInTerritory(x: number, y: number, territory: Territory): bo
 }
 
 /** Squared distance from (x, y) to the segment a–b. */
-function segmentDistanceSq(x: number, y: number, a: Point, b: Point): number {
+export function segmentDistanceSq(x: number, y: number, a: Point, b: Point): number {
   const abx = b[0] - a[0];
   const aby = b[1] - a[1];
   const lengthSq = abx * abx + aby * aby;

@@ -24,6 +24,7 @@
 
 import {
   decodeClientMessage,
+  encodeDeath,
   encodeSnapshot,
   encodeTerritory,
   encodeTrail,
@@ -277,22 +278,27 @@ export class ArenaCore {
     this.pendingJoins = [];
     this.pendingLeaves = [];
 
-    // Territory deltas (ticket 04, spec §6.1: fill is server-only — this is
-    // the only source of territory truth). Sent BEFORE the tick's snapshot,
-    // so a fill's trail-clear is already known when its pose arrives.
-    const territoryFrames: Uint8Array[] = [];
-    for (const id of spawned) {
+    // Event frames of this tick, sent BEFORE its snapshot. Deaths first
+    // (ticket 05): a client clears the victim's trail on the death frame,
+    // then the respawn arrives — territory sync (deaths + spawns), fill
+    // deltas (ticket 04, spec §6.1: the only source of territory truth) —
+    // so everything is known when the tick's poses land.
+    const eventFrames: Uint8Array[] = [];
+    for (const death of events.deaths) {
+      eventFrames.push(encodeDeath(death.victimId, death.killerId, death.cause));
+    }
+    for (const id of [...events.deaths.map((d) => d.victimId), ...spawned]) {
       const p = this.state.players.find((q) => q.id === id);
-      if (p) territoryFrames.push(encodeTerritory(id, 'sync', p.territory));
+      if (p) eventFrames.push(encodeTerritory(id, 'sync', p.territory));
     }
     for (const id of events.fills) {
       const p = this.state.players.find((q) => q.id === id);
-      if (p) territoryFrames.push(encodeTerritory(id, 'fill', p.territory));
+      if (p) eventFrames.push(encodeTerritory(id, 'fill', p.territory));
     }
-    if (territoryFrames.length > 0) {
+    if (eventFrames.length > 0) {
       for (const connection of this.connections.values()) {
         if (!connection.joined) continue;
-        for (const frame of territoryFrames) connection.socket.send(frame);
+        for (const frame of eventFrames) connection.socket.send(frame);
       }
     }
 

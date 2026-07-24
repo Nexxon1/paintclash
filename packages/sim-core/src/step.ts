@@ -11,6 +11,7 @@
 
 import { BALANCE } from '@paintclash/shared';
 
+import { detectDeaths, type Death } from './collision.js';
 import { closeLoop, spawnTerritory } from './fill.js';
 import { appendTrailPoint, distanceToTerritory, pointInTerritory } from './geometry.js';
 import { nextRandom } from './rng.js';
@@ -33,6 +34,12 @@ export interface TickEvents {
    * territory was replaced (or kept, for sub-1-WU² slivers, spec §2.2).
    */
   fills: number[];
+  /**
+   * Deaths of this tick (spec §2.1), already applied: each victim's old
+   * land is neutral and they respawned on a fresh start block. Fills
+   * resolve first — closing the loop in the same tick saves the runner.
+   */
+  deaths: Death[];
 }
 
 const TURN_RATE_RAD = (BALANCE.movement.turnRateDegPerSec * Math.PI) / 180;
@@ -66,12 +73,18 @@ function distanceToPlayer(x: number, y: number, p: PlayerSim): number {
 }
 
 /**
- * Pick a spawn spot: random candidates, first that honors the 25 WU minimum
- * distance wins; under crowding the best candidate found wins instead of
- * failing (spec §2.3 "bestmögliche freie Stelle"). The start block is carved
- * around existing land so territories stay pairwise disjoint.
+ * Roll a fresh spawn (spot, heading, start block) from the state's RNG: random
+ * candidates, first that honors the 25 WU minimum distance wins; under
+ * crowding the best candidate found wins instead of failing (spec §2.3
+ * "bestmögliche freie Stelle"). The start block is carved around existing
+ * land so territories stay pairwise disjoint. `except` is the player being
+ * respawned — their own head must not repel the roll.
  */
-function spawnPlayer(state: SimState, id: number): void {
+function rollSpawn(
+  state: SimState,
+  except: PlayerSim | null,
+): Pick<PlayerSim, 'x' | 'y' | 'heading' | 'territory'> {
+  const others = state.players.filter((p) => p !== except);
   // An arena smaller than the start block (tiny private rooms) must still
   // spawn inside — clamp the block to what fits.
   const blockWU = Math.min(BALANCE.spawn.startBlockWU, state.arenaSizeWU);
@@ -87,7 +100,7 @@ function spawnPlayer(state: SimState, id: number): void {
     const x = half + rx.value * range;
     const y = half + ry.value * range;
     let minDist = Infinity;
-    for (const p of state.players) {
+    for (const p of others) {
       minDist = Math.min(minDist, distanceToPlayer(x, y, p));
     }
     if (minDist > bestDist) {
@@ -99,20 +112,42 @@ function spawnPlayer(state: SimState, id: number): void {
   }
   const rh = nextRandom(state.rng);
   state.rng = rh.state;
-  state.players.push({
-    id,
+  return {
     x: bestX,
     y: bestY,
     heading: rh.value * TWO_PI,
-    turn: 0,
     territory: spawnTerritory(
       bestX,
       bestY,
       half,
-      state.players.map((p) => p.territory),
+      others.map((p) => p.territory),
     ),
-    trail: [],
-  });
+  };
+}
+
+function spawnPlayer(state: SimState, id: number): void {
+  state.players.push({ id, turn: 0, trail: [], ...rollSpawn(state, null) });
+}
+
+/**
+ * Apply one tick's deaths (spec §2.1): every victim's whole territory turns
+ * neutral FIRST — then each respawns in place (array position kept: order is
+ * the determinism contract, ADR-0003), so one victim's abandoned land never
+ * constrains another victim's respawn.
+ */
+function applyDeaths(state: SimState, deaths: readonly Death[]): void {
+  const victims: PlayerSim[] = [];
+  for (const death of deaths) {
+    const victim = state.players.find((p) => p.id === death.victimId);
+    if (!victim) continue;
+    victim.territory = [];
+    victim.trail = [];
+    victims.push(victim);
+  }
+  for (const victim of victims) {
+    Object.assign(victim, rollSpawn(state, victim));
+    victim.turn = 0;
+  }
 }
 
 /**
@@ -151,9 +186,9 @@ function trackTrail(
   events.fills.push(p.id);
 }
 
-/** One authoritative tick: leaves → joins → intents → movement → trails/fills. */
+/** One authoritative tick: leaves → joins → intents → movement → trails/fills → deaths. */
 export function step(state: SimState, inputs: TickInputs, dtSec: number): TickEvents {
-  const events: TickEvents = { fills: [] };
+  const events: TickEvents = { fills: [], deaths: [] };
   if (inputs.leaves) {
     for (const id of inputs.leaves) {
       const idx = state.players.findIndex((p) => p.id === id);
@@ -177,6 +212,8 @@ export function step(state: SimState, inputs: TickInputs, dtSec: number): TickEv
     advancePlayer(p, state.arenaSizeWU, dtSec);
     trackTrail(state, p, prevX, prevY, events);
   }
+  events.deaths = detectDeaths(state.players);
+  applyDeaths(state, events.deaths);
   state.tick += 1;
   return events;
 }

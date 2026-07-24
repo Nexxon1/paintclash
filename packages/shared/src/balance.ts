@@ -34,6 +34,27 @@ export const BALANCE = Object.freeze({
     /** Rendered trail width — the continuous analog of splix' 1-tile trail. */
     widthWU: 1,
     /**
+     * Head/collision radius (half the trail width): a head within this of a
+     * trail centerline cuts it; heads within twice this collide head-on.
+     */
+    collisionRadiusWU: 0.5,
+    /**
+     * Path length behind the own head exempt from the self-cut test. The
+     * trail ends glued to the head (distance 0), so some grace is mandatory;
+     * its size is bounded by geometry on both sides:
+     *
+     * - Lower bound ≈ 4.2 WU: the soft barrier's clamp (spec §2.4) can slide
+     *   a pinned head back over its own just-laid wall trail — turning away
+     *   from the wall contacts trail up to ~4.2 WU of path behind the head.
+     *   Killing that would be an edge death in disguise.
+     * - Upper bound π·turn radius ≈ 5.06 WU: away from walls the turn-rate
+     *   cap (radius r ≈ 1.61 WU) keeps the head ≥ 2r·sin(s/2r) from trail
+     *   laid s ≤ πr ago, so NO genuine self-contact exists below πr of path —
+     *   every real self-cross (tightest: the full circle, contact at
+     *   ~2πr − 0.5 ≈ 9.6 WU) stays detectable.
+     */
+    selfCutGraceWU: 4.5,
+    /**
      * Fills gaining less than this are discarded (spec §2.2) — purely to
      * drop numerical slivers; every deliberate loop paints. Re-tuned from
      * the spec §10.4 start value of 1 WU² (ticket 04): shallow loops hugged
