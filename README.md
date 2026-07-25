@@ -3,9 +3,9 @@
 Browser-Multiplayer-Flächenfärbe-Spiel (Trail-/Territory-Genre, splix.io /
 Paper.io 2 verwandt) als kostenlos gehostete Grundversion.
 
-> **Status:** Bauphase, Ticket 01 — Monorepo-Gerüst & CI/CD. Noch kein
-> Spiel-Verhalten; dieses Ticket stellt das Fundament, das „keine Shortcuts" ab
-> jetzt mechanisch erzwingt.
+> **Status:** Bauphase — der Kern-Loop ist spielbar: server-autoritative
+> Bewegung, Trail → Loop → Fill, Tod, Gebiet stehlen/Totalverlust (Tickets
+> 01–06). Aktueller Stand: [`Bau-Tickets`](.scratch/paintclash/issues/).
 
 ## Struktur
 
@@ -20,17 +20,42 @@ Ein pnpm-Monorepo mit geteiltem, deterministischem Sim-Core (ADR-0002):
 | `packages/client`     | Browser: three.js-Rendering, Input, Prediction, HUD, Sound.                 |
 | `packages/sim-client` | Headless Test-Client (fährt `sim-core`, spricht das echte Protokoll).       |
 
+## Lokal starten
+
+Voraussetzungen: Node ≥ 20 und pnpm (`corepack enable` aktiviert das in
+`package.json` gepinnte pnpm).
+
+```bash
+pnpm install
+pnpm run e2e:server        # baut den Client und startet wrangler dev auf Port 8787
+```
+
+Dann <http://localhost:8787> im Browser öffnen — Name eingeben, losfahren
+(A/D bzw. Pfeiltasten). Für Mehrspieler-Tests einfach mehrere Tabs öffnen;
+alle landen in derselben lokalen Arena.
+
+Varianten:
+
+```bash
+pnpm run dev:small         # dasselbe mit 50×50-WU-Mini-Arena (schnellere Duelle)
+pnpm run soak              # headless Soak-Client gegen einen laufenden Server
+```
+
+Hinweis WSL2: `wrangler dev` kann dort stallen. Fallback ist die deployte
+Referenzumgebung (<https://paintclash.secure-data.workers.dev>, Deploy via
+`pnpm run deploy` in `packages/server`) — sie ist ohnehin die Referenz für
+Netcode-Tests, weil sie echte Latenz und die reale DO-Tickrate zeigt.
+
 ## Entwicklung
 
 ```bash
-corepack enable            # aktiviert das in package.json gepinnte pnpm
-pnpm install
 pnpm typecheck             # tsc --noEmit, alle Pakete
 pnpm lint                  # ESLint strict-type-checked (Lint = Fehler)
 pnpm format:check          # Prettier
 pnpm test:coverage         # Vitest + Coverage-Gates pro Paket
-pnpm build                 # tsc-Build, alle Pakete
-pnpm test:e2e              # Playwright (Skelett)
+pnpm test:scenario         # Szenario-Tests (echtes DO in workerd + Sim-Clients)
+pnpm build                 # Build, alle Pakete
+pnpm test:e2e              # Playwright (baut Client + startet Server selbst)
 ```
 
 ## Referenzen

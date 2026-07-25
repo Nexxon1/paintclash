@@ -2,7 +2,14 @@ import type { Point, Territory } from '@paintclash/shared';
 import { pointInTerritory, territoryArea } from '@paintclash/sim-core';
 import { describe, expect, it } from 'vitest';
 
-import { boundsOverlap, CARVE_WIDTH_WU, carveTerritory, pointsBounds } from './carve.js';
+import {
+  boundsOverlap,
+  CARVE_WIDTH_WU,
+  carveTerritory,
+  PlateauCarver,
+  pointsBounds,
+  simplifyPolyline,
+} from './carve.js';
 
 /** 10×10 plateau on (0..10)². */
 const plateau = (): Territory => [
@@ -72,6 +79,107 @@ describe('carveTerritory (spec §4.1: trail carve-through groove)', () => {
     const carved = carveTerritory(plateau(), [trail]);
     // Nothing but (at most) the stationary dot's stamp changes.
     expect(territoryArea(carved)).toBeGreaterThan(90);
+  });
+});
+
+describe('simplifyPolyline', () => {
+  it('collapses a densely sampled straight run to its endpoints', () => {
+    const dense: Point[] = Array.from({ length: 101 }, (_, i) => [i * 0.1, 5]);
+    expect(simplifyPolyline(dense, 0.1)).toEqual([
+      [0, 5],
+      [10, 5],
+    ]);
+  });
+
+  it('keeps every dropped vertex within the tolerance of the result', () => {
+    const dense: Point[] = Array.from({ length: 200 }, (_, i): Point => {
+      const t = i * 0.1;
+      return [t, 3 * Math.sin(t / 2)];
+    });
+    const simple = simplifyPolyline(dense, 0.1);
+    expect(simple.length).toBeLessThan(dense.length / 3);
+    for (const p of dense) {
+      let best = Infinity;
+      for (let i = 1; i < simple.length; i++) {
+        const a = simple[i - 1];
+        const b = simple[i];
+        if (!a || !b) continue;
+        const abx = b[0] - a[0];
+        const aby = b[1] - a[1];
+        const lengthSq = abx * abx + aby * aby;
+        const t = Math.min(
+          1,
+          Math.max(0, ((p[0] - a[0]) * abx + (p[1] - a[1]) * aby) / (lengthSq || 1)),
+        );
+        best = Math.min(best, Math.hypot(p[0] - a[0] - t * abx, p[1] - a[1] - t * aby));
+      }
+      expect(best).toBeLessThanOrEqual(0.1 + 1e-9);
+    }
+  });
+
+  it('passes short polylines through as copies', () => {
+    const two: Point[] = [
+      [1, 2],
+      [3, 4],
+    ];
+    const out = simplifyPolyline(two, 0.5);
+    expect(out).toEqual(two);
+    expect(out).not.toBe(two);
+  });
+});
+
+describe('PlateauCarver (incremental grooves)', () => {
+  const grow = (n: number): Point[] =>
+    Array.from({ length: n }, (_, i): Point => [-2 + i * 0.45, 5 + Math.sin(i / 4)]);
+
+  it('matches the one-shot carve when fed a trail point by point', () => {
+    const trail = grow(40); // crosses the 10×10 plateau
+    const carver = new PlateauCarver();
+    carver.reset(plateau());
+    let out: Territory = [];
+    for (let n = 2; n <= trail.length; n++) {
+      out = carver.update([{ playerId: 7, points: trail.slice(0, n) }]);
+    }
+    const oneShot = carveTerritory(plateau(), [trail]);
+    expect(territoryArea(out)).toBeCloseTo(territoryArea(oneShot), 1);
+    expect(pointInTerritory(5, 5 + Math.sin(15.5 / 4), out)).toBe(false);
+  });
+
+  it('returns the same reference while nothing changed — the caller skips its rebuild', () => {
+    const carver = new PlateauCarver();
+    carver.reset(plateau());
+    const trail = grow(10);
+    const first = carver.update([{ playerId: 7, points: trail }]);
+    expect(carver.update([{ playerId: 7, points: trail }])).toBe(first);
+    // A tip advancing less than the clip threshold changes nothing either.
+    const nudged = [...trail.slice(0, -1), [trail[9]?.[0] ?? 0, (trail[9]?.[1] ?? 0) + 0.1]];
+    expect(carver.update([{ playerId: 7, points: nudged as Point[] }])).toBe(first);
+  });
+
+  it('heals the groove when the trail ends, and recuts a restarted one', () => {
+    const base = plateau();
+    const carver = new PlateauCarver();
+    carver.reset(base);
+    carver.update([{ playerId: 7, points: grow(40) }]);
+    // Trail gone (fill/death): the plateau heals back to the base.
+    expect(carver.update([])).toBe(base);
+    // A restarted (shorter) trail recuts from pristine.
+    const fresh: Point[] = [
+      [-2, 8],
+      [12, 8],
+    ];
+    const recut = carver.update([{ playerId: 7, points: fresh }]);
+    expect(pointInTerritory(5, 8, recut)).toBe(false);
+    expect(pointInTerritory(5, 5, recut)).toBe(true);
+  });
+
+  it('reset adopts a new base and drops all groove memory', () => {
+    const carver = new PlateauCarver();
+    carver.reset(plateau());
+    carver.update([{ playerId: 7, points: grow(40) }]);
+    const next = plateau();
+    carver.reset(next);
+    expect(carver.update([])).toBe(next);
   });
 });
 

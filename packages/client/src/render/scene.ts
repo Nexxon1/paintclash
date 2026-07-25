@@ -15,9 +15,10 @@ import type { RenderState } from '../game/session.js';
 import {
   boundsOverlap,
   CARVE_WIDTH_WU,
-  carveTerritory,
+  PlateauCarver,
   pointsBounds,
   territoryBounds,
+  type CarveInput,
 } from './carve.js';
 
 const CAMERA_ELEVATION_RAD = (52 * Math.PI) / 180;
@@ -33,11 +34,11 @@ const TRAIL_WIDTH = BALANCE.trail.widthWU;
 /** Fill wave duration (§4.2: the territory "grows" as a height wave). */
 const FILL_WAVE_MS = 450;
 /**
- * Minimum time between carve rebuilds of one plateau (§4.1 carve-through:
+ * Minimum time between carve updates of one plateau (§4.1 carve-through:
  * crossing trails cut a ground-level groove into the plateau geometry).
- * Recarving is a polygon difference + mesh rebuild — tick cadence is plenty;
- * between rebuilds the groove front trails the head by < 0.5 WU, visually
- * hidden under the head cone.
+ * Each update clips only the trail growth since the last one (PlateauCarver)
+ * plus a mesh rebuild — tick cadence is plenty; between updates the groove
+ * front trails the head by < 0.5 WU, visually hidden under the head cone.
  */
 const CARVE_THROTTLE_MS = 50;
 
@@ -68,10 +69,12 @@ function easeOutBack(t: number): number {
 interface TerritoryMesh {
   mesh: THREE.Mesh;
   rev: number;
-  /** Fingerprint of the trail bands carved into this plateau. */
-  carveKey: string;
-  /** performance.now() of the last carve rebuild (throttling). */
-  carveBuiltAt: number;
+  /** Incremental groove state; its output reference keys mesh rebuilds. */
+  carver: PlateauCarver;
+  /** The carver output the current mesh was built from. */
+  builtFrom: Territory;
+  /** performance.now() of the last carver update (throttling). */
+  carveCheckedAt: number;
   /** performance.now() of the fill that triggered the running wave. */
   waveStart: number | null;
 }
@@ -240,8 +243,8 @@ export class ArenaScene {
   }
 
   /**
-   * Territory plateaus: rebuild on revision change or when the trail bands
-   * crossing them moved (carve-through groove, §4.1 — rate-limited per
+   * Territory plateaus: rebuild on revision change or when the groove state
+   * moved (carve-through, §4.1 — updated incrementally, rate-limited per
    * plateau), run the fill wave.
    */
   private updateTerritories(state: RenderState): void {
@@ -258,29 +261,30 @@ export class ArenaScene {
       // trail never does (it only ever touches the plateau at its buried
       // exit seed — carving there would expose the ribbon start).
       const viewBounds = territoryBounds(view.territory);
-      const bands: Point[][] = [];
-      let carveKey = '';
+      const bands: CarveInput[] = [];
       for (const { trail, bounds } of trailBounds) {
         if (trail.playerId === view.playerId || !bounds || !viewBounds) continue;
         if (!boundsOverlap(bounds, viewBounds, CARVE_WIDTH_WU / 2)) continue;
-        bands.push(trail.points);
-        const tip = trail.points[trail.points.length - 1];
-        carveKey += `${String(trail.playerId)}:${String(trail.points.length)}:${tip?.[0].toFixed(2) ?? ''},${tip?.[1].toFixed(2) ?? ''};`;
+        bands.push(trail);
       }
       let entry = this.territories.get(view.playerId);
-      const carveDue =
-        entry !== undefined &&
-        entry.carveKey !== carveKey &&
-        now - entry.carveBuiltAt >= CARVE_THROTTLE_MS;
-      if (entry?.rev !== view.rev || carveDue) {
+      const revChanged = entry?.rev !== view.rev;
+      const carver = entry?.carver ?? new PlateauCarver();
+      if (revChanged) carver.reset(view.territory);
+      let target = entry?.builtFrom ?? view.territory;
+      if (entry === undefined || revChanged || now - entry.carveCheckedAt >= CARVE_THROTTLE_MS) {
+        target = carver.update(bands);
+        if (entry) entry.carveCheckedAt = now;
+      }
+      if (entry === undefined || revChanged || target !== entry.builtFrom) {
         if (entry) this.removeMesh(entry.mesh);
-        const carved = bands.length > 0 ? carveTerritory(view.territory, bands) : view.territory;
-        const mesh = this.buildTerritoryMesh(carved, view.playerId, state.selfId);
+        const mesh = this.buildTerritoryMesh(target, view.playerId, state.selfId);
         entry = {
           mesh,
           rev: view.rev,
-          carveKey,
-          carveBuiltAt: now,
+          carver,
+          builtFrom: target,
+          carveCheckedAt: now,
           waveStart: entry?.waveStart ?? null,
         };
         this.territories.set(view.playerId, entry);
