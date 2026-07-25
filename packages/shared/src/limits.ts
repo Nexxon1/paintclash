@@ -61,4 +61,12 @@ export const LIMITS = Object.freeze({
    * is > 1 full tick, so the ±1 steps can never oscillate.
    */
   tickMapMaxMarginTicks: 1.35,
+  /**
+   * Deepest rewind (ticket 07, ADR-0003): the server judges an actor's
+   * cuts/head-ons against opponents at the tick the actor was rendering,
+   * at most this many ticks back (500 ms — the genre's latency tolerance,
+   * spec §6.3). Also the clamp on the client-reported view tick: claiming
+   * an older view buys at most this window, Source-style `sv_maxunlag`.
+   */
+  rewindMaxTicks: 10,
 });

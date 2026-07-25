@@ -4,7 +4,7 @@
 
 **Blocked by:** 05.
 
-**Status:** ready-for-agent
+**Status:** claimed
 
 - [ ] `server`: rollierende Positions-Historie je Entity; Todes-/Schnitt-Beurteilung gegen den **zurückgespulten** Zustand aus Sicht des Handelnden (Gambetta-Rewind).
 - [ ] Determinismus/Replay bleibt intakt (keine Uhr, festes dt; kein Map-Insertion-abhängiges Verhalten).

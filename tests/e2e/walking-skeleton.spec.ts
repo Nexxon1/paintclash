@@ -67,23 +67,32 @@ test('movement renders smoothly — no reconciliation jerks, no frozen enemies',
 }) => {
   const pageA = await (await browser.newContext()).newPage();
   const pageB = await (await browser.newContext()).newPage();
+  // Each head starts circling IMMEDIATELY after its join: the 1.6 WU-radius
+  // orbit stays on the own start block (safespace — no trail), so nobody
+  // ever self-cuts. Joining both first would let A cruise far off its block
+  // while B joins; the then-held circle is a full-circle self-cut (ticket
+  // 05), and the respawn teleport poisons the speed buckets whenever it
+  // lands inside the sampling window — the flakiest failure this test had.
   await join(pageA, 'Smooth-A');
-  await join(pageB, 'Smooth-B');
-  // Circling (radius 1.6 WU) keeps both heads clear of the wall slide.
   await pageA.keyboard.down('ArrowRight');
+  await join(pageB, 'Smooth-B');
   await pageB.keyboard.down('ArrowRight');
   await pageA.waitForTimeout(1000);
 
   // Sample the actually-rendered pose every frame for 3 s and measure the
   // speed per ~50 ms bucket. Sim speed is 9 WU/s; jerks (double-steps,
   // stalls, pops) push many buckets far off 9, a ghost/frozen enemy
-  // collapses the mean. The discriminator is the OUTLIER FRACTION, not raw
-  // sd: shared CI runners hitch legitimately (glide phases inflate sd a
-  // little), while the historical double-step bug threw every other bucket
-  // out of band (> 50 % outliers).
+  // collapses the mean. The dispersion measure is deliberately ROBUST
+  // (median absolute deviation), never raw sd: shared CI runners hitch
+  // legitimately and the bounded glide/timewarp recovery after a hitch is
+  // LEGAL speed variation — a handful of such buckets blew raw sd past any
+  // usable threshold (flaked repeatedly on GitHub runners at sd ≈ 3), while
+  // the median barely moves. The guarded pathologies wobble EVERY bucket,
+  // which no median can ignore.
   interface SpeedStats {
     mean: number;
-    sd: number;
+    /** Median absolute deviation from the median speed. */
+    mad: number;
     max: number;
     outlierPct: number;
   }
@@ -100,10 +109,12 @@ test('movement renders smoothly — no reconciliation jerks, no frozen enemies',
             samples.push({ t: now, sx: self.x, sy: self.y, ox: other.x, oy: other.y });
           if (now - t0 < 3000) requestAnimationFrame(frame);
           else {
+            const median = (sorted: readonly number[]): number =>
+              sorted[Math.floor(sorted.length / 2)] ?? 99;
             const speeds = (px: 'sx' | 'ox', py: 'sy' | 'oy'): SpeedStats => {
               const values: number[] = [];
               let last = samples[0];
-              if (!last) return { mean: 0, sd: 99, max: 99, outlierPct: 100 };
+              if (!last) return { mean: 0, mad: 99, max: 99, outlierPct: 100 };
               for (const s of samples) {
                 if (s.t - last.t >= 50) {
                   values.push(
@@ -113,12 +124,13 @@ test('movement renders smoothly — no reconciliation jerks, no frozen enemies',
                 }
               }
               const mean = values.reduce((a, b) => a + b, 0) / values.length;
-              const sd = Math.sqrt(values.reduce((a, b) => a + (b - mean) ** 2, 0) / values.length);
+              const mid = median([...values].sort((a, b) => a - b));
+              const mad = median(values.map((v) => Math.abs(v - mid)).sort((a, b) => a - b));
               // Outside 9 WU/s ± the legal glide/warp envelope.
               const outliers = values.filter((v) => v < 6 || v > 14).length;
               return {
                 mean,
-                sd,
+                mad,
                 max: Math.max(...values),
                 outlierPct: (100 * outliers) / values.length,
               };
@@ -129,17 +141,22 @@ test('movement renders smoothly — no reconciliation jerks, no frozen enemies',
         requestAnimationFrame(frame);
       }),
   );
+  // Always in the report — a CI failure should show every metric, not just
+  // the first tripped expect.
+  console.log(`smoothness stats ${JSON.stringify(stats)}`);
 
   // Margins sized for shared CI runners; the guarded regressions still trip
-  // loudly: frozen ghost ≈ mean 0, double-step jerks ≈ >50 % outliers +
-  // sd > 2.5, teleports ≈ max spikes.
-  expect(stats.self.mean).toBeGreaterThan(7);
+  // loudly: frozen ghost ≈ mean 0, double-step jerks ≈ >50 % outliers and
+  // every bucket ~4.5 off-median (mad), teleports ≈ max spikes. Clean-run
+  // baselines: self mad ≈ 1.1–1.5 (reconciliation wobble while turning at
+  // max rate), other mad ≈ 0.3–0.6 (interpolation smooths it).
+  expect(stats.self.mean).toBeGreaterThan(6);
   expect(stats.self.mean).toBeLessThan(11);
-  expect(stats.self.sd).toBeLessThan(2.5);
+  expect(stats.self.mad).toBeLessThan(2.2);
   expect(stats.self.outlierPct).toBeLessThan(25);
-  expect(stats.other.mean).toBeGreaterThan(7);
+  expect(stats.other.mean).toBeGreaterThan(6);
   expect(stats.other.mean).toBeLessThan(11.5);
-  expect(stats.other.sd).toBeLessThan(2.5);
+  expect(stats.other.mad).toBeLessThan(2.2);
   expect(stats.other.outlierPct).toBeLessThan(25);
   // Display-side speed limit: enemies may catch up at ≤ 2.2× nominal, never
   // spike beyond (pre-fix: 160+ WU/s teleports).

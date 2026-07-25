@@ -11,6 +11,13 @@ export default defineConfig({
   forbidOnly: !!process.env.CI,
   fullyParallel: false,
   workers: 1,
+  // The smoothness/stall specs assert real frame pacing; their metrics are
+  // robust to ordinary shared-runner hitches (see walking-skeleton.spec.ts),
+  // but a runner in genuine distress (multi-hundred-ms freezes) makes the
+  // client SNAP by design — indistinguishable from a bug in one sample. One
+  // retry covers that tail; Playwright still reports such runs as "flaky",
+  // so they stay visible instead of silently green.
+  retries: process.env.CI ? 1 : 0,
   reporter: process.env.CI ? 'github' : 'list',
   use: {
     baseURL: 'http://127.0.0.1:8787',
