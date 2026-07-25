@@ -9,11 +9,12 @@
  * turns these into territory broadcasts; prediction ignores them).
  */
 
-import { BALANCE } from '@paintclash/shared';
+import { BALANCE, LIMITS } from '@paintclash/shared';
 
 import { detectDeaths, type Death } from './collision.js';
 import { closeLoop, spawnTerritory } from './fill.js';
 import { appendTrailPoint, distanceToTerritory, pointInTerritory } from './geometry.js';
+import { recordHistory, retireTrail, viewedBy } from './history.js';
 import { nextRandom } from './rng.js';
 import type { HeadPose, PlayerSim, SimState, TurnSignal } from './state.js';
 
@@ -25,6 +26,12 @@ export interface TickInputs {
   leaves?: readonly number[];
   /** Steer intents; multiple per id coalesce to the last one (spec §8.3). */
   turns?: readonly { id: number; turn: TurnSignal }[];
+  /**
+   * Rewind view delays (ticket 07): how many ticks each player's pilot sees
+   * opponents in the past. Persists like `turn` until replaced; clamped to
+   * `LIMITS.rewindMaxTicks` — the sim never trusts the transport.
+   */
+  views?: readonly { id: number; viewDelayTicks: number }[];
 }
 
 /** What one tick decided beyond pure movement. */
@@ -134,27 +141,46 @@ function rollSpawn(
 }
 
 function spawnPlayer(state: SimState, id: number): void {
-  state.players.push({ id, turn: 0, trail: [], ...rollSpawn(state, null) });
+  state.players.push({
+    id,
+    turn: 0,
+    trail: [],
+    viewDelayTicks: 0,
+    trailEpoch: 0,
+    retiredTrails: [],
+    history: [],
+    ...rollSpawn(state, null),
+  });
 }
 
 /**
  * Apply one tick's deaths (spec §2.1): every victim's whole territory turns
  * neutral FIRST — then each respawns in place (array position kept: order is
  * the determinism contract, ADR-0003), so one victim's abandoned land never
- * constrains another victim's respawn.
+ * constrains another victim's respawn. `safeIds` is updated along the way: a
+ * respawned head stands on its fresh block, which is what this tick's
+ * history entry must record.
  */
-function applyDeaths(state: SimState, deaths: readonly Death[]): void {
+function applyDeaths(state: SimState, deaths: readonly Death[], safeIds: Set<number>): void {
   const victims: PlayerSim[] = [];
   for (const death of deaths) {
     const victim = state.players.find((p) => p.id === death.victimId);
     if (!victim) continue;
     victim.territory = [];
+    // Death ends the rewind past with the life (ticket 07): a lagged cut of
+    // THIS life's trail must never kill the respawned next one — that would
+    // be the double death the rewind must not introduce. Only fill resets
+    // stay rewound-cuttable (retireTrail); here the whole past is purged.
     victim.trail = [];
+    victim.trailEpoch += 1;
+    victim.retiredTrails = [];
+    victim.history = [];
     victims.push(victim);
   }
   for (const victim of victims) {
     Object.assign(victim, rollSpawn(state, victim));
     victim.turn = 0;
+    safeIds.add(victim.id);
   }
 }
 
@@ -162,6 +188,9 @@ function applyDeaths(state: SimState, deaths: readonly Death[]): void {
  * Post-movement trail bookkeeping for one player (spec §2.1/2.2): outside
  * the own territory the head draws a trail; re-entering closes the loop and
  * captures the enclosed area. Inside there is no trail — safespace.
+ * Records into `safeIds` whoever ended the tick on their own land: the
+ * head-on shield (spec §2.1) and the rewind history's `safe` flag both come
+ * from this one verdict, decided where it is already computed.
  */
 function trackTrail(
   state: SimState,
@@ -169,11 +198,13 @@ function trackTrail(
   prevX: number,
   prevY: number,
   events: TickEvents,
+  safeIds: Set<number>,
 ): void {
   // No land, no loop to return to (only possible under pathological spawn
   // crowding): such a player draws no trail until territory exists again.
   if (p.territory.length === 0) return;
   const inside = pointInTerritory(p.x, p.y, p.territory);
+  if (inside) safeIds.add(p.id);
   if (p.trail.length === 0) {
     if (!inside) {
       // Seed with the last pose *inside* — the loop ring later connects to
@@ -205,7 +236,8 @@ function trackTrail(
       // was just enclosed keeps standing (now on foreign land); their trail
       // starts when their own trackTrail sees them outside — same tick for
       // players later in the array, next tick for earlier ones (both
-      // deterministic; the one-tick head-on grace vanishes with ticket 07).
+      // deterministic). Their head-on shield drops THIS tick either way:
+      // `step` re-checks inside-ness for steal victims before judging.
       if (updated.length === 0 && hadLand) {
         events.deaths.push({ victimId: victim.id, killerId: p.id, cause: 'totalLoss' });
       } else if (!events.steals.includes(victim.id)) {
@@ -213,8 +245,20 @@ function trackTrail(
       }
     });
   }
-  p.trail = [];
+  retireTrail(p);
   events.fills.push(p.id);
+}
+
+/**
+ * Sanitize a view delay reaching the sim: whole ticks within the rewind
+ * window. The server already bounds what it derives from a client report
+ * (`ArenaCore.rewindDepth`, which can also weigh the connection's measured
+ * timing); this is the sim's own guard, so bots, tests and replays cannot
+ * hand it a depth the history could never answer either.
+ */
+function clampViewDelay(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.min(LIMITS.rewindMaxTicks, Math.max(0, Math.trunc(value)));
 }
 
 /** One authoritative tick: leaves → joins → intents → movement → trails/fills → deaths. */
@@ -231,23 +275,46 @@ export function step(state: SimState, inputs: TickInputs, dtSec: number): TickEv
       if (!state.players.some((p) => p.id === id)) spawnPlayer(state, id);
     }
   }
+  const byId = (id: number): PlayerSim | undefined => state.players.find((p) => p.id === id);
   if (inputs.turns) {
     for (const { id, turn } of inputs.turns) {
-      const p = state.players.find((q) => q.id === id);
+      const p = byId(id);
       if (p) p.turn = turn;
     }
   }
+  if (inputs.views) {
+    for (const { id, viewDelayTicks } of inputs.views) {
+      const p = byId(id);
+      if (p) p.viewDelayTicks = clampViewDelay(viewDelayTicks);
+    }
+  }
+  // Post-movement "stands on own land" — the head-on shield (spec §2.1) and
+  // this tick's history `safe` flag, from one verdict per player.
+  const safeIds = new Set<number>();
   for (const p of state.players) {
     const prevX = p.x;
     const prevY = p.y;
     advancePlayer(p, state.arenaSizeWU, dtSec);
-    trackTrail(state, p, prevX, prevY, events);
+    trackTrail(state, p, prevX, prevY, events, safeIds);
+  }
+  // A fill may have re-shaded the ground under a head that already had its
+  // verdict taken (steal, total loss) — re-check those before judging.
+  for (const id of [...events.steals, ...events.deaths.map((d) => d.victimId)]) {
+    const p = byId(id);
+    if (!p) continue;
+    if (pointInTerritory(p.x, p.y, p.territory)) safeIds.add(p.id);
+    else safeIds.delete(p.id);
   }
   // Collision deaths join the total-loss deaths the fills above produced.
   // A total-loss victim's trail still cuts this tick (simultaneity, ticket
   // 05) — but they die only once, under the earlier cause.
+  const judgedTick = state.tick + 1;
   const dying = new Set(events.deaths.map((d) => d.victimId));
-  for (const death of detectDeaths(state.players)) {
+  const collisionDeaths = detectDeaths(state.players, {
+    safeIds,
+    viewedBy: (actor, target) => viewedBy(actor, target, judgedTick),
+  });
+  for (const death of collisionDeaths) {
     if (!dying.has(death.victimId)) {
       events.deaths.push(death);
       dying.add(death.victimId);
@@ -256,7 +323,8 @@ export function step(state: SimState, inputs: TickInputs, dtSec: number): TickEv
   // A steal survivor who still died this tick (e.g. cut while their land
   // shrank) is a death, not a steal — the respawn sync covers them.
   events.steals = events.steals.filter((id) => !dying.has(id));
-  applyDeaths(state, events.deaths);
+  applyDeaths(state, events.deaths, safeIds);
   state.tick += 1;
+  recordHistory(state.players, state.tick, safeIds);
   return events;
 }

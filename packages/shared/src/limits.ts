@@ -65,8 +65,20 @@ export const LIMITS = Object.freeze({
    * Deepest rewind (ticket 07, ADR-0003): the server judges an actor's
    * cuts/head-ons against opponents at the tick the actor was rendering,
    * at most this many ticks back (500 ms — the genre's latency tolerance,
-   * spec §6.3). Also the clamp on the client-reported view tick: claiming
-   * an older view buys at most this window, Source-style `sv_maxunlag`.
+   * spec §6.3). The hard ceiling on the client-reported view tick,
+   * Source-style `sv_maxunlag`.
    */
   rewindMaxTicks: 10,
+  /**
+   * Interpolation headroom the server grants a reported view tick beyond the
+   * round trip it can MEASURE (ticket 07). An honest view delay is upstream
+   * travel + downstream travel + the client's own enemy-interpolation
+   * buffer; only the travel is measurable server-side (from `tickOffset`),
+   * so this covers the buffer: the client's base 1.5 ticks plus a couple of
+   * ticks of its adaptive growth on bursty links. A client whose buffer has
+   * grown past this rewinds slightly shallower than it renders — the same
+   * trade real engines make — while a client on a fast link can no longer
+   * claim a deep window it has no latency for.
+   */
+  rewindInterpAllowanceTicks: 4,
 });

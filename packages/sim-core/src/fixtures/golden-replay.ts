@@ -32,6 +32,16 @@ export function goldenScript(): Map<number, TickInputs> {
   script.set(12, { turns: [{ id: 1, turn: 1 }] });
   script.set(20, { joins: [3] });
   script.set(23, { turns: [{ id: 1, turn: 0 }] });
+  // Ticket 07: standing view delays put the rewind machinery (history
+  // windows, trail retirement, rewound judgment) on the golden path — the
+  // far-apart players make it observationally idle, but any determinism
+  // leak in it would move the hash.
+  script.set(30, {
+    views: [
+      { id: 1, viewDelayTicks: 3 },
+      { id: 2, viewDelayTicks: 7 },
+    ],
+  });
   script.set(60, { turns: [{ id: 2, turn: -1 }] });
   script.set(90, { turns: [{ id: 3, turn: 1 }] });
   script.set(150, { leaves: [2] });
@@ -48,8 +58,9 @@ export function goldenScript(): Map<number, TickInputs> {
 
 /**
  * Expected `hashSimState` after GOLDEN_TICKS — pinned once, guarded forever.
- * Regenerated for ticket 05 (deaths entered the sim: the held turns above now
- * end in self-cut deaths + respawns): a deliberate semantics change, not
- * drift. Previous: '779967a5' (ticket 04).
+ * Regenerated for ticket 07 (rewind entered the state: view delays, pose
+ * history and retired trails are hashed now, and the script gained the
+ * `views` entries above): a deliberate semantics change, not drift.
+ * Previous: '82bff39b' (ticket 05), '779967a5' (ticket 04).
  */
-export const GOLDEN_END_HASH = '82bff39b';
+export const GOLDEN_END_HASH = '9ebfdacf';

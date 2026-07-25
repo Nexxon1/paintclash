@@ -96,6 +96,24 @@ describe('sim ticks (input → prediction → batched send)', () => {
     expect(sent).toHaveLength(2);
   });
 
+  it('reports the enemy render tick as its view tick (ticket 07 rewind)', () => {
+    const { session, sent } = harness();
+    joined(session);
+    sent.length = 0;
+    // Nothing rendered yet: the flush reports "no view".
+    session.simTick(1); // direction change → immediate flush
+    const first = decodeClientMessage(sent[0] ?? new Uint8Array());
+    expect(first).toMatchObject({ type: 'input', viewTick: 0 });
+    // A fresh snapshot re-anchors the enemy timeline; rendering once pins
+    // renderTick = clientTicks + serverOffset − delay = 1 + 29 − 1.5.
+    session.receive(encodeSnapshot(30, 0, [selfPlayer()]));
+    session.renderSample(0);
+    sent.length = 0;
+    session.simTick(-1);
+    const second = decodeClientMessage(sent[0] ?? new Uint8Array());
+    expect(second).toMatchObject({ type: 'input', viewTick: 29 });
+  });
+
   it('predicts the own head forward on every tick', () => {
     const { session } = harness();
     joined(session);

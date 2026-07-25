@@ -116,11 +116,14 @@ describe('authoritative movement (tick-mapped inputs)', () => {
     arena.tick(TICK_DT_SEC);
     arena.handleFrame(
       id,
-      encodeInput([
-        { seq: 1, turn: 0 },
-        { seq: 2, turn: 0 },
-        { seq: 3, turn: 1 },
-      ]),
+      encodeInput(
+        [
+          { seq: 1, turn: 0 },
+          { seq: 2, turn: 0 },
+          { seq: 3, turn: 1 },
+        ],
+        0,
+      ),
     );
     arena.tick(TICK_DT_SEC);
     const snapshot = socket.lastSnapshot();
@@ -134,11 +137,14 @@ describe('authoritative movement (tick-mapped inputs)', () => {
     arena.tick(TICK_DT_SEC);
     arena.handleFrame(
       id,
-      encodeInput([
-        { seq: 1, turn: 0 },
-        { seq: 2, turn: 0 },
-        { seq: 3, turn: 1 },
-      ]),
+      encodeInput(
+        [
+          { seq: 1, turn: 0 },
+          { seq: 2, turn: 0 },
+          { seq: 3, turn: 1 },
+        ],
+        0,
+      ),
     );
     arena.tick(TICK_DT_SEC);
     // No frames in flight — the server keeps simulating the held turn and
@@ -152,10 +158,13 @@ describe('authoritative movement (tick-mapped inputs)', () => {
     // their (different) turn must NOT bend the already-simulated past.
     arena.handleFrame(
       id,
-      encodeInput([
-        { seq: 4, turn: -1 },
-        { seq: 5, turn: -1 },
-      ]),
+      encodeInput(
+        [
+          { seq: 4, turn: -1 },
+          { seq: 5, turn: -1 },
+        ],
+        0,
+      ),
     );
     arena.tick(TICK_DT_SEC);
     snapshot = socket.lastSnapshot();
@@ -169,24 +178,27 @@ describe('authoritative movement (tick-mapped inputs)', () => {
     arena.tick(TICK_DT_SEC);
     arena.handleFrame(
       id,
-      encodeInput([
-        { seq: 1, turn: 0 },
-        { seq: 2, turn: 0 },
-        { seq: 3, turn: 0 },
-      ]),
+      encodeInput(
+        [
+          { seq: 1, turn: 0 },
+          { seq: 2, turn: 0 },
+          { seq: 3, turn: 0 },
+        ],
+        0,
+      ),
     );
     arena.tick(TICK_DT_SEC);
     const straight = socket.lastSnapshot();
     expect(straight.ackSeq).toBe(3);
     // Press: the real client flushes ON the change tick, so the change is
     // always the newest item of its frame.
-    arena.handleFrame(id, encodeInput([{ seq: 4, turn: 1 }]));
+    arena.handleFrame(id, encodeInput([{ seq: 4, turn: 1 }], 0));
     arena.tick(TICK_DT_SEC);
     const pressed = socket.lastSnapshot();
     expect(pressed.ackSeq).toBe(4);
     expect(pressed.players.find((p) => p.id === id)?.turn).toBe(1);
     // Release next tick.
-    arena.handleFrame(id, encodeInput([{ seq: 5, turn: 0 }]));
+    arena.handleFrame(id, encodeInput([{ seq: 5, turn: 0 }], 0));
     arena.tick(TICK_DT_SEC);
     const released = socket.lastSnapshot();
     expect(released.ackSeq).toBe(5);
@@ -206,11 +218,14 @@ describe('authoritative movement (tick-mapped inputs)', () => {
     arena.tick(TICK_DT_SEC);
     arena.handleFrame(
       id,
-      encodeInput([
-        { seq: 1, turn: 1 },
-        { seq: 2, turn: 1 },
-        { seq: 3, turn: 1 },
-      ]),
+      encodeInput(
+        [
+          { seq: 1, turn: 1 },
+          { seq: 2, turn: 1 },
+          { seq: 3, turn: 1 },
+        ],
+        0,
+      ),
     );
     arena.tick(TICK_DT_SEC);
     // Four cadence rounds: each batch fully in flight before its ticks run.
@@ -219,11 +234,14 @@ describe('authoritative movement (tick-mapped inputs)', () => {
       const turn = round === 3 ? -1 : 1;
       arena.handleFrame(
         id,
-        encodeInput([
-          { seq: base, turn },
-          { seq: base + 1, turn },
-          { seq: base + 2, turn },
-        ]),
+        encodeInput(
+          [
+            { seq: base, turn },
+            { seq: base + 1, turn },
+            { seq: base + 2, turn },
+          ],
+          0,
+        ),
       );
       for (let i = 0; i < 3; i++) {
         arena.tick(TICK_DT_SEC);
@@ -239,7 +257,7 @@ describe('authoritative movement (tick-mapped inputs)', () => {
     const arena = new ArenaCore(1);
     const { socket, id } = joinedPlayer(arena);
     arena.tick(TICK_DT_SEC);
-    arena.handleFrame(id, encodeInput([{ seq: 1, turn: 0 }]));
+    arena.handleFrame(id, encodeInput([{ seq: 1, turn: 0 }], 0));
     arena.tick(TICK_DT_SEC);
     expect(socket.lastSnapshot().ackSeq).toBe(1);
     // Client stalls for 10 ticks; the server keeps simulating + acking.
@@ -249,7 +267,7 @@ describe('authoritative movement (tick-mapped inputs)', () => {
     // The catch-up burst arrives late: only the seqs whose ticks are still
     // ahead survive; the head must advance ONE step, never a replayed dozen.
     const burst = Array.from({ length: 12 }, (_, i) => ({ seq: i + 2, turn: 1 as const }));
-    arena.handleFrame(id, encodeInput(burst));
+    arena.handleFrame(id, encodeInput(burst, 0));
     arena.tick(TICK_DT_SEC);
     const after = socket.lastSnapshot().players.find((p) => p.id === id);
     if (!before || !after) throw new Error('missing snapshot player');
@@ -267,18 +285,24 @@ describe('authoritative movement (tick-mapped inputs)', () => {
     const arena = new ArenaCore(1);
     const { socket, id } = joinedPlayer(arena);
     arena.tick(TICK_DT_SEC);
-    arena.handleFrame(id, encodeInput([{ seq: 1, turn: 0 }]));
+    arena.handleFrame(id, encodeInput([{ seq: 1, turn: 0 }], 0));
     arena.tick(TICK_DT_SEC);
     const before = socket.lastSnapshot().players.find((p) => p.id === id);
     // Two frames of 20 far-future seqs — a hostile/broken timeline. The
     // second out-of-range frame re-anchors to the newest seq.
     arena.handleFrame(
       id,
-      encodeInput(Array.from({ length: 20 }, (_, i) => ({ seq: i + 2, turn: 1 as const }))),
+      encodeInput(
+        Array.from({ length: 20 }, (_, i) => ({ seq: i + 2, turn: 1 as const })),
+        0,
+      ),
     );
     arena.handleFrame(
       id,
-      encodeInput(Array.from({ length: 20 }, (_, i) => ({ seq: i + 22, turn: -1 as const }))),
+      encodeInput(
+        Array.from({ length: 20 }, (_, i) => ({ seq: i + 22, turn: -1 as const })),
+        0,
+      ),
     );
     arena.tick(TICK_DT_SEC);
     const after = socket.lastSnapshot().players.find((p) => p.id === id);
@@ -295,10 +319,10 @@ describe('authoritative movement (tick-mapped inputs)', () => {
     const arena = new ArenaCore(1);
     const { socket, id } = joinedPlayer(arena);
     arena.tick(TICK_DT_SEC);
-    arena.handleFrame(id, encodeInput([{ seq: 10, turn: 1 }]));
+    arena.handleFrame(id, encodeInput([{ seq: 10, turn: 1 }], 0));
     arena.tick(TICK_DT_SEC);
     expect(socket.lastSnapshot().ackSeq).toBe(10);
-    arena.handleFrame(id, encodeInput([{ seq: 3, turn: -1 }])); // replay/stale
+    arena.handleFrame(id, encodeInput([{ seq: 3, turn: -1 }], 0)); // replay/stale
     arena.tick(TICK_DT_SEC);
     const snapshot = socket.lastSnapshot();
     expect(snapshot.ackSeq).toBe(11);
@@ -311,14 +335,14 @@ describe('tick-offset drift', () => {
     const arena = new ArenaCore(1);
     const { socket, id } = joinedPlayer(arena);
     arena.tick(TICK_DT_SEC);
-    arena.handleFrame(id, encodeInput([{ seq: 1, turn: 0 }]));
+    arena.handleFrame(id, encodeInput([{ seq: 1, turn: 0 }], 0));
     // Every frame arrives with zero margin: seq == just-run tick, mapped to
     // the very next tick. The smoothed margin sinks below the floor → the
     // mapping slackens by one tick, once.
     for (let i = 0; i < 30; i++) {
       arena.tick(TICK_DT_SEC);
       const tick = socket.lastSnapshot().tick;
-      arena.handleFrame(id, encodeInput([{ seq: tick, turn: 1 }]));
+      arena.handleFrame(id, encodeInput([{ seq: tick, turn: 1 }], 0));
     }
     arena.tick(TICK_DT_SEC);
     const snapshot = socket.lastSnapshot();
@@ -330,12 +354,12 @@ describe('tick-offset drift', () => {
     const arena = new ArenaCore(1);
     const { socket, id } = joinedPlayer(arena);
     arena.tick(TICK_DT_SEC);
-    arena.handleFrame(id, encodeInput([{ seq: 1, turn: 0 }]));
+    arena.handleFrame(id, encodeInput([{ seq: 1, turn: 0 }], 0));
     for (let i = 0; i < 40; i++) {
       arena.tick(TICK_DT_SEC);
       const tick = socket.lastSnapshot().tick;
       // Three ticks of headroom on every frame — two of them are reclaimable.
-      arena.handleFrame(id, encodeInput([{ seq: tick + 3, turn: 1 }]));
+      arena.handleFrame(id, encodeInput([{ seq: tick + 3, turn: 1 }], 0));
     }
     arena.tick(TICK_DT_SEC);
     const snapshot = socket.lastSnapshot();
@@ -348,11 +372,11 @@ describe('tick-offset drift', () => {
     const arena = new ArenaCore(1);
     const { socket, id } = joinedPlayer(arena);
     arena.tick(TICK_DT_SEC);
-    arena.handleFrame(id, encodeInput([{ seq: 1, turn: 0 }]));
+    arena.handleFrame(id, encodeInput([{ seq: 1, turn: 0 }], 0));
     let seq = 1;
     for (let i = 0; i < 5; i++) {
       arena.tick(TICK_DT_SEC);
-      arena.handleFrame(id, encodeInput([{ seq: ++seq, turn: 0 }]));
+      arena.handleFrame(id, encodeInput([{ seq: ++seq, turn: 0 }], 0));
     }
     // Long client freeze: its clamped catch-up permanently trails the wall
     // clock, so every future seq would map into the already-acked past.
@@ -361,9 +385,9 @@ describe('tick-offset drift', () => {
     expect(ackAhead).toBeGreaterThan(seq);
     // Two consecutive out-of-range frames re-anchor; the second one already
     // steers again.
-    arena.handleFrame(id, encodeInput([{ seq: ++seq, turn: -1 }]));
+    arena.handleFrame(id, encodeInput([{ seq: ++seq, turn: -1 }], 0));
     arena.tick(TICK_DT_SEC);
-    arena.handleFrame(id, encodeInput([{ seq: ++seq, turn: -1 }]));
+    arena.handleFrame(id, encodeInput([{ seq: ++seq, turn: -1 }], 0));
     arena.tick(TICK_DT_SEC);
     const snapshot = socket.lastSnapshot();
     expect(snapshot.players.find((p) => p.id === id)?.turn).toBe(-1);
@@ -398,7 +422,7 @@ describe('intent-only validation at the protocol boundary (spec §8.2/8.3)', () 
     for (let i = 0; i < LIMITS.garbageKillThreshold - 1; i++) {
       arena.handleFrame(id, new Uint8Array([0xba, 0xad]));
     }
-    arena.handleFrame(id, encodeInput([{ seq: 1, turn: 0 }]));
+    arena.handleFrame(id, encodeInput([{ seq: 1, turn: 0 }], 0));
     arena.handleFrame(id, new Uint8Array([0xba, 0xad]));
     expect(socket.closed).toBeNull();
   });
@@ -408,7 +432,7 @@ describe('intent-only validation at the protocol boundary (spec §8.2/8.3)', () 
     const socket = new FakeSocket();
     const id = arena.connect(socket);
     if (id === null) throw new Error('arena unexpectedly full');
-    arena.handleFrame(id, encodeInput([{ seq: 1, turn: 1 }]));
+    arena.handleFrame(id, encodeInput([{ seq: 1, turn: 1 }], 0));
     arena.tick(TICK_DT_SEC);
     // Spec §8.2: world state only flows after a join.
     expect(socket.sent).toHaveLength(0);
@@ -438,7 +462,7 @@ describe('intent-only validation at the protocol boundary (spec §8.2/8.3)', () 
     const a = joinedPlayer(arena, 'a');
     const b = joinedPlayer(arena, 'b');
     arena.tick(TICK_DT_SEC);
-    arena.handleFrame(a.id, encodeInput([{ seq: 1, turn: 1 }]));
+    arena.handleFrame(a.id, encodeInput([{ seq: 1, turn: 1 }], 0));
     arena.tick(TICK_DT_SEC);
     const snapshot = a.socket.lastSnapshot();
     expect(snapshot.players.find((p) => p.id === a.id)?.turn).toBe(1);
@@ -451,7 +475,7 @@ describe('territory sync (ticket 04, spec §6.1: fill is server-only)', () => {
   function drive(arena: ArenaCore, socket: FakeSocket, id: number, turns: (-1 | 0 | 1)[]): void {
     for (const turn of turns) {
       const tick = socket.lastSnapshot().tick;
-      arena.handleFrame(id, encodeInput([{ seq: tick, turn }]));
+      arena.handleFrame(id, encodeInput([{ seq: tick, turn }], 0));
       arena.tick(TICK_DT_SEC);
     }
   }
@@ -519,7 +543,7 @@ describe('death broadcast (ticket 05, spec §2.1)', () => {
   function drive(arena: ArenaCore, socket: FakeSocket, id: number, turns: (-1 | 0 | 1)[]): void {
     for (const turn of turns) {
       const tick = socket.lastSnapshot().tick;
-      arena.handleFrame(id, encodeInput([{ seq: tick, turn }]));
+      arena.handleFrame(id, encodeInput([{ seq: tick, turn }], 0));
       arena.tick(TICK_DT_SEC);
     }
   }
@@ -691,7 +715,7 @@ describe('dead-socket sweep', () => {
     for (let i = 0; i <= LIMITS.idleTimeoutTicks; i++) {
       arena.tick(TICK_DT_SEC);
       // Only b keeps talking, like a real client does every few ticks.
-      arena.handleFrame(b.id, encodeInput([{ seq: i + 1, turn: 0 }]));
+      arena.handleFrame(b.id, encodeInput([{ seq: i + 1, turn: 0 }], 0));
     }
     arena.tick(TICK_DT_SEC);
     expect(a.socket.closed).not.toBeNull();
@@ -718,5 +742,74 @@ describe('leave', () => {
     const a = joinedPlayer(arena);
     arena.disconnect(a.id);
     expect(arena.connectionCount).toBe(0);
+  });
+});
+
+describe('rewind view tracking (ticket 07)', () => {
+  /** White-box peek at the sim (same pattern as the steal tests above). */
+  function simPlayer(arena: ArenaCore, id: number): { viewDelayTicks: number } {
+    const { state } = arena as unknown as { state: SimState };
+    const p = state.players.find((q) => q.id === id);
+    if (!p) throw new Error('player not spawned');
+    return p;
+  }
+
+  it('derives the rewind depth from the reported view tick and hands it to the sim', () => {
+    const arena = new ArenaCore(1);
+    const { id } = joinedPlayer(arena);
+    for (let i = 0; i < 6; i++) arena.tick(TICK_DT_SEC); // server tick = 6
+    // Anchor frame: seq 1 applies at tick 7; the pilot reports rendering
+    // opponents at tick 3 → their actions must be judged 4 ticks back.
+    arena.handleFrame(id, encodeInput([{ seq: 1, turn: 0 }], 3));
+    arena.tick(TICK_DT_SEC);
+    expect(simPlayer(arena, id).viewDelayTicks).toBe(4);
+    // No further frames: the delay persists in the sim like a held turn.
+    arena.tick(TICK_DT_SEC);
+    expect(simPlayer(arena, id).viewDelayTicks).toBe(4);
+  });
+
+  it('grants a fast link only the interpolation allowance, however old a view it claims', () => {
+    const arena = new ArenaCore(1);
+    const { id } = joinedPlayer(arena);
+    for (let i = 0; i < 6; i++) arena.tick(TICK_DT_SEC);
+    // Seq 7 arriving at tick 6 is a tight timeline (tickOffset 0): this
+    // client's inputs travel instantly, so it cannot honestly be rendering
+    // ancient opponents. Claiming tick 1 buys the interpolation allowance,
+    // not the 6 ticks it asked for — deep unlag has to be paid for with
+    // genuinely late inputs.
+    arena.handleFrame(id, encodeInput([{ seq: 7, turn: 0 }], 1));
+    arena.tick(TICK_DT_SEC);
+    expect(simPlayer(arena, id).viewDelayTicks).toBe(LIMITS.rewindInterpAllowanceTicks);
+  });
+
+  it('caps even a genuinely late timeline at the rewind window', () => {
+    const arena = new ArenaCore(1);
+    const { id } = joinedPlayer(arena);
+    for (let i = 0; i < 30; i++) arena.tick(TICK_DT_SEC);
+    // Seq 1 arriving at tick 30 IS a 30-tick-late timeline — this client
+    // pays for its unlag with that much steering delay — but the hard
+    // window still caps what it gets (sv_maxunlag-style).
+    arena.handleFrame(id, encodeInput([{ seq: 1, turn: 0 }], 1));
+    arena.tick(TICK_DT_SEC);
+    expect(simPlayer(arena, id).viewDelayTicks).toBe(LIMITS.rewindMaxTicks);
+    // A view from the future rewinds nothing.
+    arena.handleFrame(id, encodeInput([{ seq: 2, turn: 0 }], 9999));
+    arena.tick(TICK_DT_SEC);
+    expect(simPlayer(arena, id).viewDelayTicks).toBe(0);
+  });
+
+  it('treats view tick 0 as "nothing rendered" — no rewind, and no frozen depth', () => {
+    const arena = new ArenaCore(1);
+    const { id } = joinedPlayer(arena);
+    for (let i = 0; i < 6; i++) arena.tick(TICK_DT_SEC);
+    arena.handleFrame(id, encodeInput([{ seq: 1, turn: 0 }], 3));
+    arena.tick(TICK_DT_SEC);
+    expect(simPlayer(arena, id).viewDelayTicks).toBe(4);
+    // Dropping back to 0 must not leave the earlier, deeper depth standing:
+    // a client could otherwise claim a deep window once and then hold it by
+    // never reporting a view again.
+    arena.handleFrame(id, encodeInput([{ seq: 2, turn: 0 }], 0));
+    arena.tick(TICK_DT_SEC);
+    expect(simPlayer(arena, id).viewDelayTicks).toBe(0);
   });
 });

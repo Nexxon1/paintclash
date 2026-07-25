@@ -20,7 +20,19 @@ function player(
   blockX: number,
   blockY: number,
 ): PlayerSim {
-  return { id, x, y, heading, turn: 0, territory: [[squareRing(blockX, blockY, 3)]], trail: [] };
+  return {
+    id,
+    x,
+    y,
+    heading,
+    turn: 0,
+    territory: [[squareRing(blockX, blockY, 3)]],
+    trail: [],
+    viewDelayTicks: 0,
+    trailEpoch: 0,
+    retiredTrails: [],
+    history: [],
+  };
 }
 
 function stateWith(...players: PlayerSim[]): SimState {

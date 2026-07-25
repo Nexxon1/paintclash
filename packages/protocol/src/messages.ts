@@ -18,7 +18,7 @@ import type { DeathCause, Point, Ring, Territory, TurnSignal } from '@paintclash
 export type { DeathCause };
 
 /** Bumped on every incompatible wire change; joins carry it. */
-export const PROTOCOL_VERSION = 4;
+export const PROTOCOL_VERSION = 5;
 
 /** Nickname cap on the wire: 16 code points, ≤ 64 UTF-8 bytes. */
 export const MAX_NAME_CHARS = 16;
@@ -48,6 +48,7 @@ const OP_DEATH = 0x14;
 const DEATH_FRAME_BYTES = 6; // op + u16 victim + u16 killer + u8 cause
 
 const INPUT_ITEM_BYTES = 5; // u32 seq + i8 turn
+const INPUT_HEADER_BYTES = 6; // op + u8 count + u32 viewTick
 const SNAPSHOT_PLAYER_BYTES = 15; // u16 id + 3×f32 + i8 turn
 const POINT_BYTES = 8; // 2×f32
 
@@ -69,7 +70,18 @@ export interface SnapshotPlayer {
 export type TerritoryReason = 'sync' | 'fill';
 
 export type ClientMessage =
-  { type: 'join'; version: number; name: string } | { type: 'input'; inputs: InputItem[] };
+  | { type: 'join'; version: number; name: string }
+  | {
+      type: 'input';
+      /**
+       * Server tick the client was RENDERING opponents at when the newest
+       * input was sampled (ticket 07 rewind, Source-style lag report);
+       * 0 = no view yet. Timing metadata like `seq` — the server clamps it
+       * to `LIMITS.rewindMaxTicks`, it can assert no game state.
+       */
+      viewTick: number;
+      inputs: InputItem[];
+    };
 
 export type ServerMessage =
   | { type: 'welcome'; playerId: number; arenaSizeWU: number }
@@ -113,17 +125,22 @@ export function encodeJoin(name: string): Uint8Array {
   return frame;
 }
 
-/** Batched steer intents — the only thing a client may say per spec §8.2. */
-export function encodeInput(inputs: readonly InputItem[]): Uint8Array {
+/**
+ * Batched steer intents plus the view-tick report — the only things a
+ * client may say per spec §8.2 (both are timing metadata; neither can
+ * assert game state).
+ */
+export function encodeInput(inputs: readonly InputItem[], viewTick: number): Uint8Array {
   if (inputs.length < 1 || inputs.length > MAX_INPUT_BATCH) {
     throw new RangeError(`input batch must hold 1..${String(MAX_INPUT_BATCH)} items`);
   }
-  const frame = new Uint8Array(2 + inputs.length * INPUT_ITEM_BYTES);
+  const frame = new Uint8Array(INPUT_HEADER_BYTES + inputs.length * INPUT_ITEM_BYTES);
   const view = new DataView(frame.buffer);
   frame[0] = OP_INPUT;
   frame[1] = inputs.length;
+  view.setUint32(2, viewTick, true);
   inputs.forEach((input, i) => {
-    const offset = 2 + i * INPUT_ITEM_BYTES;
+    const offset = INPUT_HEADER_BYTES + i * INPUT_ITEM_BYTES;
     view.setUint32(offset, input.seq, true);
     view.setInt8(offset + 4, input.turn);
   });
@@ -264,19 +281,20 @@ export function decodeClientMessage(frame: Uint8Array): ClientMessage | null {
       return { type: 'join', version, name };
     }
     case OP_INPUT: {
-      if (frame.length < 2) return null;
+      if (frame.length < INPUT_HEADER_BYTES) return null;
       const count = view.getUint8(1);
       if (count < 1 || count > MAX_INPUT_BATCH) return null;
-      if (frame.length !== 2 + count * INPUT_ITEM_BYTES) return null;
+      if (frame.length !== INPUT_HEADER_BYTES + count * INPUT_ITEM_BYTES) return null;
+      const viewTick = view.getUint32(2, true);
       const inputs: InputItem[] = [];
       for (let i = 0; i < count; i++) {
-        const offset = 2 + i * INPUT_ITEM_BYTES;
+        const offset = INPUT_HEADER_BYTES + i * INPUT_ITEM_BYTES;
         const seq = view.getUint32(offset, true);
         const turn = view.getInt8(offset + 4);
         if (!isTurnSignal(turn)) return null;
         inputs.push({ seq, turn });
       }
-      return { type: 'input', inputs };
+      return { type: 'input', viewTick, inputs };
     }
     default:
       return null;

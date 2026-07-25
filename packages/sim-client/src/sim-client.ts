@@ -134,11 +134,16 @@ export class SimClient {
     if (this.predicted) this.predicted.turn = turn;
   }
 
-  /** Send everything queued, split into protocol-legal batches (§6.3). */
+  /**
+   * Send everything queued, split into protocol-legal batches (§6.3). Each
+   * frame reports the view tick (ticket 07 rewind): the sim-client acts on
+   * raw snapshots without an interpolation buffer, so its rendered view of
+   * opponents IS the newest snapshot (0 = none yet).
+   */
   flush(): void {
     while (this.queued.length > 0) {
       const batch = this.queued.splice(0, MAX_INPUT_BATCH);
-      this.send(encodeInput(batch));
+      this.send(encodeInput(batch, this.snapshot?.tick ?? 0));
     }
   }
 

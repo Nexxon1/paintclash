@@ -671,10 +671,21 @@ export class ClientSession {
     return targets;
   }
 
+  /**
+   * The server tick this client currently RENDERS opponents at — reported
+   * with every input frame so kill judgment can rewind to what the pilot
+   * actually saw (ticket 07). The enemy timeline (`renderTick`) is exactly
+   * that view; 0 = no snapshot rendered yet.
+   */
+  private viewTick(): number {
+    if (this.renderTick === null) return 0;
+    return Math.max(0, Math.round(this.renderTick));
+  }
+
   private flush(): void {
     this.ticksSinceFlush = 0;
     while (this.queued.length > 0) {
-      this.send(encodeInput(this.queued.splice(0, MAX_INPUT_BATCH)));
+      this.send(encodeInput(this.queued.splice(0, MAX_INPUT_BATCH), this.viewTick()));
     }
   }
 }

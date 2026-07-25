@@ -52,9 +52,10 @@ describe('round-trip (decode ∘ encode = id, spec §9.1)', () => {
           minLength: 1,
           maxLength: MAX_INPUT_BATCH,
         }),
-        (inputs) => {
-          const decoded = decodeClientMessage(encodeInput(inputs));
-          expect(decoded).toEqual({ type: 'input', inputs });
+        fc.integer({ min: 0, max: 0xffffffff }),
+        (inputs, viewTick) => {
+          const decoded = decodeClientMessage(encodeInput(inputs, viewTick));
+          expect(decoded).toEqual({ type: 'input', viewTick, inputs });
         },
       ),
     );
@@ -143,19 +144,39 @@ describe('round-trip (decode ∘ encode = id, spec §9.1)', () => {
 
 describe('golden bytes (wire format pinned, spec §9.1)', () => {
   it('join "Ada"', () => {
-    // Version byte 0x04 — bumped for the total-loss death cause (ticket 06).
-    expect(Array.from(encodeJoin('Ada'))).toEqual([0x01, 0x04, 0x03, 0x41, 0x64, 0x61]);
+    // Version byte 0x05 — bumped for the input frame's view tick (ticket 07).
+    expect(Array.from(encodeJoin('Ada'))).toEqual([0x01, 0x05, 0x03, 0x41, 0x64, 0x61]);
   });
 
-  it('input batch [seq 7 turn -1, seq 8 turn 1]', () => {
+  it('input batch [seq 7 turn -1, seq 8 turn 1] seen at view tick 9', () => {
     expect(
       Array.from(
-        encodeInput([
-          { seq: 7, turn: -1 },
-          { seq: 8, turn: 1 },
-        ]),
+        encodeInput(
+          [
+            { seq: 7, turn: -1 },
+            { seq: 8, turn: 1 },
+          ],
+          9,
+        ),
       ),
-    ).toEqual([0x02, 0x02, 0x07, 0x00, 0x00, 0x00, 0xff, 0x08, 0x00, 0x00, 0x00, 0x01]);
+    ).toEqual([
+      0x02, // opcode
+      0x02, // count
+      0x09,
+      0x00,
+      0x00,
+      0x00, // viewTick
+      0x07,
+      0x00,
+      0x00,
+      0x00,
+      0xff, // seq 7, turn -1
+      0x08,
+      0x00,
+      0x00,
+      0x00,
+      0x01, // seq 8, turn 1
+    ]);
   });
 
   it('welcome playerId 5, arena 200 WU', () => {
@@ -304,24 +325,24 @@ describe('malformed frames are rejected, never thrown (spec §8.2)', () => {
   });
 
   it('rejects a truncated input batch', () => {
-    const ok = encodeInput([{ seq: 1, turn: 0 }]);
+    const ok = encodeInput([{ seq: 1, turn: 0 }], 0);
     expect(decodeClientMessage(ok.subarray(0, ok.length - 1))).toBeNull();
   });
 
   it('rejects an input batch whose declared count disagrees with its length', () => {
-    const frame = new Uint8Array(encodeInput([{ seq: 1, turn: 0 }]));
+    const frame = new Uint8Array(encodeInput([{ seq: 1, turn: 0 }], 0));
     frame[1] = 2; // claims two inputs, carries one
     expect(decodeClientMessage(frame)).toBeNull();
   });
 
   it('rejects an out-of-range turn value', () => {
-    const frame = new Uint8Array(encodeInput([{ seq: 1, turn: 0 }]));
-    frame[6] = 5; // turn byte
+    const frame = new Uint8Array(encodeInput([{ seq: 1, turn: 0 }], 0));
+    frame[10] = 5; // first item's turn byte
     expect(decodeClientMessage(frame)).toBeNull();
   });
 
   it('rejects an oversized batch declaration', () => {
-    const frame = new Uint8Array(2 + (MAX_INPUT_BATCH + 1) * 5);
+    const frame = new Uint8Array(6 + (MAX_INPUT_BATCH + 1) * 5);
     frame[0] = 0x02;
     frame[1] = MAX_INPUT_BATCH + 1;
     expect(decodeClientMessage(frame)).toBeNull();
@@ -358,7 +379,7 @@ describe('malformed frames are rejected, never thrown (spec §8.2)', () => {
         turn: 1,
       }),
     );
-    expect(encodeInput(inputs).length).toBeLessThanOrEqual(MAX_CLIENT_FRAME_BYTES);
+    expect(encodeInput(inputs, 0xffffffff).length).toBeLessThanOrEqual(MAX_CLIENT_FRAME_BYTES);
   });
 
   it('rejects any client frame above the size cap before parsing (spec §8.3)', () => {
@@ -372,12 +393,12 @@ describe('malformed frames are rejected, never thrown (spec §8.2)', () => {
   });
 
   it('encodeInput refuses illegal batch sizes outright', () => {
-    expect(() => encodeInput([])).toThrow(RangeError);
+    expect(() => encodeInput([], 0)).toThrow(RangeError);
     const tooMany = Array.from(
       { length: MAX_INPUT_BATCH + 1 },
       (_, i): { seq: number; turn: TurnSignal } => ({ seq: i, turn: 0 }),
     );
-    expect(() => encodeInput(tooMany)).toThrow(RangeError);
+    expect(() => encodeInput(tooMany, 0)).toThrow(RangeError);
   });
 
   it('rejects malformed server frames too (defensive client, spec §9.1)', () => {

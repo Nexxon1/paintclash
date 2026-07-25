@@ -180,6 +180,20 @@ describe('steer intents', () => {
     expect(sent).toHaveLength(0);
   });
 
+  it('reports the newest snapshot tick as its view tick (ticket 07 rewind)', () => {
+    const { client, sent } = harness();
+    client.receive(encodeWelcome(1, 200));
+    // No snapshot rendered yet → 0 = "no view".
+    client.queueTurn(1);
+    client.flush();
+    client.receive(encodeSnapshot(42, 0, [snapshotPlayer()]));
+    client.queueTurn(0);
+    client.flush();
+    const frames = sent.map((f) => decodeClientMessage(f));
+    expect(frames[0]).toMatchObject({ type: 'input', viewTick: 0 });
+    expect(frames[1]).toMatchObject({ type: 'input', viewTick: 42 });
+  });
+
   it('splits overlong queues into legal batches', () => {
     const { client, sent } = harness();
     for (let i = 0; i < MAX_INPUT_BATCH + 3; i++) client.queueTurn(1);

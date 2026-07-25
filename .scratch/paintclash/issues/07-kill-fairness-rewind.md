@@ -4,11 +4,25 @@
 
 **Blocked by:** 05.
 
-**Status:** claimed
+**Status:** resolved (2026-07-25)
 
-- [ ] `server`: rollierende Positions-Historie je Entity; Todes-/Schnitt-Beurteilung gegen den **zurückgespulten** Zustand aus Sicht des Handelnden (Gambetta-Rewind).
-- [ ] Determinismus/Replay bleibt intakt (keine Uhr, festes dt; kein Map-Insertion-abhängiges Verhalten).
-- [ ] Szenario-Test mit **simulierter Latenz**: ein Schnitt, der ohne Rewind knapp verfehlt würde, zählt mit Rewind korrekt; kein „doppelter Tod", keine Divergenz gegen den Replay-Hash.
-- [ ] CI grün inkl. Coverage (§9.7).
+- [x] `server`: rollierende Positions-Historie je Entity; Todes-/Schnitt-Beurteilung gegen den **zurückgespulten** Zustand aus Sicht des Handelnden (Gambetta-Rewind).
+- [x] Determinismus/Replay bleibt intakt (keine Uhr, festes dt; kein Map-Insertion-abhängiges Verhalten) — Historie wird mit-geklont und **mit-gehasht**, Golden-Hash bewusst rotiert.
+- [x] Szenario-Test mit **simulierter Latenz**: ein Schnitt, der ohne Rewind knapp verfehlt würde, zählt mit Rewind korrekt; kein „doppelter Tod", keine Divergenz gegen den Replay-Hash.
+- [x] CI grün inkl. Coverage (§9.7) — alle Gates lokal grün (typecheck, lint, format, 298 Unit/Property, 13 Szenario, Coverage-Böden, 4 E2E).
 
 _Referenz: spec §6.1; ADR-0003._
+
+## Answer
+
+Rewind über den ganzen Stack. Die Kernentscheidungen (ADR-0003 hat den Nachtrag „Rewind konkretisiert"):
+
+- **Additiv, nicht ersetzend** (`sim-core/collision.ts`): nach dem Live-Durchgang läuft je Handelndem ein zurückgespulter — erst Schnitte, dann Kopf-an-Kopf. Ein Opfer stirbt pro Tick höchstens einmal (Dedup), Rewind kann also nur Tode **hinzufügen**, nie umdeuten; ein Live-Treffer bleibt ein Live-Treffer.
+- **Historie im Sim-Zustand** (`sim-core/history.ts`): rollierendes Fenster von `LIMITS.rewindMaxTicks` = 10 Nach-Tick-Posen je Entity (Position, „stand auf eigenem Land", Trail-Länge, Trail-Generation). Mit-geklont und **mit-gehasht** — der Replay-Determinismus deckt die Rewind-Eingaben mit ab, statt sie in einem Nebenzustand ohne Garantien zu halten. Golden-Hash `82bff39b` → **`9ebfdacf`** (neue gehashte Felder + `views` im Golden-Skript), bewusst rotiert und im Fixture begründet.
+- **Trails werden nicht kopiert:** ein Trail wächst nur an der am Kopf klebenden Spitze, also ist die Vergangenheit *derselben* Generation eine Teilmenge der lebenden — ein Live-Fehlschlag ist beweisend. Nur ein **Reset** entfernt Geometrie, deshalb wird ausschliesslich beim **Fill** der alte Trail eingefroren aufbewahrt (`retireTrail`, per Generation an die Historie gebunden, GC beim Herausrollen). Genau der Fall, für den der Rewind existiert: „ich habe geschnitten, bevor er heimkam".
+- **Tod löscht die Rewind-Vergangenheit** (`applyDeaths`): ein Todes-Reset retiriert *nicht* — sonst tötet der verzögerte Schnitt eines abgeschlossenen Lebens den frischen Respawn ein zweites Mal (die „doppelter Tod"-Falle).
+- **Schild zum gesehenen Tick:** „eigenes Gebiet = sicher" wird im zurückgespulten Durchgang aus dem Historien-Eintrag gelesen. Damit fällt die Ein-Tick-Karenz frisch Beklauter aus Ticket 06 weg — Sicherheit ist jetzt durchgehend „steht wirklich auf eigenem Land", **einmal** pro Tick entschieden (`safeIds`, von `trackTrail` gefüllt) und an Historie *und* Kollision gegeben.
+- **Protocol v4 → v5:** der Input-Frame trägt den **Sicht-Tick** (u32 im Header, neben `seq`) — der Server-Tick, den der Client gerade rendert (Browser: Render-Uhr; Sim-Client: neuester Snapshot; 0 = noch keine Sicht).
+- **Tiefe doppelt geklemmt** (`ArenaCore.rewindDepth`) — Befund aus dem `/code-review`: reines Timing ja, aber ein tieferer Rewind ist ein *Vorteil*, also wäre Untertreiben gratis profitabel gewesen. Jetzt bindet die Tiefe zusätzlich zur harten `rewindMaxTicks`-Grenze die **gemessene** Zeitachse der Verbindung (`2 × tickOffset + rewindInterpAllowanceTicks`): wer tieferes Unlag will, muss seine eigenen Inputs echt später eintreffen lassen und zahlt mit gleich viel Steuer-Verzug. Sicht-Tick 0 ⇒ Tiefe 0 (kein Einfrieren einer einmal erreichten Tiefe).
+- **Testschichten.** `sim-core/rewind.test.ts` (17): Schnitt nach Fill zählt / ohne Rewind verfehlt er (Gegenprobe), Kopf-an-Kopf gegen den Geist, Geist-Schild in beide Richtungen, „draussen erwischt, obwohl längst daheim", Fenster/GC/Klemmen, Replay-Determinismus inkl. Property über Turns **und** Sicht-Verzögerungen. `server/rewind-latency.test.ts` (5): echte `ArenaCore`, echte Frames, echtes Tick-Mapping und eine **Verzögerungsleitung** in beide Richtungen — abgeleitete Tiefe (9 Ticks bei 200 ms), **zurückgespulter Schnitt** eines weggefüllten Trails und **zurückgespultes** Kopf-an-Kopf, jeweils mit latenzfreier **Gegenprobe** und dem Beweis, dass Live-Regeln es nicht erklären können (Köpfe ausser Reichweite / gar kein Trail vorhanden). Deterministisch weiss-poised statt gesteuert: über die Leitung teilen sich Kopf und Geist einen 3,2-WU-Kreis, dort gewinnt gemessen **immer** der Live-Treffer — eine Münzwurf-Choreografie wäre kein Regressions-Wächter. `tests/scenario/rewind.test.ts`: workerd + Sim-Clients mit ~200 ms echter Latenz, drei verzögerte Angreifer gegen einen im eigenen Block parkenden Verteidiger — die Ladung stirbt, der geparkte Kopf **nie** (genau die Regression, die dieses Ticket brechen könnte).
+- **Beobachtung für spätere Netcode-Arbeit:** ein verzögerter Client, der auf die *gesehene* Pose zusteuert, ist eine Bang-Bang-Regelung mit Totzeit — sie schwingt, und ein schwingender Pfad kringelt bei 1,6 WU Wenderadius in den eigenen Trail (gemessen: Selbstschnitte 35–140 WU vom Ziel entfernt, ohne es je zu erreichen). Die Sim-Clients der Szenario-Tests planen deshalb **offene Turn-Skripte** über eine Totzeit; tick-gemappte Inputs (Ticket 17) führen ein Skript exakt aus, egal wie hoch die Latenz ist. Für Bots (Ticket 12) direkt relevant.

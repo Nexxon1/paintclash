@@ -1,26 +1,38 @@
 /**
- * Death detection (spec §2.1, ticket 05): trail cuts and head-on collisions,
- * evaluated simultaneously against one post-movement state. Pure query over
- * player views — ticket 07 (kill-fairness) will call it with *rewound* player
- * poses, so nothing here may touch state, RNG or the clock.
+ * Death detection (spec §2.1, tickets 05 + 07): trail cuts and head-on
+ * collisions, judged live against one post-movement state AND — kill-
+ * fairness with rewind (ADR-0003) — from each acting player's lagged view
+ * of the others. Pure query over player views: nothing here touches state,
+ * RNG or the clock; callers apply the returned deaths afterwards.
  *
  * Resolution order inside one tick:
  *
- *   1. Trail cuts — every head against every trail (foreign AND own). All
- *      cuts count, even by a head that dies itself this tick (simultaneity).
- *   2. Head-on — only among players NOT killed by a cut in pass 1: a trail
+ *   1. Trail cuts, live — every head against every live trail (foreign AND
+ *      own). All cuts count, even by a head that dies itself this tick
+ *      (simultaneity).
+ *   1b. Trail cuts, rewound — an actor's head against the trail their
+ *      screen showed. Same-generation viewed trails are subsets of the
+ *      live ones (see history.ts), so this only ever consults trails RESET
+ *      since the viewed tick: the "I cut it before they reached home" race
+ *      the rewind exists for.
+ *   2. Head-on, live — only among players NOT killed by a cut: a trail
  *      always ends glued to its owner's head, so chasing someone down on
  *      their own line is a cut kill and must not drag the chaser into a
- *      "head-on" death against the freshly cut victim.
+ *      "head-on" death against the freshly cut victim. Safe = standing on
+ *      own land (real inside-ness — the one-tick post-enclosure grace of
+ *      ticket 06 is gone).
+ *   2b. Head-on, rewound — an actor's head against the pose their screen
+ *      showed; the viewed player's shield is their safety AT that tick.
  *
- * The passes make the tick order-independent: within each pass every check
- * runs against the same pre-death state, and victims are only marked, never
- * removed. Callers apply the returned deaths afterwards.
+ * Within each pass every check runs against the same pre-death state and
+ * victims are only marked, never removed — the tick stays order-independent
+ * up to the deterministic player order.
  */
 
 import { BALANCE, type DeathCause, type Point } from '@paintclash/shared';
 
 import { segmentDistanceSq } from './geometry.js';
+import type { RewoundView } from './history.js';
 import type { PlayerSim } from './state.js';
 
 export interface Death {
@@ -28,6 +40,18 @@ export interface Death {
   /** Who caused it — the cutting/surviving head; the victim for a self-cut. */
   killerId: number;
   cause: DeathCause;
+}
+
+/** What judgment needs beyond the players: safety verdicts and rewound views. */
+export interface DeathContext {
+  /**
+   * Ids of the players standing on their own land after this tick's movement
+   * — the head-on shield (spec §2.1). Computed by `step`, which already
+   * decides inside-ness for the trail bookkeeping.
+   */
+  safeIds: ReadonlySet<number>;
+  /** How `actor`'s screen showed `target`, or null to judge live only. */
+  viewedBy(actor: PlayerSim, target: PlayerSim): RewoundView | null;
 }
 
 const RADIUS_WU = BALANCE.trail.collisionRadiusWU;
@@ -67,11 +91,12 @@ function headCutsTrail(x: number, y: number, trail: readonly Point[], graceWU: n
 }
 
 /**
- * All deaths of one tick, evaluated against the given (post-movement) player
- * views. Deterministic: victims appear in player order per pass, first
- * killer in player order wins the credit.
+ * All deaths of one tick, judged against the given (post-movement) player
+ * views plus each actor's rewound view of the others. Deterministic:
+ * victims appear in player order per pass, first killer in player order
+ * wins the credit.
  */
-export function detectDeaths(players: readonly PlayerSim[]): Death[] {
+export function detectDeaths(players: readonly PlayerSim[], ctx: DeathContext): Death[] {
   const deaths: Death[] = [];
   const dead = new Set<number>();
   const mark = (victimId: number, killerId: number, cause: DeathCause): void => {
@@ -91,8 +116,21 @@ export function detectDeaths(players: readonly PlayerSim[]): Death[] {
     }
   }
 
-  // Cut victims are dead for this pass; head-on deaths do NOT mask each
-  // other (three heads meeting in one spot all die together).
+  // Rewound cuts (ticket 07): the trail the actor SAW — reset since their
+  // viewed tick, so the live pass above could not have judged it.
+  for (const actor of players) {
+    for (const owner of players) {
+      if (owner === actor) continue;
+      const view = ctx.viewedBy(actor, owner);
+      if (!view?.trail) continue;
+      if (headCutsTrail(actor.x, actor.y, view.trail, 0)) {
+        mark(owner.id, actor.id, 'trailCut');
+      }
+    }
+  }
+
+  // Cut victims are dead for the head-on passes; head-on deaths do NOT mask
+  // each other (three heads meeting in one spot all die together).
   const cutDead = new Set(dead);
   for (let i = 0; i < players.length; i++) {
     const a = players[i];
@@ -103,13 +141,25 @@ export function detectDeaths(players: readonly PlayerSim[]): Death[] {
       const dx = a.x - b.x;
       const dy = a.y - b.y;
       if (dx * dx + dy * dy > HEAD_ON_DIST_SQ) continue;
-      // Safe = standing on own land. Post-movement, "outside ⇔ trail
-      // exists" holds for landed players (trackTrail's own verdict, so the
-      // two passes can never disagree); the landless are always outside.
-      const aSafe = a.territory.length > 0 && a.trail.length === 0;
-      const bSafe = b.territory.length > 0 && b.trail.length === 0;
-      if (!aSafe) mark(a.id, b.id, 'headOn');
-      if (!bSafe) mark(b.id, a.id, 'headOn');
+      if (!ctx.safeIds.has(a.id)) mark(a.id, b.id, 'headOn');
+      if (!ctx.safeIds.has(b.id)) mark(b.id, a.id, 'headOn');
+    }
+  }
+
+  // Rewound head-on (ticket 07): the actor's head touched where their
+  // screen showed an opponent. The viewed pose carries its own-tick shield;
+  // the actor's shield is their live one.
+  for (const actor of players) {
+    if (cutDead.has(actor.id)) continue;
+    for (const other of players) {
+      if (other === actor || cutDead.has(other.id)) continue;
+      const view = ctx.viewedBy(actor, other);
+      if (!view) continue;
+      const dx = actor.x - view.x;
+      const dy = actor.y - view.y;
+      if (dx * dx + dy * dy > HEAD_ON_DIST_SQ) continue;
+      if (!view.safe) mark(other.id, actor.id, 'headOn');
+      if (!ctx.safeIds.has(actor.id)) mark(actor.id, other.id, 'headOn');
     }
   }
   return deaths;

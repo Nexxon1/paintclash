@@ -64,6 +64,14 @@ interface Connection {
    * `s + tickOffset`.
    */
   tickOffset: number | null;
+  /**
+   * Rewind depth (ticket 07): how many ticks this pilot's rendered view of
+   * opponents trails the tick their inputs apply at. Derived from the
+   * client-reported view tick and bounded by `rewindDepth` below.
+   */
+  viewDelayTicks: number;
+  /** Last delay handed to the sim — views coalesce like turns, send on change. */
+  sentViewDelay: number;
   /** Smoothed arrival margin in ticks (see LIMITS.tickMapMarginEmaWeight). */
   marginEma: number;
   /** Consecutive frames implying a broken timeline (resync hysteresis). */
@@ -106,6 +114,8 @@ export class ArenaCore {
       ackSeq: 0,
       pendingInputs: [],
       tickOffset: null,
+      viewDelayTicks: 0,
+      sentViewDelay: 0,
       marginEma: MARGIN_EMA_START,
       resyncStreak: 0,
       garbage: 0,
@@ -195,6 +205,7 @@ export class ArenaCore {
     this.trackTickOffset(connection, newest.seq);
     const tickOffset = connection.tickOffset;
     if (tickOffset === null) return; // unreachable — tracking always anchors
+    connection.viewDelayTicks = this.rewindDepth(message.viewTick, newest.seq, tickOffset);
     for (const input of fresh) {
       // Mapped tick already simulated (turn persisted + acked): applying it
       // now would double-move the past. Late turn changes surface as one
@@ -204,6 +215,32 @@ export class ArenaCore {
     }
     const overflow = connection.pendingInputs.length - LIMITS.maxPendingInputs;
     if (overflow > 0) connection.pendingInputs.splice(0, overflow);
+  }
+
+  /**
+   * How far back this frame's intents get judged (ticket 07 rewind): the
+   * newest intent applies at tick `seq + tickOffset`, sampled while the
+   * client rendered opponents at its reported view tick — the gap between
+   * the two is the honest depth.
+   *
+   * The report is client-supplied, so it is bounded twice. `tickOffset`
+   * MEASURES the upstream travel (the margin servo parks it just above the
+   * real one), so twice it plus the interpolation allowance is as deep as a
+   * connection with this timing could honestly see; on top sits the hard
+   * window. That makes under-reporting self-penalizing rather than free: to
+   * be granted a deeper rewind, a client must genuinely let its own seqs
+   * arrive later, which delays its own steering by the same amount. Still
+   * pure timing — nothing here can assert game state (spec §6.4/§8.2).
+   *
+   * A view tick of 0 means "nothing rendered yet" (a joining client) and
+   * grants NO rewind — never the full window, and it cannot be used to
+   * freeze an earlier, deeper depth in place either.
+   */
+  private rewindDepth(viewTick: number, newestSeq: number, tickOffset: number): number {
+    if (viewTick <= 0) return 0;
+    const measurable = 2 * Math.max(0, tickOffset) + LIMITS.rewindInterpAllowanceTicks;
+    const reported = newestSeq + tickOffset - viewTick;
+    return Math.min(LIMITS.rewindMaxTicks, measurable, Math.max(0, reported));
   }
 
   /**
@@ -246,6 +283,7 @@ export class ArenaCore {
   /** One authoritative 20 Hz tick: apply each tick-mapped intent, snapshot all. */
   tick(dtSec: number): void {
     const turns: { id: number; turn: TurnSignal }[] = [];
+    const views: { id: number; viewDelayTicks: number }[] = [];
     for (const [id, connection] of this.connections) {
       // Dead-socket sweep: transports don't always deliver a close event
       // (half-open TCP after an abrupt browser kill) — without this, ghost
@@ -257,6 +295,11 @@ export class ArenaCore {
         continue;
       }
       if (connection.tickOffset === null) continue;
+      // Rewind depth changed → tell the sim once; it persists like a turn.
+      if (connection.viewDelayTicks !== connection.sentViewDelay) {
+        views.push({ id, viewDelayTicks: connection.viewDelayTicks });
+        connection.sentViewDelay = connection.viewDelayTicks;
+      }
       const expectedSeq = this.state.tick + 1 - connection.tickOffset;
       const queue = connection.pendingInputs;
       // Entries below the expected seq were superseded by a resync/tighten
@@ -273,7 +316,7 @@ export class ArenaCore {
     const spawned = this.pendingJoins;
     const events = step(
       this.state,
-      { joins: this.pendingJoins, leaves: this.pendingLeaves, turns },
+      { joins: this.pendingJoins, leaves: this.pendingLeaves, turns, views },
       dtSec,
     );
     this.pendingJoins = [];

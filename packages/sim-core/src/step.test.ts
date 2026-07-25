@@ -16,7 +16,19 @@ function playerAt(
   heading: number,
   turn: -1 | 0 | 1 = 0,
 ): PlayerSim {
-  return { id, x, y, heading, turn, territory: [[squareRing(x, y, 3)]], trail: [] };
+  return {
+    id,
+    x,
+    y,
+    heading,
+    turn,
+    territory: [[squareRing(x, y, 3)]],
+    trail: [],
+    viewDelayTicks: 0,
+    trailEpoch: 0,
+    retiredTrails: [],
+    history: [],
+  };
 }
 
 function stateWith(...players: PlayerSim[]): SimState {

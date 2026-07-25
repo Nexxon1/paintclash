@@ -26,6 +26,33 @@ export interface HeadPose {
   turn: TurnSignal;
 }
 
+/**
+ * One post-tick pose in the rolling rewind history (ticket 07) — exactly
+ * what the snapshot of `tick` broadcast, so a rewound judgment recreates
+ * what the acting player's screen showed.
+ */
+export interface PoseHistoryEntry {
+  tick: number;
+  x: number;
+  y: number;
+  /** Stood on own land (head-on shield, spec §2.1) at that tick. */
+  safe: boolean;
+  /** Trail point count at that tick — keys the prefix reconstruction. */
+  trailLen: number;
+  /** Trail generation the entry belongs to (see PlayerSim.trailEpoch). */
+  trailEpoch: number;
+}
+
+/**
+ * A trail reset within the rewind window (fill or death), kept frozen so a
+ * lagged actor's cut can still be judged against it (ticket 07). Dropped as
+ * soon as no history entry references its epoch.
+ */
+export interface RetiredTrail {
+  epoch: number;
+  points: readonly Point[];
+}
+
 export interface PlayerSim extends HeadPose {
   id: number;
   /** Owned land (CONTEXT: Gebiet); starts as the 6×6 spawn block. */
@@ -36,6 +63,18 @@ export interface PlayerSim extends HeadPose {
    * to the territory without on-boundary degeneracy.
    */
   trail: Point[];
+  /**
+   * How many ticks this player's pilot sees opponents in the past (ticket
+   * 07 rewind) — input-persisted like `turn`, clamped to
+   * `LIMITS.rewindMaxTicks`; 0 judges live only (fresh spawns, bots).
+   */
+  viewDelayTicks: number;
+  /** Trail generation — bumps on every trail reset, keying retired trails. */
+  trailEpoch: number;
+  /** Recently reset trails, garbage-collected by history reachability. */
+  retiredTrails: RetiredTrail[];
+  /** Rolling post-tick pose window, newest last (ticket 07 rewind). */
+  history: PoseHistoryEntry[];
 }
 
 export interface SimState {
@@ -64,6 +103,11 @@ export function cloneSimState(state: SimState): SimState {
       ...p,
       territory: cloneTerritory(p.territory),
       trail: p.trail.map((q): Point => [q[0], q[1]]),
+      retiredTrails: p.retiredTrails.map((r) => ({
+        epoch: r.epoch,
+        points: r.points.map((q): Point => [q[0], q[1]]),
+      })),
+      history: p.history.map((h) => ({ ...h })),
     })),
   };
 }
@@ -77,7 +121,7 @@ export function cloneSimState(state: SimState): SimState {
 export function hashSimState(state: SimState): string {
   const numbers: number[] = [state.tick, state.rng, state.arenaSizeWU];
   for (const p of state.players) {
-    numbers.push(p.id, p.x, p.y, p.heading, p.turn);
+    numbers.push(p.id, p.x, p.y, p.heading, p.turn, p.viewDelayTicks, p.trailEpoch);
     numbers.push(p.territory.length);
     for (const poly of p.territory) {
       numbers.push(poly.length);
@@ -88,6 +132,15 @@ export function hashSimState(state: SimState): string {
     }
     numbers.push(p.trail.length);
     for (const [x, y] of p.trail) numbers.push(x, y);
+    numbers.push(p.retiredTrails.length);
+    for (const r of p.retiredTrails) {
+      numbers.push(r.epoch, r.points.length);
+      for (const [x, y] of r.points) numbers.push(x, y);
+    }
+    numbers.push(p.history.length);
+    for (const h of p.history) {
+      numbers.push(h.tick, h.x, h.y, h.safe ? 1 : 0, h.trailLen, h.trailEpoch);
+    }
   }
   const bytes = new DataView(new ArrayBuffer(numbers.length * 8));
   numbers.forEach((n, i) => {
