@@ -25,15 +25,23 @@
 import {
   decodeClientMessage,
   encodeDeath,
+  encodeLeaderboard,
   encodeSnapshot,
   encodeTerritory,
   encodeTrail,
   encodeWelcome,
   type InputItem,
+  type LeaderboardRow,
   type SnapshotPlayer,
 } from '@paintclash/protocol';
-import { LIMITS, type TurnSignal } from '@paintclash/shared';
-import { createSimState, step, type SimState } from '@paintclash/sim-core';
+import { BALANCE, LIMITS, type TurnSignal } from '@paintclash/shared';
+import {
+  createSimState,
+  standings,
+  step,
+  type SimState,
+  type Standing,
+} from '@paintclash/sim-core';
 
 /** What ArenaCore needs from a transport — a DO WebSocket satisfies this. */
 export interface ArenaSocket {
@@ -47,9 +55,23 @@ export interface ArenaSocket {
  */
 const MARGIN_EMA_START = (LIMITS.tickMapMinMarginTicks + LIMITS.tickMapMaxMarginTicks) / 2;
 
+/**
+ * Auto guest name for a client that supplied none (spec §2.8: "Leerer Name →
+ * Auto-Gastname (Gast-####)") — the leaderboard must not render a blank row,
+ * and one shared "Gast" for everyone would be no name at all. Numbered by
+ * player id, which every row carries anyway.
+ *
+ * The REST of the nickname policy is ticket 13: names still reach other
+ * clients here unfiltered (no blocklist, no zero-width/control filtering) —
+ * the wire caps length, nothing else does yet.
+ */
+function guestName(playerId: number): string {
+  return `Gast-${String(playerId).padStart(4, '0')}`;
+}
+
 interface Connection {
   socket: ArenaSocket;
-  /** Display name from the join (stored for later tickets; not broadcast). */
+  /** Display name from the join — shown on the leaderboard (spec §2.5). */
   name: string;
   joined: boolean;
   /** Highest seq ever accepted — monotonicity gate (spec §6.4). */
@@ -80,6 +102,13 @@ interface Connection {
   garbage: number;
   /** Ticks since the last valid frame — dead-socket detection. */
   idleTicks: number;
+  /** Last leaderboard frame sent — resent only when it actually differs. */
+  lastLeaderboard: Uint8Array | null;
+}
+
+/** Byte equality — the leaderboard's "did anything change?" test. */
+function sameFrame(a: Uint8Array, b: Uint8Array): boolean {
+  return a.length === b.length && a.every((byte, i) => byte === b[i]);
 }
 
 export class ArenaCore {
@@ -120,6 +149,7 @@ export class ArenaCore {
       resyncStreak: 0,
       garbage: 0,
       idleTicks: 0,
+      lastLeaderboard: null,
     });
     return id;
   }
@@ -178,7 +208,7 @@ export class ArenaCore {
     if (message.type === 'join') {
       if (!connection.joined) {
         connection.joined = true;
-        connection.name = message.name;
+        connection.name = message.name.trim() || guestName(playerId);
         connection.socket.send(encodeWelcome(playerId, this.state.arenaSizeWU));
         // World sync for the joiner (ticket 04): every existing territory
         // and every active trail, full — from here on, territory changes
@@ -373,6 +403,42 @@ export class ArenaCore {
         connection.ackSeq = this.state.tick - connection.tickOffset;
       }
       connection.socket.send(encodeSnapshot(this.state.tick, connection.ackSeq, players));
+    }
+
+    this.broadcastLeaderboard();
+  }
+
+  /**
+   * The global ranking (spec §2.5, ticket 08): every `leaderboardIntervalTicks`
+   * the table is derived from the live territories — no persistence, nothing
+   * accumulated (ADR-0004) — and each client gets the top rows plus, appended,
+   * its own row when it ranks below them.
+   *
+   * Sent only when the recipient's frame actually differs from the last one.
+   * Comparing the ENCODED frames dedupes at exactly the resolution the client
+   * can see (percent to two decimals): shares only move when land does, so a
+   * quiet arena costs one derivation every half second and zero bytes.
+   */
+  private broadcastLeaderboard(): void {
+    if (this.state.tick % LIMITS.leaderboardIntervalTicks !== 0) return;
+    const table = standings(this.state);
+    const row = (standing: Standing): LeaderboardRow => ({
+      rank: standing.rank,
+      playerId: standing.playerId,
+      areaPct: standing.areaPct,
+      // Sim entities without a connection are bots (ticket 12) — they rank
+      // like anyone else, they just have no join name to show.
+      name: this.connections.get(standing.playerId)?.name ?? guestName(standing.playerId),
+    });
+    const topRows = table.slice(0, BALANCE.leaderboard.topN).map(row);
+    for (const [id, connection] of this.connections) {
+      if (!connection.joined) continue;
+      const own = table.find((standing) => standing.playerId === id);
+      const rows = own && own.rank > BALANCE.leaderboard.topN ? [...topRows, row(own)] : topRows;
+      const frame = encodeLeaderboard(rows);
+      if (connection.lastLeaderboard && sameFrame(connection.lastLeaderboard, frame)) continue;
+      connection.lastLeaderboard = frame;
+      connection.socket.send(frame);
     }
   }
 }

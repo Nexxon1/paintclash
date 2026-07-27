@@ -12,6 +12,7 @@ import {
   MAX_INPUT_BATCH,
   type DeathCause,
   type InputItem,
+  type LeaderboardRow,
   type SnapshotPlayer,
 } from '@paintclash/protocol';
 import {
@@ -146,6 +147,15 @@ export interface TerritoryView {
   rev: number;
 }
 
+/**
+ * The global ranking as last received (ticket 08, spec §2.5). `rev` bumps per
+ * board, so the DOM HUD rebuilds on change instead of every frame.
+ */
+export interface LeaderboardView {
+  rev: number;
+  rows: readonly LeaderboardRow[];
+}
+
 export interface RenderState {
   self: RenderPose | null;
   /** Own player id, once welcomed — keys the own entries below. */
@@ -170,6 +180,8 @@ export interface RenderState {
    * this is the seam for sound (ticket 11) and later flourish.
    */
   deaths: DeathView[];
+  /** Top rows + the own one, straight from the server (ticket 08). */
+  leaderboard: LeaderboardView;
 }
 
 export class ClientSession {
@@ -189,6 +201,8 @@ export class ClientSession {
   private pendingFills: number[] = [];
   /** Death events since the last renderSample (drained there). */
   private pendingDeaths: DeathView[] = [];
+  /** Latest global ranking; stands until the next board replaces it. */
+  private leaderboard: LeaderboardView = { rev: 0, rows: [] };
   /** The own death's respawn must CUT, not glide — set until reconciled. */
   private snapOnReconcile = false;
   /**
@@ -306,6 +320,12 @@ export class ClientSession {
         killerId: message.killerId,
         cause: message.cause,
       });
+      return;
+    }
+    if (message.type === 'leaderboard') {
+      // Boards replace, never merge (spec §2.5) — the server sends one only
+      // when it changed, so a bumped rev always means a real change.
+      this.leaderboard = { rev: this.leaderboard.rev + 1, rows: message.rows };
       return;
     }
     const latest = this.interpolator.latestTick();
@@ -541,6 +561,7 @@ export class ClientSession {
       trails: this.sampleTrails(self, others),
       fills,
       deaths,
+      leaderboard: this.leaderboard,
     };
   }
 

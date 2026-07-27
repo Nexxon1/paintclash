@@ -2,6 +2,7 @@ import { TICK_DT_SEC, type Territory } from '@paintclash/shared';
 import {
   decodeClientMessage,
   encodeDeath,
+  encodeLeaderboard,
   encodeSnapshot,
   encodeTerritory,
   encodeTrail,
@@ -149,6 +150,27 @@ describe('death events (ticket 05)', () => {
     // The respawn block arrives as a normal sync right after.
     client.receive(encodeTerritory(2, 'sync', block));
     expect(client.territoryAreaOf(2)).toBeCloseTo(36, 5);
+  });
+});
+
+describe('leaderboard (ticket 08)', () => {
+  it('keeps the latest board wholesale', () => {
+    const { client } = harness();
+    client.receive(encodeWelcome(1, 200));
+    expect(client.leaderboard).toEqual([]);
+    client.receive(
+      encodeLeaderboard([
+        { rank: 1, playerId: 2, areaPct: 4, name: 'Bo' },
+        { rank: 2, playerId: 1, areaPct: 1, name: 'Ada' },
+      ]),
+    );
+    expect(client.leaderboard).toEqual([
+      { rank: 1, playerId: 2, areaPct: 4, name: 'Bo' },
+      { rank: 2, playerId: 1, areaPct: 1, name: 'Ada' },
+    ]);
+    // A board REPLACES the previous one — it is never merged.
+    client.receive(encodeLeaderboard([{ rank: 1, playerId: 1, areaPct: 9, name: 'Ada' }]));
+    expect(client.leaderboard.map((r) => r.playerId)).toEqual([1]);
   });
 });
 

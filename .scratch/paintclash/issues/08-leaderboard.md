@@ -4,12 +4,28 @@
 
 **Blocked by:** 04.
 
-**Status:** ready-for-agent
+**Status:** resolved (2026-07-27)
 
-- [ ] `server`: Leaderboard **live aus dem Live-Zustand** (nur %), Top 5 + eigener Rang; keine Persistenz.
-- [ ] `protocol`: kompakte Leaderboard-Update-Nachricht.
-- [ ] `client`: HUD-Leaderboard; eigene Zeile hervorgehoben; Farb-Swatch je Zeile; Discriminator bei Farbgleichheit.
-- [ ] Szenario-Test: Ränge folgen den Flächenanteilen; eigener Rang korrekt auch jenseits der Top 5.
-- [ ] CI grün inkl. Coverage (§9.7).
+- [x] `server`: Leaderboard **live aus dem Live-Zustand** (nur %), Top 5 + eigener Rang; keine Persistenz.
+- [x] `protocol`: kompakte Leaderboard-Update-Nachricht.
+- [x] `client`: HUD-Leaderboard; eigene Zeile hervorgehoben; Farb-Swatch je Zeile; Discriminator bei Farbgleichheit.
+- [x] Szenario-Test: Ränge folgen den Flächenanteilen; eigener Rang korrekt auch jenseits der Top 5.
+- [x] CI grün inkl. Coverage (§9.7) — alle Gates lokal grün (typecheck, lint, format, 330 Unit/Property, 15 Szenario, Coverage-Böden, 6 E2E).
 
 _Referenz: spec §2.5._
+
+## Answer
+
+Leaderboard über den ganzen Stack, abgeleitet statt gespeichert. Die Kernentscheidungen:
+
+- **Reine Ableitung im Sim-Core** (`sim-core/leaderboard.ts`): `standings(state)` ist eine Funktion über die Gebiete — nichts wird mitgezählt, nichts persistiert (ADR-0004: „live aus dem Speicher berechnet"). Damit ist die Rangliste automatisch konsistent mit dem, was Fill/Steal/Tod ohnehin am Zustand ändern.
+- **Die Ordnung entscheidet der _angezeigte_ Anteil, Gleichstand nach Spieler-ID.** Auf dem rohen Flächenwert wäre die Rangliste nicht reproduzierbar: eine frische Arena ist ein einziger Gleichstand (alle Startblöcke 36 WU²), und zwei gleich große Quadrate an verschiedenen Stellen unterscheiden sich im Shoelace in den letzten Float-Bits. Gleich aussehende Zeilen hätten dann grundlos die Plätze getauscht, und **kein** Beobachter (Client, Test, Replay) hätte die Ordnung nachrechnen können. Gerundet wird mit `LEADERBOARD_PERCENT_SCALE` — derselben Auflösung, die die Leitung trägt und das HUD druckt (eine Quelle in `shared`).
+- **Wire (`protocol`, Opcode 0x15):** `op | u8 count | rows[]`, Zeile = `u8 rank | u16 id | u16 Prozent-Hundertstel | u8 nameLen | name`. Höchstens `topN + 1` Zeilen. Prozent wird beim Encoden **geklemmt** (Float-Rauschen in einer Flächensumme ist kein Grund, einen Frame zu verwerfen), Anzahl und Rang außerhalb der Wire-Bereiche **werfen** (Server-Bug-Wächter, wie bei `encodeTerritory`). **Kein Versionsbump:** der Frame ist rein additiv server→client, und unbekannte Opcodes fallen beim Client per Vertrag auf `null` — ein Bump hätte nur jeden offenen Tab rausgeworfen.
+- **Der Name reist in der Zeile mit.** Das Leaderboard ist die erste Stelle, an der der Server einen Nickname überhaupt an *andere* Clients weitergibt. Ein leerer Name bekommt hier den Auto-Gastnamen aus spec §2.8 (`Gast-####`, nach Spieler-ID nummeriert) — eine blanke Zeile wäre kaputt, ein gemeinsames „Gast" für alle wäre kein Name. **Offen und bewusst außerhalb dieses Tickets:** Blockliste und Unicode-Filter (Ticket 13) greifen noch nicht; die Leitung deckelt bisher nur die Länge.
+- **Senden auf Änderung, nicht auf Takt** (`ArenaCore.broadcastLeaderboard`): alle `LIMITS.leaderboardIntervalTicks` (10 Ticks = 500 ms) wird die Tabelle abgeleitet und pro Empfänger der Frame gebaut — gesendet nur, wenn er sich **byteweise** von seinem letzten unterscheidet. Der Vergleich auf dem fertigen Frame dedupliziert damit exakt in der Auflösung, die der Spieler sehen kann; eine ruhige Arena kostet eine Ableitung pro halber Sekunde und **null Bytes**. Anteile ändern sich ohnehin nur, wenn sich Land ändert.
+- **HUD getrennt in Regel und DOM:** `client/game/leaderboard.ts` (rein, getestet) entscheidet Label, Swatch-Farbe, Prozenttext, Eigen-Zeile und Discriminator; `client/render/hud.ts` malt nur und baut das DOM **nur bei geänderter Revision** neu (dieselbe `rev`-Mechanik wie bei den Gebieten), nicht 60-mal pro Sekunde.
+- **Discriminator = Farbgleichheit, nicht Namensgleichheit** (spec §2.5 wörtlich): Nicknames sind nicht eindeutig, der **Swatch** ist das Unterscheidungsmerkmal — also braucht es die Nummer genau dort, wo der Swatch es nicht mehr leistet (Hue-Abstand < ~11°). `sameShownColor` liegt bei den Farben, nicht beim Leaderboard.
+- **Farbraum-Fund (Review):** Swatch und Plateau sollten „dieselbe Farbe" sein, waren es für Gegner aber nicht. `THREE.Color.setHSL` interpretiert im **Working Space** (linear-sRGB), der Eigen-Blau-Pfad (`setStyle`) dagegen in sRGB — die authored HSL-Werte kamen nach der linear→sRGB-Ausgabe pastellig heraus: `rgb(203,236,139)` im Bild gegen `rgb(153,215,66)` im Swatch (gemessen). Mit explizitem `SRGBColorSpace` stimmen beide exakt überein; Gegnerfarben in der Szene sind seitdem so gesättigt wie gemeint.
+- **Testschichten.** `protocol` (Property-Round-Trip, Golden-Bytes, 6 Malformed-/Klemm-Fälle), `sim-core/leaderboard.test.ts` (Ränge folgen Anteilen, Tie-Break, Rauschen unterhalb der Anzeige, voll besetzte Karte = 100 %, Property über disjunkte Gitter-Gebiete: Anteile nie negativ, Summe ≤ 100 %, Ränge 1…N, totale Ordnung — die Pflicht-Gattung aus spec §9.2), `server/arena.test.ts` (Ordnung + Namen + Prozent, angehängte Eigen-Zeile jenseits Top 5, **Stille** ohne Änderung, Leaver verschwindet, Gastname, nichts an nicht-gejointe Sockets), Client (Farbvergabe, View-Modell inkl. Discriminator auf dem echten Kollisionspaar 1↔11, Session-Revision), `tests/scenario/leaderboard.test.ts` (workerd + echte Sim-Clients: ein Fill hebt seinen Besitzer auf **beiden** Boards nach vorn; sieben Spieler, jedes Board gegen die aus den Gebiets-Syncs **unabhängig** abgeleitete Rangliste geprüft), `tests/e2e/leaderboard.spec.ts` (echtes DOM: hervorgehobene Eigen-Zeile, Swatch-Farbe, „0,09 %", zweiter Browser als Gegnerzeile).
+- **Beobachtung fürs spätere Balancing:** die Anteile sind früh winzig (ein Startblock ist 0,09 % einer 200-WU-Arena), das Board zeigt darum zwei Nachkommastellen. Sollte die Arena je mit der Spielerzahl skalieren, ist `percentDecimals` die eine Stellschraube (Rang, Wire und Anzeige hängen daran) — mehr als zwei Stellen sprengt allerdings das u16-Feld.
+- **Nicht in diesem Ticket:** die Farbvergabe selbst. Der Eigen-Blau-Bump erzeugt ein Paar (IDs 1 und 11), das im 3D-Bild nicht unterscheidbar ist — im HUD fängt der Discriminator es ab, in der Szene bleibt es. Als [Ticket 21](21-farbvergabe-kollisionen.md) zur Triage abgelegt, statt hier die Farben des ganzen Spiels umzustellen.

@@ -11,6 +11,8 @@
 import { BALANCE, type Point, type Territory } from '@paintclash/shared';
 import * as THREE from 'three';
 
+import { playerHue, PLAYER_LIGHTNESS, PLAYER_SATURATION, SELF_COLOR_CSS } from '../game/colors.js';
+
 import type { RenderState } from '../game/session.js';
 import {
   boundsOverlap,
@@ -42,21 +44,22 @@ const FILL_WAVE_MS = 450;
  */
 const CARVE_THROTTLE_MS = 50;
 
-/** Hue of the reserved own-player blue (0x2f7fe8 ≈ 214°). */
-const SELF_HUE = 0.594;
-
-function playerColor(id: number): THREE.Color {
-  // Stable, well-spread hues until `appearance` lands (ADR-0006 seam).
-  let hue = (id * 0.618034) % 1;
-  // Keep enemies clearly apart from the own-blue — id 1 lands almost
-  // exactly on it (verified in the two-player check: own vs. enemy were
-  // indistinguishable). Colliding hues get bumped past it.
-  if (Math.abs(hue - SELF_HUE) < 0.09) hue = (hue + 0.18) % 1;
-  return new THREE.Color().setHSL(hue, 0.65, 0.55);
-}
-
+/**
+ * Meshes and HUD swatches share one color mapping (game/colors.ts) — and
+ * must land in the same color SPACE to actually look alike. `setHSL` defaults
+ * to the working space (linear-sRGB), so the authored sRGB values would come
+ * out of the renderer's linear→sRGB pass washed out and pastel, while the own
+ * blue (a CSS string, hence sRGB by default) stayed saturated. Say sRGB.
+ */
 function headColor(playerId: number, selfId: number | null): THREE.Color {
-  return playerId === selfId ? new THREE.Color(0x2f7fe8) : playerColor(playerId);
+  return playerId === selfId
+    ? new THREE.Color(SELF_COLOR_CSS)
+    : new THREE.Color().setHSL(
+        playerHue(playerId),
+        PLAYER_SATURATION,
+        PLAYER_LIGHTNESS,
+        THREE.SRGBColorSpace,
+      );
 }
 
 /** Ease-out with a slight overshoot — the plateau "pops" up once. */

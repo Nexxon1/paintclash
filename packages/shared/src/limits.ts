@@ -62,6 +62,14 @@ export const LIMITS = Object.freeze({
    */
   tickMapMaxMarginTicks: 1.35,
   /**
+   * Ticks between two leaderboard broadcasts (ticket 08, spec §2.5). Shares
+   * only change when land does (fill, steal, death, join/leave), so the
+   * server sends on change — this is the pacing floor that keeps a busy
+   * arena from turning every fill into a per-client frame. 10 ticks = 500 ms,
+   * comfortably "live" for a number that moves in visible jumps.
+   */
+  leaderboardIntervalTicks: 10,
+  /**
    * Deepest rewind (ticket 07, ADR-0003): the server judges an actor's
    * cuts/head-ons against opponents at the tick the actor was rendering,
    * at most this many ticks back (500 ms — the genre's latency tolerance,

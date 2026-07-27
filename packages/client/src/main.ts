@@ -8,6 +8,7 @@ import { TICK_DT_MS } from '@paintclash/shared';
 
 import { KeyTracker } from './game/input.js';
 import { ClientSession } from './game/session.js';
+import { LeaderboardHud } from './render/hud.js';
 import { ArenaScene } from './render/scene.js';
 
 import type { RenderState } from './game/session.js';
@@ -31,6 +32,7 @@ const form = query('#join-form', HTMLFormElement);
 const nameInput = query('#name', HTMLInputElement);
 const status = query('#status', HTMLParagraphElement);
 const canvas = query('#game', HTMLCanvasElement);
+const leaderboard = new LeaderboardHud(query('#leaderboard', HTMLDivElement));
 
 const keys = new KeyTracker();
 window.addEventListener('keydown', (event) => {
@@ -133,6 +135,7 @@ function start(name: string): void {
     const renderState = session.renderSample(alpha, frameDtMs);
     if (window.__paintclash) window.__paintclash.lastRender = renderState;
     scene.update(renderState);
+    leaderboard.update(renderState.leaderboard, renderState.selfId);
     requestAnimationFrame(frame);
   };
   requestAnimationFrame(frame);

@@ -11,6 +11,7 @@ import {
   encodeJoin,
   MAX_INPUT_BATCH,
   type InputItem,
+  type LeaderboardRow,
   type ServerMessage,
   type SnapshotPlayer,
   type TerritoryReason,
@@ -53,6 +54,8 @@ export class SimClient {
   readonly deaths: DeathUpdate[] = [];
   /** Test hook: called for every death event. */
   onDeath: ((death: DeathUpdate) => void) | null = null;
+  /** Latest leaderboard as sent to THIS client (ticket 08): top N + own row. */
+  leaderboard: readonly LeaderboardRow[] = [];
 
   private readonly send: (frame: Uint8Array) => void;
   private readonly name: string;
@@ -98,6 +101,11 @@ export class SimClient {
       this.trails.delete(message.victimId);
       this.deaths.push(message);
       this.onDeath?.(message);
+      return;
+    }
+    if (message.type === 'leaderboard') {
+      // A board replaces the previous one wholesale (spec §2.5).
+      this.leaderboard = message.rows;
       return;
     }
     if (this.snapshot && message.tick <= this.snapshot.tick) return;

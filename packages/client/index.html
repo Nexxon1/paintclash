@@ -56,10 +56,72 @@
         color: #5b6672;
         margin: 0.75rem 0 0;
       }
+      /* Live leaderboard (spec §2.5): top 5 + the own, highlighted row. */
+      #leaderboard {
+        position: fixed;
+        top: 1rem;
+        right: 1rem;
+        min-width: 13rem;
+        padding: 0.5rem 0.6rem;
+        border-radius: 10px;
+        background: rgba(255, 255, 255, 0.82);
+        box-shadow: 0 4px 16px rgba(20, 28, 38, 0.18);
+        font-size: 0.85rem;
+        color: #2b3540;
+        user-select: none;
+      }
+      #leaderboard h2 {
+        margin: 0 0 0.35rem;
+        font-size: 0.7rem;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: #6b7684;
+      }
+      .leaderboard-rows {
+        margin: 0;
+        padding: 0;
+        list-style: none;
+        display: grid;
+        gap: 0.15rem;
+      }
+      .leaderboard-rows .row {
+        display: grid;
+        grid-template-columns: 1.3rem 0.7rem 1fr auto;
+        align-items: center;
+        gap: 0.4rem;
+        padding: 0.15rem 0.3rem;
+        border-radius: 6px;
+      }
+      .leaderboard-rows .row.self {
+        background: rgba(47, 127, 232, 0.16);
+        font-weight: 600;
+      }
+      .leaderboard-rows .rank {
+        color: #6b7684;
+        text-align: right;
+        font-variant-numeric: tabular-nums;
+      }
+      .leaderboard-rows .swatch {
+        width: 0.7rem;
+        height: 0.7rem;
+        border-radius: 3px;
+        box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.15);
+      }
+      .leaderboard-rows .name {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .leaderboard-rows .percent {
+        font-variant-numeric: tabular-nums;
+      }
     </style>
   </head>
   <body>
     <canvas id="game"></canvas>
+    <div id="leaderboard" hidden>
+      <h2>Leaderboard</h2>
+    </div>
     <div id="overlay">
       <div class="card">
         <h1>paintclash</h1>

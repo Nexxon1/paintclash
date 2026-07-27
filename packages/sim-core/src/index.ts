@@ -7,6 +7,7 @@ export { detectDeaths, type Death, type DeathContext } from './collision.js';
 export { closeLoop, type FillOutcome } from './fill.js';
 export { pointInTerritory, territoryArea } from './geometry.js';
 export { type RewoundView } from './history.js';
+export { standings, type Standing } from './leaderboard.js';
 export { nextRandom, seedRng, type RngState } from './rng.js';
 export {
   cloneSimState,

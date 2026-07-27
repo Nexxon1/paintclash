@@ -13,7 +13,15 @@
  * simply sent on interest-entry instead of join.
  */
 
-import type { DeathCause, Point, Ring, Territory, TurnSignal } from '@paintclash/shared';
+import {
+  BALANCE,
+  LEADERBOARD_PERCENT_SCALE,
+  type DeathCause,
+  type Point,
+  type Ring,
+  type Territory,
+  type TurnSignal,
+} from '@paintclash/shared';
 
 export type { DeathCause };
 
@@ -37,6 +45,12 @@ export const MAX_CLIENT_FRAME_BYTES = 128;
  */
 export const MAX_TRAIL_POINTS = 0xffff;
 
+/**
+ * Rows one leaderboard frame may carry: the global top N plus the recipient's
+ * own row when it ranks below them (spec §2.5).
+ */
+export const MAX_LEADERBOARD_ROWS = BALANCE.leaderboard.topN + 1;
+
 const OP_JOIN = 0x01;
 const OP_INPUT = 0x02;
 const OP_WELCOME = 0x10;
@@ -44,8 +58,18 @@ const OP_SNAPSHOT = 0x11;
 const OP_TERRITORY = 0x12;
 const OP_TRAIL = 0x13;
 const OP_DEATH = 0x14;
+const OP_LEADERBOARD = 0x15;
 
 const DEATH_FRAME_BYTES = 6; // op + u16 victim + u16 killer + u8 cause
+
+const LEADERBOARD_HEADER_BYTES = 2; // op + u8 row count
+const LEADERBOARD_ROW_BYTES = 6; // u8 rank + u16 id + u16 pct + u8 nameLen
+/**
+ * Percent resolution on the wire is the shared one (the digits the HUD shows
+ * and the ranking is decided at). At two decimals the full range 0…100.00 %
+ * is 0…10 000, well inside u16; a third decimal would need a wider field.
+ */
+const MAX_PERCENT_WIRE = 100 * LEADERBOARD_PERCENT_SCALE;
 
 const INPUT_ITEM_BYTES = 5; // u32 seq + i8 turn
 const INPUT_HEADER_BYTES = 6; // op + u8 count + u32 viewTick
@@ -69,6 +93,20 @@ export interface SnapshotPlayer {
 /** Why a territory message was sent — 'fill' additionally clears the trail. */
 export type TerritoryReason = 'sync' | 'fill';
 
+/**
+ * One leaderboard row (spec §2.5). The metric is exclusively the share of the
+ * map; the name rides along because the leaderboard is the only place the
+ * server reveals a nickname (ticket 13 owns the naming policy itself).
+ */
+export interface LeaderboardRow {
+  /** 1-based global rank. Fits a byte: ranks never exceed `maxConnections`. */
+  rank: number;
+  playerId: number;
+  /** Share of the arena in percent (0…100), wire-quantized to hundredths. */
+  areaPct: number;
+  name: string;
+}
+
 export type ClientMessage =
   | { type: 'join'; version: number; name: string }
   | {
@@ -88,7 +126,8 @@ export type ServerMessage =
   | { type: 'snapshot'; tick: number; ackSeq: number; players: SnapshotPlayer[] }
   | { type: 'territory'; playerId: number; reason: TerritoryReason; territory: Territory }
   | { type: 'trail'; playerId: number; points: Point[] }
-  | { type: 'death'; victimId: number; killerId: number; cause: DeathCause };
+  | { type: 'death'; victimId: number; killerId: number; cause: DeathCause }
+  | { type: 'leaderboard'; rows: LeaderboardRow[] };
 
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder('utf-8', { fatal: false, ignoreBOM: false });
@@ -260,6 +299,37 @@ export function encodeDeath(victimId: number, killerId: number, cause: DeathCaus
 }
 
 /**
+ * One recipient's view of the global ranking (spec §2.5): the top rows plus,
+ * appended, the recipient's own row when it ranks below them. Sent whole —
+ * the client replaces its board, never merges. Percent is clamped into
+ * [0, 100] (float noise in an area sum is not worth a dropped frame), while
+ * a row count or rank out of wire range is a server bug and throws.
+ */
+export function encodeLeaderboard(rows: readonly LeaderboardRow[]): Uint8Array {
+  if (rows.length > MAX_LEADERBOARD_ROWS) throw new RangeError('leaderboard row count exceeds cap');
+  const names = rows.map((row) => textEncoder.encode(capName(row.name)));
+  let size = LEADERBOARD_HEADER_BYTES;
+  for (const name of names) size += LEADERBOARD_ROW_BYTES + name.length;
+  const frame = new Uint8Array(size);
+  const view = new DataView(frame.buffer);
+  frame[0] = OP_LEADERBOARD;
+  frame[1] = rows.length;
+  let offset = LEADERBOARD_HEADER_BYTES;
+  rows.forEach((row, i) => {
+    const name = names[i] ?? new Uint8Array();
+    if (row.rank < 1 || row.rank > 0xff) throw new RangeError('leaderboard rank exceeds u8');
+    frame[offset] = row.rank;
+    view.setUint16(offset + 1, row.playerId, true);
+    const pct = Math.round(row.areaPct * LEADERBOARD_PERCENT_SCALE);
+    view.setUint16(offset + 3, Math.min(MAX_PERCENT_WIRE, Math.max(0, pct)), true);
+    frame[offset + 5] = name.length;
+    frame.set(name, offset + LEADERBOARD_ROW_BYTES);
+    offset += LEADERBOARD_ROW_BYTES + name.length;
+  });
+  return frame;
+}
+
+/**
  * Decode a frame arriving *from* a client. Returns `null` on anything that
  * is not a perfectly-formed frame — wrong opcode, wrong length, out-of-range
  * values — so the server can drop it without a try/catch.
@@ -386,6 +456,34 @@ export function decodeServerMessage(frame: Uint8Array): ServerMessage | null {
         points.push([view.getFloat32(offset, true), view.getFloat32(offset + 4, true)]);
       }
       return { type: 'trail', playerId: view.getUint16(1, true), points };
+    }
+    case OP_LEADERBOARD: {
+      if (frame.length < LEADERBOARD_HEADER_BYTES) return null;
+      const count = view.getUint8(1);
+      if (count > MAX_LEADERBOARD_ROWS) return null;
+      const rows: LeaderboardRow[] = [];
+      let offset = LEADERBOARD_HEADER_BYTES;
+      for (let i = 0; i < count; i++) {
+        if (offset + LEADERBOARD_ROW_BYTES > frame.length) return null;
+        const rank = view.getUint8(offset);
+        if (rank < 1) return null; // ranks are 1-based (spec §2.5)
+        const pct = view.getUint16(offset + 3, true);
+        if (pct > MAX_PERCENT_WIRE) return null;
+        const nameLen = view.getUint8(offset + 5);
+        const nameStart = offset + LEADERBOARD_ROW_BYTES;
+        if (nameLen > MAX_NAME_BYTES || nameStart + nameLen > frame.length) return null;
+        const name = textDecoder.decode(frame.subarray(nameStart, nameStart + nameLen));
+        if (Array.from(name).length > MAX_NAME_CHARS) return null;
+        rows.push({
+          rank,
+          playerId: view.getUint16(offset + 1, true),
+          areaPct: pct / LEADERBOARD_PERCENT_SCALE,
+          name,
+        });
+        offset = nameStart + nameLen;
+      }
+      if (offset !== frame.length) return null;
+      return { type: 'leaderboard', rows };
     }
     case OP_DEATH: {
       if (frame.length !== DEATH_FRAME_BYTES) return null;

@@ -64,7 +64,30 @@ export const BALANCE = Object.freeze({
      */
     minFillAreaWU2: 0.01,
   }),
+  /** Leaderboard (spec §2.5) — the global live ranking's shape. */
+  leaderboard: Object.freeze({
+    /**
+     * Rows every client sees. The own row is appended when it ranks below
+     * them, so a client is shown at most `topN + 1` rows.
+     */
+    topN: 5,
+    /**
+     * Decimals the share is shown (and transmitted) with. Also the
+     * resolution the RANKING is decided at: two players whose shares look
+     * identical are ordered by id, not by float noise below the last shown
+     * digit — otherwise equal-looking rows would swap places at random.
+     * Two decimals: a 6×6 start block in the 200 WU arena is 0,09 %.
+     */
+    percentDecimals: 2,
+  }),
 });
+
+/**
+ * Integer resolution of a leaderboard share: `areaPct × this` is the number
+ * the ranking compares, the wire carries and the HUD prints. One source, so
+ * ranking, transport and display can never drift apart (spec §5.1/§2.5).
+ */
+export const LEADERBOARD_PERCENT_SCALE = 10 ** BALANCE.leaderboard.percentDecimals;
 
 /** Simulation tickrate (spec §6.2): 20 Hz — the splix-proven sweet spot. */
 export const TICK_HZ = 20;

@@ -2,6 +2,7 @@ import { BALANCE, type Territory } from '@paintclash/shared';
 import {
   decodeClientMessage,
   encodeDeath,
+  encodeLeaderboard,
   encodeSnapshot,
   encodeTerritory,
   encodeTrail,
@@ -157,6 +158,25 @@ describe('snapshots feed reconciliation + interpolation', () => {
     state = session.renderSample(1);
     const after = state.territories.find((t) => t.playerId === 2)?.rev;
     expect(after).toBe((before ?? 0) + 1);
+  });
+
+  it('surfaces the leaderboard with a revision that bumps per board (ticket 08)', () => {
+    const { session } = harness();
+    joined(session);
+    expect(session.renderSample(1).leaderboard).toEqual({ rev: 0, rows: [] });
+    session.receive(
+      encodeLeaderboard([
+        { rank: 1, playerId: 2, areaPct: 4, name: 'Bo' },
+        { rank: 2, playerId: 1, areaPct: 1, name: 'tester' },
+      ]),
+    );
+    const board = session.renderSample(1).leaderboard;
+    expect(board.rev).toBe(1);
+    expect(board.rows.map((r) => r.playerId)).toEqual([2, 1]);
+    // Sampling again does not drain it — the board stands until replaced.
+    expect(session.renderSample(1).leaderboard).toEqual(board);
+    session.receive(encodeLeaderboard([{ rank: 1, playerId: 1, areaPct: 9, name: 'tester' }]));
+    expect(session.renderSample(1).leaderboard.rev).toBe(2);
   });
 
   it('reports growing fills once, for the wave animation', () => {

@@ -745,6 +745,138 @@ describe('leave', () => {
   });
 });
 
+describe('leaderboard broadcast (ticket 08, spec §2.5)', () => {
+  /**
+   * White-box (same pattern as the steal tests): give a player a square of
+   * `edgeWU` centered on its head — land it owns without ever leaving it, so
+   * the share under test cannot be disturbed by trails, fills or deaths.
+   */
+  function ownSquare(arena: ArenaCore, id: number, edgeWU: number): void {
+    const { state } = arena as unknown as { state: SimState };
+    const p = state.players.find((q) => q.id === id);
+    if (!p) throw new Error('player not spawned');
+    const half = edgeWU / 2;
+    p.territory = [
+      [
+        [
+          [p.x - half, p.y - half],
+          [p.x + half, p.y - half],
+          [p.x + half, p.y + half],
+          [p.x - half, p.y + half],
+        ],
+      ],
+    ];
+  }
+
+  function runTicks(arena: ArenaCore, ticks: number): void {
+    for (let i = 0; i < ticks; i++) arena.tick(TICK_DT_SEC);
+  }
+
+  function boards(socket: FakeSocket): Extract<ServerMessage, { type: 'leaderboard' }>[] {
+    return socket.decoded().filter((m) => m.type === 'leaderboard');
+  }
+
+  function lastBoard(socket: FakeSocket): Extract<ServerMessage, { type: 'leaderboard' }> {
+    const all = boards(socket);
+    const last = all[all.length - 1];
+    if (!last) throw new Error('no leaderboard received');
+    return last;
+  }
+
+  /** Joined, spawned players, ready to have their land poised. */
+  function arenaOf(names: readonly string[]): {
+    arena: ArenaCore;
+    players: { socket: FakeSocket; id: number }[];
+  } {
+    const arena = new ArenaCore(1);
+    const players = names.map((name) => joinedPlayer(arena, name));
+    arena.tick(TICK_DT_SEC);
+    return { arena, players };
+  }
+
+  it('ranks the arena by share of the map, biggest first, with names and percent', () => {
+    const { arena, players } = arenaOf(['Ada', 'Bo']);
+    const [ada, bo] = players;
+    if (!ada || !bo) throw new Error('players missing');
+    // 200 × 200 WU arena: a 20 WU square is 1 %, a 40 WU square 4 %.
+    ownSquare(arena, ada.id, 20);
+    ownSquare(arena, bo.id, 40);
+    runTicks(arena, LIMITS.leaderboardIntervalTicks);
+    expect(lastBoard(ada.socket).rows).toEqual([
+      { rank: 1, playerId: bo.id, areaPct: 4, name: 'Bo' },
+      { rank: 2, playerId: ada.id, areaPct: 1, name: 'Ada' },
+    ]);
+    // Everyone sees the same global ranking (spec §2.5).
+    expect(lastBoard(bo.socket).rows).toEqual(lastBoard(ada.socket).rows);
+  });
+
+  it('appends the own row for a player ranked below the top five', () => {
+    const names = Array.from({ length: 7 }, (_, i) => `P${String(i + 1)}`);
+    const { arena, players } = arenaOf(names);
+    // Strictly growing squares: the first player is last, the last is first.
+    players.forEach((p, i) => {
+      ownSquare(arena, p.id, 10 + 2 * i);
+    });
+    runTicks(arena, LIMITS.leaderboardIntervalTicks);
+
+    const trailing = players[0];
+    const leader = players[6];
+    if (!trailing || !leader) throw new Error('players missing');
+    const board = lastBoard(trailing.socket);
+    expect(board.rows.map((r) => r.rank)).toEqual([1, 2, 3, 4, 5, 7]);
+    expect(board.rows.map((r) => r.playerId).slice(0, 5)).toEqual(
+      players
+        .slice(2)
+        .reverse()
+        .map((p) => p.id),
+    );
+    expect(board.rows[5]).toMatchObject({ rank: 7, playerId: trailing.id, name: 'P1' });
+    // A player already in the top five gets no appended duplicate.
+    const leaderBoard = lastBoard(leader.socket);
+    expect(leaderBoard.rows).toHaveLength(BALANCE.leaderboard.topN);
+    expect(leaderBoard.rows[0]).toMatchObject({ rank: 1, playerId: leader.id });
+  });
+
+  it('stays silent while no share changed — no standing per-tick overhead', () => {
+    const { arena, players } = arenaOf(['Ada', 'Bo']);
+    const [ada] = players;
+    if (!ada) throw new Error('player missing');
+    runTicks(arena, LIMITS.leaderboardIntervalTicks);
+    const seen = boards(ada.socket).length;
+    expect(seen).toBeGreaterThan(0);
+    runTicks(arena, 4 * LIMITS.leaderboardIntervalTicks);
+    expect(boards(ada.socket)).toHaveLength(seen);
+  });
+
+  it('drops a player who left from the board', () => {
+    const { arena, players } = arenaOf(['Ada', 'Bo']);
+    const [ada, bo] = players;
+    if (!ada || !bo) throw new Error('players missing');
+    runTicks(arena, LIMITS.leaderboardIntervalTicks);
+    expect(lastBoard(ada.socket).rows).toHaveLength(2);
+    arena.disconnect(bo.id);
+    runTicks(arena, LIMITS.leaderboardIntervalTicks);
+    expect(lastBoard(ada.socket).rows.map((r) => r.playerId)).toEqual([ada.id]);
+  });
+
+  it('gives a blank join name the numbered auto-guest name (spec §2.8)', () => {
+    const { arena, players } = arenaOf(['   ']);
+    const [guest] = players;
+    if (!guest) throw new Error('player missing');
+    runTicks(arena, LIMITS.leaderboardIntervalTicks);
+    // Not a blank row, and not one shared "Gast" for everyone either.
+    expect(lastBoard(guest.socket).rows[0]?.name).toBe(`Gast-${String(guest.id).padStart(4, '0')}`);
+  });
+
+  it('never sends the board to a socket that has not joined (spec §8.2)', () => {
+    const { arena } = arenaOf(['Ada']);
+    const lurker = new FakeSocket();
+    arena.connect(lurker);
+    runTicks(arena, 2 * LIMITS.leaderboardIntervalTicks);
+    expect(boards(lurker)).toHaveLength(0);
+  });
+});
+
 describe('rewind view tracking (ticket 07)', () => {
   /** White-box peek at the sim (same pattern as the steal tests above). */
   function simPlayer(arena: ArenaCore, id: number): { viewDelayTicks: number } {

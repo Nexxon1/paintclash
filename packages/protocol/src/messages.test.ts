@@ -8,15 +8,19 @@ import {
   encodeDeath,
   encodeInput,
   encodeJoin,
+  encodeLeaderboard,
   encodeSnapshot,
   encodeTerritory,
   encodeTrail,
   encodeWelcome,
   MAX_CLIENT_FRAME_BYTES,
   MAX_INPUT_BATCH,
+  MAX_LEADERBOARD_ROWS,
   MAX_NAME_BYTES,
+  MAX_NAME_CHARS,
   MAX_TRAIL_POINTS,
   PROTOCOL_VERSION,
+  type LeaderboardRow,
   type SnapshotPlayer,
 } from './index.js';
 
@@ -136,6 +140,28 @@ describe('round-trip (decode ∘ encode = id, spec §9.1)', () => {
         (victimId, killerId, cause) => {
           const decoded = decodeServerMessage(encodeDeath(victimId, killerId, cause));
           expect(decoded).toEqual({ type: 'death', victimId, killerId, cause });
+        },
+      ),
+    );
+  });
+
+  it('leaderboard', () => {
+    fc.assert(
+      fc.property(
+        fc.array(
+          fc.record({
+            rank: fc.integer({ min: 1, max: 0xff }),
+            playerId: fc.integer({ min: 0, max: 0xffff }),
+            // The wire carries hundredths of a percent — generate exactly
+            // that grid, so the round-trip is identity and not "≈".
+            areaPct: fc.integer({ min: 0, max: 10000 }).map((hundredths) => hundredths / 100),
+            name: fc.string({ maxLength: 16 }),
+          }),
+          { maxLength: MAX_LEADERBOARD_ROWS },
+        ),
+        (rows: LeaderboardRow[]) => {
+          const decoded = decodeServerMessage(encodeLeaderboard(rows));
+          expect(decoded).toEqual({ type: 'leaderboard', rows });
         },
       ),
     );
@@ -310,6 +336,24 @@ describe('golden bytes (wire format pinned, spec §9.1)', () => {
       0x09,
       0x00, // killerId
       0x02, // cause totalLoss
+    ]);
+  });
+
+  it('leaderboard, one row: rank 1, player 3, 12.5 %, "Ada"', () => {
+    expect(
+      Array.from(encodeLeaderboard([{ rank: 1, playerId: 3, areaPct: 12.5, name: 'Ada' }])),
+    ).toEqual([
+      0x15, // opcode
+      0x01, // row count
+      0x01, // rank
+      0x03,
+      0x00, // playerId
+      0xe2,
+      0x04, // 1250 hundredths of a percent
+      0x03, // name length
+      0x41,
+      0x64,
+      0x61, // "Ada"
     ]);
   });
 });
@@ -507,5 +551,75 @@ describe('malformed frames are rejected, never thrown (spec §8.2)', () => {
     if (decoded?.type !== 'trail') throw new Error('expected a trail');
     expect(decoded.points).toHaveLength(MAX_TRAIL_POINTS);
     expect(decoded.points[decoded.points.length - 1]?.[0]).toBe(Math.fround(MAX_TRAIL_POINTS + 4));
+  });
+
+  it('an empty leaderboard round-trips (arena ran empty)', () => {
+    expect(decodeServerMessage(encodeLeaderboard([]))).toEqual({ type: 'leaderboard', rows: [] });
+  });
+
+  it('rejects a leaderboard claiming more rows than the wire allows', () => {
+    const frame = new Uint8Array([0x15, MAX_LEADERBOARD_ROWS + 1]);
+    expect(decodeServerMessage(frame)).toBeNull();
+  });
+
+  it('rejects leaderboard rows that are truncated, 0-ranked, over 100 % or trailed by garbage', () => {
+    const row: LeaderboardRow = { rank: 2, playerId: 4, areaPct: 3.25, name: 'Bo' };
+    const ok = encodeLeaderboard([row]);
+    expect(decodeServerMessage(ok.subarray(0, ok.length - 1))).toBeNull();
+    expect(decodeServerMessage(new Uint8Array([...ok, 0xde]))).toBeNull();
+    const zeroRank = new Uint8Array(ok);
+    zeroRank[2] = 0;
+    expect(decodeServerMessage(zeroRank)).toBeNull();
+    const overFull = new Uint8Array(ok);
+    new DataView(overFull.buffer).setUint16(5, 10001, true);
+    expect(decodeServerMessage(overFull)).toBeNull();
+    const longName = new Uint8Array(ok);
+    longName[7] = MAX_NAME_BYTES + 1;
+    expect(decodeServerMessage(longName)).toBeNull();
+  });
+
+  it('rejects a leaderboard name that overflows the code-point cap', () => {
+    // 17 single-byte characters pass the byte cap but not the char cap.
+    const name = 'x'.repeat(MAX_NAME_CHARS + 1);
+    const bytes = new TextEncoder().encode(name);
+    const frame = new Uint8Array([
+      0x15,
+      0x01,
+      0x01,
+      0x01,
+      0x00,
+      0x00,
+      0x00,
+      bytes.length,
+      ...bytes,
+    ]);
+    expect(decodeServerMessage(frame)).toBeNull();
+  });
+
+  it('encodeLeaderboard refuses more rows than the wire allows and out-of-range ranks', () => {
+    const row: LeaderboardRow = { rank: 1, playerId: 1, areaPct: 1, name: 'a' };
+    const tooMany = Array.from({ length: MAX_LEADERBOARD_ROWS + 1 }, () => row);
+    expect(() => encodeLeaderboard(tooMany)).toThrow(RangeError);
+    expect(() => encodeLeaderboard([{ ...row, rank: 0 }])).toThrow(RangeError);
+    expect(() => encodeLeaderboard([{ ...row, rank: 256 }])).toThrow(RangeError);
+  });
+
+  it('encodeLeaderboard clamps percent noise instead of dropping the frame', () => {
+    const decoded = decodeServerMessage(
+      encodeLeaderboard([
+        { rank: 1, playerId: 1, areaPct: 100.000001, name: 'over' },
+        { rank: 2, playerId: 2, areaPct: -0.0001, name: 'under' },
+      ]),
+    );
+    if (decoded?.type !== 'leaderboard') throw new Error('expected a leaderboard');
+    expect(decoded.rows.map((r) => r.areaPct)).toEqual([100, 0]);
+  });
+
+  it('encodeLeaderboard caps an overlong name like every other wire name', () => {
+    const decoded = decodeServerMessage(
+      encodeLeaderboard([{ rank: 1, playerId: 1, areaPct: 0, name: '🦑'.repeat(40) }]),
+    );
+    if (decoded?.type !== 'leaderboard') throw new Error('expected a leaderboard');
+    expect(Array.from(decoded.rows[0]?.name ?? '')).toHaveLength(MAX_NAME_CHARS);
   });
 });
