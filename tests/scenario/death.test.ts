@@ -7,6 +7,7 @@ import {
   type TurnSignal,
 } from '@paintclash/shared';
 import { SimClient, type DeathUpdate } from '@paintclash/sim-client';
+import { pointInTerritory } from '@paintclash/sim-core';
 import { describe, expect, it } from 'vitest';
 
 /** Head travel per tick — 0.45 WU at the spec §10 start values. */
@@ -75,6 +76,108 @@ function steerToward(self: Pose, target: Point): TurnSignal {
   const diff = shortestArc(self.heading, bearing);
   if (Math.abs(diff) < 0.06) return 0;
   return diff > 0 ? 1 : -1;
+}
+
+/** Poll until it holds; a miss is the caller's to interpret, not a throw. */
+async function waitFor(probe: () => boolean, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    if (probe()) return true;
+    if (Date.now() > deadline) return false;
+    await sleep(25);
+  }
+}
+
+/** Vertex average of a territory's first ring — good enough as a home point. */
+function ringCenter(territory: Territory): Point {
+  const ring = territory[0]?.[0] ?? [];
+  let cx = 0;
+  let cy = 0;
+  for (const [x, y] of ring) {
+    cx += x / ring.length;
+    cy += y / ring.length;
+  }
+  return [cx, cy];
+}
+
+interface Bounds {
+  minX: number;
+  minY: number;
+  maxX: number;
+  maxY: number;
+}
+
+function bounds(territory: Territory): Bounds {
+  const b: Bounds = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
+  for (const poly of territory) {
+    for (const ring of poly) {
+      for (const [x, y] of ring) {
+        b.minX = Math.min(b.minX, x);
+        b.minY = Math.min(b.minY, y);
+        b.maxX = Math.max(b.maxX, x);
+        b.maxY = Math.max(b.maxY, y);
+      }
+    }
+  }
+  return b;
+}
+
+function centerOf(b: Bounds): Point {
+  return [(b.minX + b.maxX) / 2, (b.minY + b.maxY) / 2];
+}
+
+function corners(b: Bounds): Point[] {
+  return [
+    [b.minX, b.minY],
+    [b.maxX, b.minY],
+    [b.maxX, b.maxY],
+    [b.minX, b.maxY],
+  ];
+}
+
+/**
+ * The box a start block is widened into: `margin` WU out on every side, kept
+ * just inside the walls so all four corners are flyable. Flown as a closed
+ * loop it fills to ~250 WU² — room for a parked orbit to run WU clear of any
+ * edge, which a bare 6 WU block does not have.
+ */
+function boxAround(block: Bounds, arenaSizeWU: number, margin = 5): Bounds {
+  const inside = (v: number): number => Math.min(arenaSizeWU - 1, Math.max(1, v));
+  return {
+    minX: inside(block.minX - margin),
+    minY: inside(block.minY - margin),
+    maxX: inside(block.maxX + margin),
+    maxY: inside(block.maxY + margin),
+  };
+}
+
+/** Waypoint autopilot; keeps steering at the last waypoint (loiter). */
+class WaypointPilot {
+  private waypoints: Point[] = [];
+  private index = 0;
+
+  constructor(private readonly arenaSizeWU: number) {}
+
+  fly(waypoints: Point[]): void {
+    this.waypoints = waypoints;
+    this.index = 0;
+  }
+
+  steer(self: Pose): TurnSignal {
+    let target = this.waypoints[this.index];
+    while (target && this.index < this.waypoints.length - 1 && this.reached(self, target)) {
+      this.index += 1;
+      target = this.waypoints[this.index];
+    }
+    return target ? steerToward(self, target) : 0;
+  }
+
+  /** Reach-check against the waypoint clamped into the arena (wall-pinned). */
+  private reached(self: Pose, target: Point): boolean {
+    const cx = Math.min(this.arenaSizeWU, Math.max(0, target[0]));
+    const cy = Math.min(this.arenaSizeWU, Math.max(0, target[1]));
+    return Math.hypot(cx - self.x, cy - self.y) < 2;
+  }
 }
 
 /** A death stamped with the newest tick known when its frame arrived. */
@@ -221,64 +324,129 @@ describe('death over the real wire (ticket 05)', () => {
     }
   });
 
-  it('attacking a head parked on its own land kills only the attacker (eigenes Gebiet = sicher)', async () => {
-    const attacker = await connect('attacker');
-    const defender = await connect('defender');
-    try {
-      await until(() => attacker.client.self(), 'attacker spawn');
-      await until(() => defender.client.self(), 'defender spawn');
-      const attackerId = attacker.client.playerId ?? -1;
-      const defenderId = defender.client.playerId ?? -1;
-      const deaths = trackDeaths(defender.client);
+  it(
+    'attacking a head parked on its own land kills only the attacker (eigenes Gebiet = sicher)',
+    // Budget per attempt = the stage waits below (40 + 15 + 60 s), and a missed
+    // premise buys one more — the timeout has to clear 2 × 115 s, or the retry
+    // would die as an opaque test timeout instead of reporting itself.
+    { timeout: 240_000 },
+    async () => {
+      const attacker = await connect('attacker');
+      const defender = await connect('defender');
+      try {
+        await until(() => attacker.client.self(), 'attacker spawn');
+        await until(() => defender.client.self(), 'defender spawn');
+        const attackerId = attacker.client.playerId ?? -1;
+        const defenderId = defender.client.playerId ?? -1;
+        const size = defender.client.arenaSizeWU ?? BALANCE.arena.sizeWU;
 
-      // Defender station-keeps around its block center: bang-bang pursuit
-      // of a static point loiters on a turn-radius circle (r ≈ 1.6 WU) —
-      // always inside the 6×6 block, so it never grows a trail and stays
-      // on own land (= safe, spec §2.1).
-      const home = await until(
-        () => defender.client.territories.get(defenderId),
-        "defender's own block",
-      );
-      const center = ringCenter(home);
-      defender.client.onSnapshot = (snapshot) => {
-        const self = snapshot.players.find((p) => p.id === defenderId);
-        if (!self) return;
-        defender.client.queueTurn(steerToward(self, center));
-        defender.client.flush();
-      };
-      // Attacker homes straight onto the defender's head.
-      attacker.client.onSnapshot = (snapshot) => {
-        const self = snapshot.players.find((p) => p.id === attackerId);
-        const foe = snapshot.players.find((p) => p.id === defenderId);
-        if (!self || !foe) return;
-        attacker.client.queueTurn(steerToward(self, [foe.x, foe.y]));
-        attacker.client.flush();
-      };
+        // "Parked on its own land" is the PREMISE of the rule under test — and
+        // a state the defender has to earn. A head never stands still: it
+        // loiters on a turn-radius circle 3.2 WU across, which does not fit
+        // inside a 6 WU start block from its center, so the orbit pokes past
+        // the edge. Out there the defender grows a cuttable trail and is no
+        // longer safe for a head-on either. Those pokes do fill themselves
+        // back in, but they heal to exactly the orbit — leaving the head
+        // running along its own boundary forever. So widen the home with one
+        // box loop FIRST, then park deep inside it.
+        const pilot = new WaypointPilot(size);
+        const ORBIT_TICKS = 25; // one revolution: 2πr / 0.45 WU per tick ≈ 23
 
-      const death = await until(() => deaths[0], 'the attacker dying at the block');
-      expect(death.victimId).toBe(attackerId);
-      expect(death.killerId).toBe(defenderId);
-      // Usually the pure head-on band (0.5–1 WU); a fast final closing step
-      // can land inside 0.5 WU of the attacker's own head-glued trail end,
-      // where the safe head's touch counts as the cut instead — same
-      // outcome, both rules unit-tested precisely in sim-core.
-      expect(['headOn', 'trailCut']).toContain(death.cause);
-      // The parked defender never died.
-      expect(deaths.some((d) => d.victimId === defenderId)).toBe(false);
-    } finally {
-      attacker.ws.close();
-      defender.ws.close();
-    }
+        /** Consecutive snapshots with the defender's head on its own land. */
+        let safeStreak = 0;
+        defender.client.onSnapshot = (snapshot) => {
+          const self = snapshot.players.find((p) => p.id === defenderId);
+          if (!self) return;
+          const land = defender.client.territories.get(defenderId) ?? [];
+          safeStreak = pointInTerritory(self.x, self.y, land) ? safeStreak + 1 : 0;
+          defender.client.queueTurn(pilot.steer(self));
+          defender.client.flush();
+        };
+        // Deaths as the defender's connection sees them, each stamped with
+        // whether the defender was settled when it landed.
+        const deaths: (StampedDeath & { settled: boolean })[] = [];
+        defender.client.onDeath = (death) => {
+          deaths.push({
+            ...death,
+            tick: defender.client.snapshot?.tick ?? -1,
+            settled: safeStreak >= ORBIT_TICKS,
+          });
+        };
+        // The attacker loiters on its own block until the defender is parked,
+        // then homes straight onto its head.
+        let charging = false;
+        attacker.client.onSnapshot = (snapshot) => {
+          const self = snapshot.players.find((p) => p.id === attackerId);
+          if (!self) return;
+          const foe = snapshot.players.find((p) => p.id === defenderId);
+          const own = attacker.client.territories.get(attackerId) ?? [];
+          const target: Point = charging && foe ? [foe.x, foe.y] : ringCenter(own);
+          attacker.client.queueTurn(steerToward(self, target));
+          attacker.client.flush();
+        };
 
-    function ringCenter(territory: Territory): Point {
-      const ring = territory[0]?.[0] ?? [];
-      let cx = 0;
-      let cy = 0;
-      for (const [x, y] of ring) {
-        cx += x / ring.length;
-        cy += y / ring.length;
+        // Two attempts. Anything that misses the premise — a self-cut on the
+        // widening loop, a park spot the orbit cannot hold, a defender death
+        // from a trail it had outside — is the choreography failing, not the
+        // rule, and buys another attempt from the fresh state. A defender death
+        // while it WAS settled is the regression this test guards: it falls
+        // through to the assertions and fails there, loudly.
+        let death: (StampedDeath & { settled: boolean }) | null = null;
+        for (let attempt = 0; attempt < 2 && death === null; attempt++) {
+          charging = false;
+          const ownDeaths = (): number =>
+            defender.client.deaths.filter((d) => d.victimId === defenderId).length;
+          const before = ownDeaths();
+
+          // 1. Widen the home: one box loop around the start block, closed on
+          //    the block itself, so the fill takes the whole box.
+          const block = bounds(
+            await until(() => defender.client.territories.get(defenderId), "defender's block"),
+          );
+          const box = boxAround(block, size);
+          pilot.fly([...corners(box), centerOf(block)]);
+          const grown = await waitFor(
+            () => ownDeaths() > before || defender.client.territoryAreaOf(defenderId) > 150,
+            40_000,
+          );
+          if (!grown || ownDeaths() > before) continue;
+
+          // 2. Park at the box center — inside the fresh fill by construction,
+          //    and several WU clear of every edge — and let the orbit settle.
+          pilot.fly([centerOf(box)]);
+          safeStreak = 0;
+          if (!(await waitFor(() => safeStreak >= ORBIT_TICKS, 15_000))) continue;
+
+          // 3. Charge. The record starts HERE: a death from the widening flight
+          //    (the defender was out in the open then) must not be mistaken for
+          //    the outcome of a charge onto a parked head.
+          deaths.length = 0;
+          charging = true;
+          if (!(await waitFor(() => deaths.length > 0, 60_000))) continue;
+          // Same-tick partners arrive in the same frame batch, a follow-up cut
+          // a tick or two later — let the whole engagement land before judging.
+          await sleep(300);
+          const defenderDeath = deaths.find((d) => d.victimId === defenderId);
+          if (defenderDeath && !defenderDeath.settled) continue;
+          death = deaths[0] ?? null;
+        }
+        if (!death) throw new Error('the defender never held a parked charge (2 attempts)');
+
+        expect(death.victimId).toBe(attackerId);
+        expect(death.killerId).toBe(defenderId);
+        // Usually the pure head-on band (0.5–1 WU); a fast final closing step
+        // can land inside 0.5 WU of the attacker's own head-glued trail end,
+        // where the safe head's touch counts as the cut instead — same
+        // outcome, both rules unit-tested precisely in sim-core.
+        expect(['headOn', 'trailCut']).toContain(death.cause);
+        // The parked defender never died.
+        expect(deaths.some((d) => d.victimId === defenderId)).toBe(false);
+      } finally {
+        attacker.client.onSnapshot = null;
+        defender.client.onSnapshot = null;
+        attacker.ws.close();
+        defender.ws.close();
       }
-      return [cx, cy];
-    }
-  });
+    },
+  );
 });

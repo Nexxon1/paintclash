@@ -258,7 +258,15 @@ const STALL_MS = 25_000;
  */
 async function untilProgress<T>(opts: {
   probe: () => T | null | undefined | false;
-  /** Any string that changes while things are moving. */
+  /**
+   * How far the acting PILOT has come — its leg index plus its death count.
+   * Deliberately not anything world-derived: a parked head loiters on a
+   * turn-radius circle that keeps poking a sliver past its own edge and
+   * filling it back in, so a territory area in here drifts by ~1 WU² every
+   * few seconds all on its own — enough to look like progress forever and
+   * blind this watchdog to a pilot pinned against a wall (a CI runner spent a
+   * whole 200 s budget in exactly that state).
+   */
   progress: () => string;
   replan: () => void;
   what: string;
@@ -340,8 +348,7 @@ describe('stealing over the real wire (ticket 06)', () => {
             }
             return null;
           },
-          progress: () =>
-            `${String(thiefPilot.leg)}|${thief.client.territoryAreaOf(markId).toFixed(0)}|${String(thief.client.deaths.length)}`,
+          progress: () => `${String(thiefPilot.leg)}|${String(thief.client.deaths.length)}`,
           replan,
           what: 'the total-loss death',
           deadline: Date.now() + 150_000,
@@ -425,7 +432,7 @@ describe('stealing over the real wire (ticket 06)', () => {
               const area = markArea();
               return area > 45 ? area : null;
             },
-            progress: () => `${String(markPilot.leg)}|${markArea().toFixed(0)}`,
+            progress: () => `${String(markPilot.leg)}|${String(deathsOf(mark.client, markId))}`,
             replan: flyLobe,
             what: "the mark's lobe fill",
             deadline,
@@ -443,6 +450,11 @@ describe('stealing over the real wire (ticket 06)', () => {
           flyRaid();
           markDeaths = deathsOf(mark.client, markId);
           let thiefDeaths = deathsOf(thief.client, thiefId);
+          // The steal shows as a DROP from the mark's running PEAK, not from
+          // its area at raid start: the parked mark keeps filling in the
+          // slivers its loiter orbit pokes past its own edge, so a fixed
+          // baseline slowly ages out from under the test.
+          let markPeak = markArea();
           const outcome = await untilProgress({
             probe: () => {
               if (deathsOf(mark.client, markId) > markDeaths) return 'wiped';
@@ -457,10 +469,11 @@ describe('stealing over the real wire (ticket 06)', () => {
               // an enclosure can shrink a parked player's territory. Demanding
               // a near-total bite (the old 30 WU²) rejected honest partial
               // steals and spent the budget re-raiding for a rounder number.
-              return markArea() < grown - 10 ? 'stolen' : null;
+              const area = markArea();
+              markPeak = Math.max(markPeak, area);
+              return area < markPeak - 10 ? 'stolen' : null;
             },
-            progress: () =>
-              `${String(thiefPilot.leg)}|${markArea().toFixed(0)}|${String(deathsOf(thief.client, thiefId))}`,
+            progress: () => `${String(thiefPilot.leg)}|${String(deathsOf(thief.client, thiefId))}`,
             replan: flyRaid,
             what: 'the raid outcome',
             deadline,
