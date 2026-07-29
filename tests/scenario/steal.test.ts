@@ -207,6 +207,11 @@ class Pilot {
     this.index = 0;
   }
 
+  /** How far along its plan the pilot is — the stall watchdog's signal. */
+  get leg(): number {
+    return this.index;
+  }
+
   steer(self: Pose): TurnSignal {
     let target = this.waypoints[this.index];
     while (target && this.index < this.waypoints.length - 1 && this.reached(self, target)) {
@@ -231,6 +236,51 @@ class Pilot {
 /** Deaths of one victim seen by a client so far. */
 function deathsOf(client: SimClient, victimId: number): number {
   return client.deaths.filter((d) => d.victimId === victimId).length;
+}
+
+/**
+ * How long a stage may show NO progress before its plan is re-issued. One raid
+ * leg is ~10 s of travel across the arena, so this is generous — it only fires
+ * on a genuinely stuck pilot.
+ */
+const STALL_MS = 25_000;
+
+/**
+ * Wait for an outcome while watching for PROGRESS. Both maneuvers here can get
+ * stuck without dying — a head pinned against a wall by a waypoint behind it,
+ * or a loop that missed its own block and now loiters beside it — and a stuck
+ * pilot would otherwise sit out the whole budget. Every `STALL_MS` without a
+ * change in the progress signal, `replan` re-issues the plan from the CURRENT
+ * state, which is what turns those states into another attempt.
+ *
+ * The deadline is shared by the whole choreography, so one slow stage cannot
+ * starve the retries after it.
+ */
+async function untilProgress<T>(opts: {
+  probe: () => T | null | undefined | false;
+  /** Any string that changes while things are moving. */
+  progress: () => string;
+  replan: () => void;
+  what: string;
+  deadline: number;
+}): Promise<T> {
+  let mark = opts.progress();
+  let markedAt = Date.now();
+  for (;;) {
+    const value = opts.probe();
+    if (value !== null && value !== undefined && value !== false) return value;
+    if (Date.now() > opts.deadline) throw new Error(`timed out waiting for ${opts.what}`);
+    const now = opts.progress();
+    if (now !== mark) {
+      mark = now;
+      markedAt = Date.now();
+    } else if (Date.now() - markedAt > STALL_MS) {
+      opts.replan();
+      mark = opts.progress();
+      markedAt = Date.now();
+    }
+    await sleep(25);
+  }
 }
 
 /** Wire a pilot to a client: one steer intent per snapshot, like a player. */
@@ -279,8 +329,8 @@ describe('stealing over the real wire (ticket 06)', () => {
         // rare parked-orbit self-cut) leaves both respawned — replan from
         // the fresh blocks and raid again.
         let deathsSeen = 0;
-        const win = await until(
-          () => {
+        const win = await untilProgress({
+          probe: () => {
             const deaths = thief.client.deaths;
             const winning = deaths.find((d) => d.victimId === markId && d.cause === 'totalLoss');
             if (winning) return winning;
@@ -290,9 +340,12 @@ describe('stealing over the real wire (ticket 06)', () => {
             }
             return null;
           },
-          'the total-loss death',
-          150_000,
-        );
+          progress: () =>
+            `${String(thiefPilot.leg)}|${thief.client.territoryAreaOf(markId).toFixed(0)}|${String(thief.client.deaths.length)}`,
+          replan,
+          what: 'the total-loss death',
+          deadline: Date.now() + 150_000,
+        });
         expect(win.killerId).toBe(thiefId);
         expect(win.cause).toBe('totalLoss');
         // The mark saw its own death and respawned on a fresh block.
@@ -309,6 +362,11 @@ describe('stealing over the real wire (ticket 06)', () => {
           'the mark back in snapshots',
         );
       } finally {
+        // Stop the pilots before the sockets go: a queued flush on a closing
+        // socket throws inside the message handler and buries the real
+        // failure under pages of workerd exception noise.
+        thief.client.onSnapshot = null;
+        mark.client.onSnapshot = null;
         thief.ws.close();
         mark.ws.close();
       }
@@ -337,6 +395,13 @@ describe('stealing over the real wire (ticket 06)', () => {
           'both start blocks synced',
         );
 
+        // ONE budget for the whole choreography: a raid leg is ~10 s of
+        // travel and an attempt 30–40 s, so several attempts must fit — and a
+        // slow first stage must not starve the retries after it. Comfortably
+        // inside the test timeout, so a bust budget fails as this assertion
+        // and not as an opaque test-level timeout.
+        const deadline = Date.now() + 200_000;
+
         // A raid can, on unlucky respawn geometry, consume the whole lobe —
         // that is the OTHER test's outcome; here it just means regrow and
         // raid again from the fresh state.
@@ -348,40 +413,58 @@ describe('stealing over the real wire (ticket 06)', () => {
           );
           const markMid = centerOf(markBox);
           thiefPilot.fly([thiefHome()]); // loiter at home
-          markPilot.fly(lobeWaypoints(markMid, lobeDirection(markMid, thiefHome(), size)));
+          const flyLobe = (): void => {
+            markPilot.fly(lobeWaypoints(markMid, lobeDirection(markMid, thiefHome(), size)));
+          };
+          flyLobe();
           let markDeaths = deathsOf(mark.client, markId);
-          const grown = await until(
-            () => {
+          const grown = await untilProgress({
+            probe: () => {
               // A failed lobe (self-cut under feedback lag) → fresh block, retry.
               if (deathsOf(mark.client, markId) > markDeaths) return 'died';
               const area = markArea();
               return area > 45 ? area : null;
             },
-            "the mark's lobe fill",
-            120_000,
-          );
+            progress: () => `${String(markPilot.leg)}|${markArea().toFixed(0)}`,
+            replan: flyLobe,
+            what: "the mark's lobe fill",
+            deadline,
+          });
           if (grown === 'died') continue;
 
           // 2. The thief encircles only the ORIGINAL block; the mark parks
           //    inside it — its head gets enclosed, its lobe does not.
           markPilot.fly([parkSpot(markMid, size)]);
-          thiefPilot.fly(raidWaypoints(thiefHome(), markBox, 4));
+          // Always the box captured BEFORE the lobe grew — re-reading the
+          // bounds now would ring the lobe in too and steal everything.
+          const flyRaid = (): void => {
+            thiefPilot.fly(raidWaypoints(thiefHome(), markBox, 4));
+          };
+          flyRaid();
           markDeaths = deathsOf(mark.client, markId);
           let thiefDeaths = deathsOf(thief.client, thiefId);
-          const outcome = await until(
-            () => {
+          const outcome = await untilProgress({
+            probe: () => {
               if (deathsOf(mark.client, markId) > markDeaths) return 'wiped';
               const thiefs = deathsOf(thief.client, thiefId);
               if (thiefs > thiefDeaths) {
                 // Raider self-cut — re-raid from the respawn block.
                 thiefDeaths = thiefs;
-                thiefPilot.fly(raidWaypoints(thiefHome(), markBox, 4));
+                flyRaid();
               }
-              return markArea() < grown - 30 ? 'stolen' : null;
+              // Any real bite out of the mark's land is the property under
+              // test; that a REMAINDER survives is asserted below, and only
+              // an enclosure can shrink a parked player's territory. Demanding
+              // a near-total bite (the old 30 WU²) rejected honest partial
+              // steals and spent the budget re-raiding for a rounder number.
+              return markArea() < grown - 10 ? 'stolen' : null;
             },
-            'the raid outcome',
-            120_000,
-          );
+            progress: () =>
+              `${String(thiefPilot.leg)}|${markArea().toFixed(0)}|${String(deathsOf(thief.client, thiefId))}`,
+            replan: flyRaid,
+            what: 'the raid outcome',
+            deadline,
+          });
           if (outcome === 'stolen') break;
           if (cycle >= 3) throw new Error('raid kept consuming the whole lobe');
         }
@@ -395,6 +478,11 @@ describe('stealing over the real wire (ticket 06)', () => {
         );
         expect(alive.id).toBe(markId);
       } finally {
+        // Stop the pilots before the sockets go: a queued flush on a closing
+        // socket throws inside the message handler and buries the real
+        // failure under pages of workerd exception noise.
+        thief.client.onSnapshot = null;
+        mark.client.onSnapshot = null;
         thief.ws.close();
         mark.ws.close();
       }
