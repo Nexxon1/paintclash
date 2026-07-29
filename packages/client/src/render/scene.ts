@@ -1,9 +1,12 @@
 /**
  * three.js scene (spec §4.1/4.3): arena floor, territory plateaus, ground
- * trails, heads — rendered with the "Paper.io Modern" perspective tilt
- * (~52° elevation). Pure data sink: `update()` consumes the session's
- * RenderState and never touches game logic. Excluded from unit coverage;
- * the Playwright E2E exercises it.
+ * trails, heads — rendered with the "Paper.io Modern" perspective tilt. Pure
+ * data sink: `update()` consumes the session's RenderState and never touches
+ * game logic. Excluded from unit coverage; the Playwright E2E exercises it.
+ *
+ * The camera's geometry lives in `game/camera.ts`, which also inverts it for
+ * pointer steering (spec §3) — one source, so what the player aims at and what
+ * they see can never drift apart.
  *
  * Sim coords map to three as (x, y_sim) → (x, 0, z=y_sim).
  */
@@ -11,6 +14,7 @@
 import { BALANCE, type Point, type Territory } from '@paintclash/shared';
 import * as THREE from 'three';
 
+import { CAMERA_DISTANCE_WU, CAMERA_ELEVATION_RAD, CAMERA_FOV_DEG } from '../game/camera.js';
 import { playerHue, PLAYER_LIGHTNESS, PLAYER_SATURATION, SELF_COLOR_CSS } from '../game/colors.js';
 
 import type { RenderState } from '../game/session.js';
@@ -23,8 +27,6 @@ import {
   type CarveInput,
 } from './carve.js';
 
-const CAMERA_ELEVATION_RAD = (52 * Math.PI) / 180;
-const CAMERA_DISTANCE = 40;
 /** Reserved mesh key for the own player (rendered from the predicted pose). */
 const SELF_KEY = -1;
 
@@ -185,7 +187,7 @@ export class ArenaScene {
   constructor(canvas: HTMLCanvasElement) {
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    this.camera = new THREE.PerspectiveCamera(55, 1, 0.1, 600);
+    this.camera = new THREE.PerspectiveCamera(CAMERA_FOV_DEG, 1, 0.1, 600);
     this.scene.background = new THREE.Color(0xdfe7ef);
     this.scene.fog = new THREE.Fog(0xdfe7ef, 120, 320);
     const ambient = new THREE.AmbientLight(0xffffff, 0.75);
@@ -237,8 +239,8 @@ export class ArenaScene {
 
     if (state.self) {
       const target = new THREE.Vector3(state.self.x, 0, state.self.y);
-      const back = CAMERA_DISTANCE * Math.cos(CAMERA_ELEVATION_RAD);
-      const up = CAMERA_DISTANCE * Math.sin(CAMERA_ELEVATION_RAD);
+      const back = CAMERA_DISTANCE_WU * Math.cos(CAMERA_ELEVATION_RAD);
+      const up = CAMERA_DISTANCE_WU * Math.sin(CAMERA_ELEVATION_RAD);
       this.camera.position.set(target.x, up, target.z + back);
       this.camera.lookAt(target);
     }

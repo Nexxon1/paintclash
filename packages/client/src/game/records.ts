@@ -11,9 +11,11 @@
  * verbatim — no shape change, no lost history.
  *
  * Storage is injected so this is unit-testable headlessly, and every access
- * is guarded: a browser that denies storage (private mode) must degrade to
- * session-only records, never to a broken HUD.
+ * goes through `storage.ts`, which owns the "a browser may deny storage" rule
+ * (private mode ⇒ session-only records, never a broken HUD).
  */
+
+import { browserStore, readStored, writeStored, type LocalStore } from './storage.js';
 
 /** The one localStorage key — the version lives inside the envelope. */
 export const RECORDS_STORAGE_KEY = 'paintclash.player.v1';
@@ -36,9 +38,6 @@ export interface FinishedLife {
   peakPct: number;
   survivalSec: number;
 }
-
-/** The slice of the Web Storage API this needs (injected in tests). */
-export type RecordStorage = Pick<Storage, 'getItem' | 'setItem'>;
 
 interface Envelope {
   version: number;
@@ -70,16 +69,6 @@ function sane(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : 0;
 }
 
-/** `localStorage` where it exists — absent in node (tests) and in workers. */
-function browserStorage(): RecordStorage | null {
-  try {
-    return typeof localStorage === 'undefined' ? null : localStorage;
-  } catch {
-    // Access itself can throw when storage is blocked by policy.
-    return null;
-  }
-}
-
 function randomPlayerId(): string {
   try {
     return `local-${crypto.randomUUID()}`;
@@ -90,11 +79,11 @@ function randomPlayerId(): string {
 }
 
 export class LocalRecords {
-  private readonly storage: RecordStorage | null;
+  private readonly store: LocalStore | null;
   private envelope: Envelope;
 
-  constructor(storage: RecordStorage | null = browserStorage(), newPlayerId = randomPlayerId) {
-    this.storage = storage;
+  constructor(store: LocalStore | null = browserStore(), newPlayerId = randomPlayerId) {
+    this.store = store;
     this.envelope = this.load() ?? {
       version: STORAGE_VERSION,
       playerId: newPlayerId(),
@@ -132,12 +121,8 @@ export class LocalRecords {
 
   /** Read the envelope, or null when there is nothing trustworthy stored. */
   private load(): Envelope | null {
-    let raw: string | null = null;
-    try {
-      raw = this.storage?.getItem(RECORDS_STORAGE_KEY) ?? null;
-    } catch {
-      return null; // storage denied — session-only records
-    }
+    // Denied storage reads as "nothing stored" — session-only records.
+    const raw = readStored(this.store, RECORDS_STORAGE_KEY);
     if (raw === null) return null;
     let parsed: unknown = null;
     try {
@@ -167,10 +152,7 @@ export class LocalRecords {
   }
 
   private save(): void {
-    try {
-      this.storage?.setItem(RECORDS_STORAGE_KEY, JSON.stringify(this.envelope));
-    } catch {
-      // Full or denied storage: the records still hold for this session.
-    }
+    // Full or denied storage: the records still hold for this session.
+    writeStored(this.store, RECORDS_STORAGE_KEY, JSON.stringify(this.envelope));
   }
 }

@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-import { LocalRecords, RECORDS_STORAGE_KEY, type RecordStorage } from './records.js';
+import { LocalRecords, RECORDS_STORAGE_KEY } from './records.js';
+
+import type { LocalStore } from './storage.js';
 
 /** In-memory stand-in for `localStorage` (tests run headless). */
-function fakeStorage(seed: Record<string, string> = {}): RecordStorage & { data: typeof seed } {
+function fakeStorage(seed: Record<string, string> = {}): LocalStore & { data: typeof seed } {
   const data = { ...seed };
   return {
     data,
@@ -130,7 +132,7 @@ describe('LocalRecords (spec §2.5 local records, ADR-0006 seam 4)', () => {
   it('keeps working when storage is unavailable or throws', () => {
     // Safari private mode / disabled storage: records live for the session
     // and simply do not persist — never a broken HUD.
-    const hostile: RecordStorage = {
+    const hostile: LocalStore = {
       getItem: () => {
         throw new Error('denied');
       },

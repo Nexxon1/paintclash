@@ -280,6 +280,20 @@ export class ClientSession {
     return this.predictor !== null && this.predictor.current() !== null;
   }
 
+  /**
+   * The own head's heading as the sim currently has it — what the aiming
+   * control modes steer FROM (spec §3); null before the spawn.
+   *
+   * The predicted tick pose, not the rendered one: the intent is applied to the
+   * next sim tick, while the rendered heading is that same pose plus a decaying
+   * correction glide. Position never enters into it — the camera holds the head
+   * at the screen center, so a pointer's offset from the center IS its offset
+   * from the head (see `game/camera.ts`).
+   */
+  headHeading(): number | null {
+    return this.predictor?.current()?.heading ?? null;
+  }
+
   /** Feed one raw server frame; malformed frames are dropped. */
   receive(frame: Uint8Array | ArrayBuffer): void {
     const bytes = frame instanceof Uint8Array ? frame : new Uint8Array(frame);

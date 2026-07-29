@@ -1,17 +1,21 @@
 /**
- * DOM HUD (spec §2.5): the live leaderboard — top rows plus the own,
- * highlighted one, each with a swatch of that player's territory color — and
- * the own score panel beside the personal record. Pure data sinks like the
- * scene: they paint what the session sampled and never touch game logic.
- * Excluded from unit coverage; the Playwright E2E exercises them (the display
- * rules themselves live in `game/leaderboard.ts` / `game/score.ts` and are
+ * DOM HUD (spec §2.5/§3): the live leaderboard — top rows plus the own,
+ * highlighted one, each with a swatch of that player's territory color — the
+ * own score panel beside the personal record, the control-mode picker and the
+ * virtual joystick. Pure data sinks like the scene: they paint what the session
+ * sampled and never touch game logic. Excluded from unit coverage; the
+ * Playwright E2E exercises them (the display rules themselves live in
+ * `game/leaderboard.ts`, `game/score.ts` and `game/settings.ts` and are
  * unit-tested there).
  */
 
 import { leaderboardView, type LeaderboardRowView } from '../game/leaderboard.js';
 import { scoreView } from '../game/score.js';
+import { controlModeLabel } from '../game/settings.js';
 
+import type { JoystickView } from '../game/input.js';
 import type { PersonalRecords } from '../game/records.js';
+import type { ControlMode } from '../game/settings.js';
 import type { LeaderboardView } from '../game/session.js';
 
 export class LeaderboardHud {
@@ -98,5 +102,104 @@ export class ScoreHud {
     this.root.classList.toggle('record', view.beatingRecord);
     this.value.textContent = view.scoreText;
     this.record.textContent = view.recordText;
+  }
+}
+
+/**
+ * The control-mode picker (spec §3): a disclosure button plus one chip per mode
+ * this device offers, the active one marked.
+ *
+ * Collapsed by default and parked at the top edge, because the panel shares the
+ * screen with the steering itself: an always-open row in a bottom corner is
+ * exactly where a thumb rests in "Lenken L/R" and where a joystick wants to be
+ * planted — a resting thumb would switch mode instead of steering. It stays
+ * reachable while the join card is up (the mode is a pre-game choice too) and
+ * mid-game (spec §3: switchable at runtime).
+ */
+export class ControlsHud {
+  private readonly toggle: HTMLButtonElement;
+  private readonly list: HTMLDivElement;
+  private readonly chips = new Map<ControlMode, HTMLButtonElement>();
+
+  constructor(
+    root: HTMLElement,
+    modes: readonly ControlMode[],
+    coarsePointer: boolean,
+    onPick: (mode: ControlMode) => void,
+  ) {
+    this.toggle = document.createElement('button');
+    this.toggle.type = 'button';
+    this.toggle.className = 'control-toggle';
+    this.toggle.textContent = 'Steuerung';
+    this.toggle.addEventListener('click', () => {
+      this.open(this.list.hidden);
+      this.toggle.blur();
+    });
+    this.list = document.createElement('div');
+    this.list.className = 'control-modes';
+    this.list.hidden = true;
+    for (const mode of modes) {
+      const chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = 'mode';
+      chip.dataset.mode = mode;
+      chip.textContent = controlModeLabel(mode, coarsePointer);
+      chip.addEventListener('click', () => {
+        onPick(mode);
+        // Picked = done: an open list over the arena is one more thing between
+        // the player and their thumb.
+        this.open(false);
+        // Leaving focus behind would let a later Space/Enter — or the game's
+        // own keys — re-fire this button instead of steering.
+        chip.blur();
+      });
+      this.chips.set(mode, chip);
+      this.list.append(chip);
+    }
+    root.append(this.toggle, this.list);
+  }
+
+  /** Mark the mode in force. */
+  update(mode: ControlMode): void {
+    for (const [candidate, chip] of this.chips) {
+      const active = candidate === mode;
+      chip.classList.toggle('active', active);
+      chip.setAttribute('aria-pressed', String(active));
+    }
+  }
+
+  private open(open: boolean): void {
+    this.list.hidden = !open;
+    this.toggle.setAttribute('aria-expanded', String(open));
+  }
+}
+
+/**
+ * The virtual joystick (spec §3): ring plus knob, wherever the finger holds
+ * it. Purely a mirror of the input state — it never produces intent itself.
+ */
+export class JoystickHud {
+  private readonly root: HTMLElement;
+  private readonly knob: HTMLElement;
+  /** What is on screen — the DOM only moves when the stick does. */
+  private painted = '';
+
+  constructor(root: HTMLElement) {
+    this.root = root;
+    this.knob = document.createElement('span');
+    this.knob.className = 'knob';
+    this.root.append(this.knob);
+  }
+
+  update(view: JoystickView | null): void {
+    const key = view
+      ? `${String(view.baseX)},${String(view.baseY)},${String(view.knobX)},${String(view.knobY)}`
+      : '';
+    if (key === this.painted) return;
+    this.painted = key;
+    this.root.hidden = view === null;
+    if (!view) return;
+    this.root.style.transform = `translate(${String(view.baseX)}px, ${String(view.baseY)}px)`;
+    this.knob.style.transform = `translate(${String(view.knobX - view.baseX)}px, ${String(view.knobY - view.baseY)}px)`;
   }
 }
