@@ -32,11 +32,13 @@ export function recordsText(records: PersonalRecords): string {
   if (records.highscore <= 0 && records.maxAreaPct <= 0 && records.longestSurvivalSec <= 0) {
     return 'Noch keine Rekorde — viel Erfolg!';
   }
-  // Highscore · largest share · longest life — the three the spec names.
+  // Highscore · largest share · longest life — the three the spec names, each
+  // with its unit: three bare numbers side by side say nothing about which is
+  // which (only the percent sign speaks for itself).
   const parts = [
-    formatScore(records.highscore),
-    formatPercent(records.maxAreaPct),
-    formatDuration(records.longestSurvivalSec),
+    `${formatScore(records.highscore)} Punkte`,
+    `${formatPercent(records.maxAreaPct)} der Karte`,
+    `${formatDuration(records.longestSurvivalSec)} min`,
   ];
   return `Rekorde: ${parts.join(' · ')}`;
 }

@@ -70,7 +70,8 @@
         color: #2b3540;
         user-select: none;
       }
-      #leaderboard h2 {
+      #leaderboard h2,
+      #score h2 {
         margin: 0 0 0.35rem;
         font-size: 0.7rem;
         letter-spacing: 0.08em;
@@ -147,6 +148,7 @@
         background: rgba(47, 127, 232, 0.9);
         color: #fff;
       }
+      #score.record h2,
       #score.record .score-record {
         color: rgba(255, 255, 255, 0.85);
       }
@@ -159,7 +161,9 @@
   </head>
   <body>
     <canvas id="game"></canvas>
-    <div id="score" hidden></div>
+    <!-- The heading labels the big number, so the record line below it needs
+         no unit of its own (same treatment as the leaderboard panel). -->
+    <div id="score" hidden><h2>Score</h2></div>
     <div id="leaderboard" hidden>
       <h2>Leaderboard</h2>
     </div>

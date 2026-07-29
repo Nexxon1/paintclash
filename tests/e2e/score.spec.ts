@@ -32,6 +32,9 @@ test('the score panel counts the running life up beside the personal record', as
   // The panel appears with the first score frame (≤ 500 ms after the spawn).
   const panel = page.locator('#score');
   await expect(panel).toBeVisible({ timeout: 10_000 });
+  // The heading is what says the big number is a score — without it the panel
+  // is an unlabelled number in the corner.
+  await expect(panel.locator('h2')).toHaveText('Score');
   const value = panel.locator('.score-value');
   await expect(value).toHaveText(/^[\d.]+$/);
   // No record yet, so the panel shows an em dash — and any score at all beats

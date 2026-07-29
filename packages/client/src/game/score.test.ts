@@ -32,8 +32,10 @@ describe('scoreView (spec §2.5: the live score beside the personal record)', ()
 });
 
 describe('recordsText (the records line on the join card)', () => {
-  it('summarises all three records in one line', () => {
-    expect(recordsText(SOME)).toBe('Rekorde: 18.187 · 35,50 % · 5:05');
+  it('summarises all three records in one line, each with its unit', () => {
+    // Bare numbers side by side would not say which is which — the score
+    // panel's own big number is labelled by its heading instead.
+    expect(recordsText(SOME)).toBe('Rekorde: 18.187 Punkte · 35,50 % der Karte · 5:05 min');
   });
 
   it('says so plainly when there is nothing yet', () => {
