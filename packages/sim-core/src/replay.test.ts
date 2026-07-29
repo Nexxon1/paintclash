@@ -60,16 +60,18 @@ describe('replay determinism', () => {
     expect(hashSimState(end)).toBe(GOLDEN_END_HASH);
   });
 
-  it('the golden replay provably crosses the fill and death paths (tickets 04/05)', () => {
+  it('the golden replay provably crosses the fill, death and score paths (tickets 04/05/09)', () => {
     const state = createSimState(GOLDEN_SEED);
     const script = goldenScript();
     let fills = 0;
     let deaths = 0;
+    let endedLives = 0;
     let p1PeakArea = 0;
     for (let t = 0; t < GOLDEN_TICKS; t++) {
       const events = step(state, script.get(t) ?? {}, TICK_DT_SEC);
       fills += events.fills.length;
       deaths += events.deaths.length;
+      endedLives += events.endedLives.length;
       const p1 = state.players.find((p) => p.id === 1);
       p1PeakArea = Math.max(p1PeakArea, territoryArea(p1?.territory ?? []));
     }
@@ -78,6 +80,13 @@ describe('replay determinism', () => {
     expect(p1PeakArea).toBeGreaterThan(36);
     // … and the held turns end in self-cuts: the death path is exercised too.
     expect(deaths).toBeGreaterThanOrEqual(1);
+    // Every death closes a life, so the score bookkeeping rides along.
+    expect(endedLives).toBe(deaths);
+    // The bot joined at tick 40 and is company to nobody (spec §10.5).
+    const bot = state.players.find((p) => p.id === 9);
+    expect(bot?.isBot).toBe(true);
+    const human = state.players.find((p) => p.id === 1);
+    expect(human?.peakPct).toBeGreaterThan(0);
   });
 });
 

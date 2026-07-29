@@ -8,10 +8,20 @@
  * this is the whole, recipient-independent table.
  */
 
-import { LEADERBOARD_PERCENT_SCALE } from '@paintclash/shared';
+import { MAP_SHARE_PERCENT_SCALE, type Territory } from '@paintclash/shared';
 
 import { territoryArea } from './geometry.js';
 import type { SimState } from './state.js';
+
+/**
+ * Share of the map in percent — the one metric the game ranks on (spec §2.5)
+ * and the score's `peakPct` (spec §10.5). Defined once so ranking and score
+ * can never disagree about what "12 %" means, and arena-size independent by
+ * construction: a private room's 12 % is the public arena's 12 %.
+ */
+export function mapSharePct(territory: Territory, arenaSizeWU: number): number {
+  return (territoryArea(territory) / (arenaSizeWU * arenaSizeWU)) * 100;
+}
 
 /** One player's place in the global ranking. */
 export interface Standing {
@@ -34,13 +44,12 @@ export interface Standing {
  * ranking as reproducible as the number the player reads (ADR-0003).
  */
 export function standings(state: SimState): Standing[] {
-  const arenaArea = state.arenaSizeWU * state.arenaSizeWU;
   return state.players
-    .map((p) => ({ playerId: p.id, areaPct: (territoryArea(p.territory) / arenaArea) * 100 }))
+    .map((p) => ({ playerId: p.id, areaPct: mapSharePct(p.territory, state.arenaSizeWU) }))
     .sort(
       (a, b) =>
-        Math.round(b.areaPct * LEADERBOARD_PERCENT_SCALE) -
-          Math.round(a.areaPct * LEADERBOARD_PERCENT_SCALE) || a.playerId - b.playerId,
+        Math.round(b.areaPct * MAP_SHARE_PERCENT_SCALE) -
+          Math.round(a.areaPct * MAP_SHARE_PERCENT_SCALE) || a.playerId - b.playerId,
     )
     .map((entry, i) => ({ playerId: entry.playerId, rank: i + 1, areaPct: entry.areaPct }));
 }

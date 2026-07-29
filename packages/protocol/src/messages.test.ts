@@ -9,6 +9,7 @@ import {
   encodeInput,
   encodeJoin,
   encodeLeaderboard,
+  encodeScore,
   encodeSnapshot,
   encodeTerritory,
   encodeTrail,
@@ -166,11 +167,34 @@ describe('round-trip (decode ∘ encode = id, spec §9.1)', () => {
       ),
     );
   });
+
+  it('score', () => {
+    fc.assert(
+      fc.property(
+        // Both fixed-point fields on their exact wire grid (hundredths), so
+        // the round-trip is identity rather than "≈".
+        fc.integer({ min: 0, max: 10000 }),
+        fc.integer({ min: 0, max: 0xffffffff }),
+        fc.integer({ min: 0, max: 0xffff }),
+        fc.boolean(),
+        (pctHundredths, lifeTicks, humanHundredths, final) => {
+          const stats = {
+            peakPct: pctHundredths / 100,
+            lifeTicks,
+            avgOtherHumans: humanHundredths / 100,
+          };
+          const decoded = decodeServerMessage(encodeScore(stats, final));
+          expect(decoded).toEqual({ type: 'score', ...stats, final });
+        },
+      ),
+    );
+  });
 });
 
 describe('golden bytes (wire format pinned, spec §9.1)', () => {
   it('join "Ada"', () => {
-    // Version byte 0x05 — bumped for the input frame's view tick (ticket 07).
+    // Version byte 0x05 — last bumped for the input frame's view tick (ticket
+    // 07). Additive server→client frames (leaderboard, score) do not bump it.
     expect(Array.from(encodeJoin('Ada'))).toEqual([0x01, 0x05, 0x03, 0x41, 0x64, 0x61]);
   });
 
@@ -354,6 +378,23 @@ describe('golden bytes (wire format pinned, spec §9.1)', () => {
       0x41,
       0x64,
       0x61, // "Ada"
+    ]);
+  });
+
+  it('score: peak 12,5 %, 40 ticks lived, Ø 1,5 others, final', () => {
+    expect(
+      Array.from(encodeScore({ peakPct: 12.5, lifeTicks: 40, avgOtherHumans: 1.5 }, true)),
+    ).toEqual([
+      0x16, // opcode
+      0xe2,
+      0x04, // 1250 hundredths of a percent
+      0x28,
+      0x00,
+      0x00,
+      0x00, // 40 ticks = 2 s
+      0x96,
+      0x00, // 150 hundredths of a player
+      0x01, // final
     ]);
   });
 });
@@ -621,5 +662,30 @@ describe('malformed frames are rejected, never thrown (spec §8.2)', () => {
     );
     if (decoded?.type !== 'leaderboard') throw new Error('expected a leaderboard');
     expect(Array.from(decoded.rows[0]?.name ?? '')).toHaveLength(MAX_NAME_CHARS);
+  });
+
+  it('rejects a score frame of the wrong length, over 100 % or with a bogus flag', () => {
+    const ok = encodeScore({ peakPct: 3.5, lifeTicks: 42, avgOtherHumans: 1.25 }, false);
+    expect(decodeServerMessage(ok.subarray(0, ok.length - 1))).toBeNull();
+    expect(decodeServerMessage(new Uint8Array([...ok, 0x00]))).toBeNull();
+    const overFull = new Uint8Array(ok);
+    new DataView(overFull.buffer).setUint16(1, 10001, true);
+    expect(decodeServerMessage(overFull)).toBeNull();
+    const bogusFlag = new Uint8Array(ok);
+    bogusFlag[9] = 2;
+    expect(decodeServerMessage(bogusFlag)).toBeNull();
+  });
+
+  it('encodeScore clamps out-of-range counters instead of dropping the frame', () => {
+    const decoded = decodeServerMessage(
+      encodeScore({ peakPct: 100.0001, lifeTicks: -3, avgOtherHumans: -1 }, true),
+    );
+    expect(decoded).toEqual({
+      type: 'score',
+      peakPct: 100,
+      lifeTicks: 0,
+      avgOtherHumans: 0,
+      final: true,
+    });
   });
 });

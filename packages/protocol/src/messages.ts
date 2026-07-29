@@ -15,8 +15,9 @@
 
 import {
   BALANCE,
-  LEADERBOARD_PERCENT_SCALE,
+  MAP_SHARE_PERCENT_SCALE,
   type DeathCause,
+  type LifeCounters,
   type Point,
   type Ring,
   type Territory,
@@ -25,7 +26,13 @@ import {
 
 export type { DeathCause };
 
-/** Bumped on every incompatible wire change; joins carry it. */
+/**
+ * Bumped on every INCOMPATIBLE wire change; joins carry it. Purely additive
+ * server→client opcodes (the leaderboard in ticket 08, the score in ticket 09)
+ * do NOT bump it: an older client drops unknown opcodes by contract and keeps
+ * playing without the new panel, whereas a bump would reject its join and kick
+ * every open tab for a feature it does not need.
+ */
 export const PROTOCOL_VERSION = 5;
 
 /** Nickname cap on the wire: 16 code points, ≤ 64 UTF-8 bytes. */
@@ -59,8 +66,18 @@ const OP_TERRITORY = 0x12;
 const OP_TRAIL = 0x13;
 const OP_DEATH = 0x14;
 const OP_LEADERBOARD = 0x15;
+const OP_SCORE = 0x16;
 
 const DEATH_FRAME_BYTES = 6; // op + u16 victim + u16 killer + u8 cause
+
+const SCORE_FRAME_BYTES = 10; // op + u16 peakPct + u32 lifeTicks + u16 humans + u8 final
+/**
+ * Company average on the wire, in hundredths of a player. Two decimals are
+ * ample for a number that creeps (it is a time average over a whole life) and
+ * keep the field in u16 for any legal population.
+ */
+const HUMANS_SCALE = 100;
+const MAX_HUMANS_WIRE = 0xffff;
 
 const LEADERBOARD_HEADER_BYTES = 2; // op + u8 row count
 const LEADERBOARD_ROW_BYTES = 6; // u8 rank + u16 id + u16 pct + u8 nameLen
@@ -69,7 +86,7 @@ const LEADERBOARD_ROW_BYTES = 6; // u8 rank + u16 id + u16 pct + u8 nameLen
  * and the ranking is decided at). At two decimals the full range 0…100.00 %
  * is 0…10 000, well inside u16; a third decimal would need a wider field.
  */
-const MAX_PERCENT_WIRE = 100 * LEADERBOARD_PERCENT_SCALE;
+const MAX_PERCENT_WIRE = 100 * MAP_SHARE_PERCENT_SCALE;
 
 const INPUT_ITEM_BYTES = 5; // u32 seq + i8 turn
 const INPUT_HEADER_BYTES = 6; // op + u8 count + u32 viewTick
@@ -123,6 +140,19 @@ export type ClientMessage =
 
 export type ServerMessage =
   | { type: 'welcome'; playerId: number; arenaSizeWU: number }
+  /**
+   * The recipient's OWN life, as the score is made of it (spec §2.5/§10.5,
+   * ticket 09). The `LifeCounters` travel, not the number: the client derives
+   * the score with `sim-core`'s `lifeScore`, the same function the formula's
+   * unit tests pin down — so the live HUD estimate and the final value can
+   * never come from two different formulas. Between frames the client advances
+   * only the survival term on its own tick clock.
+   *
+   * `final` marks the frame that CLOSES a life (sent on the death tick): those
+   * counters are the life's last word, and the client commits its local
+   * records (ADR-0006 seam 4) on exactly them.
+   */
+  | ({ type: 'score'; final: boolean } & LifeCounters)
   | { type: 'snapshot'; tick: number; ackSeq: number; players: SnapshotPlayer[] }
   | { type: 'territory'; playerId: number; reason: TerritoryReason; territory: Territory }
   | { type: 'trail'; playerId: number; points: Point[] }
@@ -320,12 +350,31 @@ export function encodeLeaderboard(rows: readonly LeaderboardRow[]): Uint8Array {
     if (row.rank < 1 || row.rank > 0xff) throw new RangeError('leaderboard rank exceeds u8');
     frame[offset] = row.rank;
     view.setUint16(offset + 1, row.playerId, true);
-    const pct = Math.round(row.areaPct * LEADERBOARD_PERCENT_SCALE);
+    const pct = Math.round(row.areaPct * MAP_SHARE_PERCENT_SCALE);
     view.setUint16(offset + 3, Math.min(MAX_PERCENT_WIRE, Math.max(0, pct)), true);
     frame[offset + 5] = name.length;
     frame.set(name, offset + LEADERBOARD_ROW_BYTES);
     offset += LEADERBOARD_ROW_BYTES + name.length;
   });
+  return frame;
+}
+
+/**
+ * One recipient's own score ingredients (ticket 09). Values are clamped into
+ * their wire ranges rather than throwing: a life's counters are derived from
+ * float areas and a tick counter, and no rounding artifact is worth dropping
+ * the HUD's number for. `lifeTicks` saturates after ~2.5 years of one life.
+ */
+export function encodeScore(counters: LifeCounters, final: boolean): Uint8Array {
+  const frame = new Uint8Array(SCORE_FRAME_BYTES);
+  const view = new DataView(frame.buffer);
+  frame[0] = OP_SCORE;
+  const pct = Math.round(counters.peakPct * MAP_SHARE_PERCENT_SCALE);
+  view.setUint16(1, Math.min(MAX_PERCENT_WIRE, Math.max(0, pct)), true);
+  view.setUint32(3, Math.min(0xffffffff, Math.max(0, Math.round(counters.lifeTicks))), true);
+  const humans = Math.round(counters.avgOtherHumans * HUMANS_SCALE);
+  view.setUint16(7, Math.min(MAX_HUMANS_WIRE, Math.max(0, humans)), true);
+  frame[9] = final ? 1 : 0;
   return frame;
 }
 
@@ -477,13 +526,27 @@ export function decodeServerMessage(frame: Uint8Array): ServerMessage | null {
         rows.push({
           rank,
           playerId: view.getUint16(offset + 1, true),
-          areaPct: pct / LEADERBOARD_PERCENT_SCALE,
+          areaPct: pct / MAP_SHARE_PERCENT_SCALE,
           name,
         });
         offset = nameStart + nameLen;
       }
       if (offset !== frame.length) return null;
       return { type: 'leaderboard', rows };
+    }
+    case OP_SCORE: {
+      if (frame.length !== SCORE_FRAME_BYTES) return null;
+      const pct = view.getUint16(1, true);
+      if (pct > MAX_PERCENT_WIRE) return null;
+      const finalByte = view.getUint8(9);
+      if (finalByte > 1) return null;
+      return {
+        type: 'score',
+        peakPct: pct / MAP_SHARE_PERCENT_SCALE,
+        lifeTicks: view.getUint32(3, true),
+        avgOtherHumans: view.getUint16(7, true) / HUMANS_SCALE,
+        final: finalByte === 1,
+      };
     }
     case OP_DEATH: {
       if (frame.length !== DEATH_FRAME_BYTES) return null;

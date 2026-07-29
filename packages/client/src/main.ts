@@ -7,8 +7,10 @@
 import { TICK_DT_MS } from '@paintclash/shared';
 
 import { KeyTracker } from './game/input.js';
+import { LocalRecords } from './game/records.js';
+import { recordsText } from './game/score.js';
 import { ClientSession } from './game/session.js';
-import { LeaderboardHud } from './render/hud.js';
+import { LeaderboardHud, ScoreHud } from './render/hud.js';
 import { ArenaScene } from './render/scene.js';
 
 import type { RenderState } from './game/session.js';
@@ -33,6 +35,18 @@ const nameInput = query('#name', HTMLInputElement);
 const status = query('#status', HTMLParagraphElement);
 const canvas = query('#game', HTMLCanvasElement);
 const leaderboard = new LeaderboardHud(query('#leaderboard', HTMLDivElement));
+const scoreHud = new ScoreHud(query('#score', HTMLDivElement));
+const recordsLine = query('#records', HTMLParagraphElement);
+
+/**
+ * Local records (spec §2.5, ADR-0006 seam 4) — read once at startup, so the
+ * join card can already show them, and folded forward at every own death.
+ */
+const records = new LocalRecords();
+function showRecords(): void {
+  recordsLine.textContent = recordsText(records.records);
+}
+showRecords();
 
 const keys = new KeyTracker();
 window.addEventListener('keydown', (event) => {
@@ -70,6 +84,13 @@ function start(name: string): void {
   ws.addEventListener('close', () => {
     stopCurrentGame?.();
     status.textContent = 'Verbindung getrennt — erneut auf Spielen klicken.';
+    // A life that ends by disconnect never gets a `final` frame, but it was
+    // still played: commit it, or a long survival would only ever count if it
+    // ended in a death (spec §2.5 lists max-% and survival as records).
+    const unfinished = session.currentLife();
+    if (unfinished) records.commit(unfinished);
+    // The card is visible again — with whatever the session just achieved.
+    showRecords();
     overlay.style.display = 'grid';
   });
 
@@ -136,6 +157,10 @@ function start(name: string): void {
     if (window.__paintclash) window.__paintclash.lastRender = renderState;
     scene.update(renderState);
     leaderboard.update(renderState.leaderboard, renderState.selfId);
+    // A closed life lands exactly once (the sample drains it) — fold it into
+    // the local records BEFORE painting, so a new record shows immediately.
+    if (renderState.finishedLife) records.commit(renderState.finishedLife);
+    scoreHud.update(renderState.liveScore, records.records);
     requestAnimationFrame(frame);
   };
   requestAnimationFrame(frame);

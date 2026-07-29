@@ -115,10 +115,51 @@
       .leaderboard-rows .percent {
         font-variant-numeric: tabular-nums;
       }
+      /* Own score (spec §2.5): live estimate above the personal record. */
+      #score {
+        position: fixed;
+        top: 1rem;
+        left: 1rem;
+        padding: 0.4rem 0.75rem;
+        border-radius: 10px;
+        background: rgba(255, 255, 255, 0.82);
+        box-shadow: 0 4px 16px rgba(20, 28, 38, 0.18);
+        color: #2b3540;
+        display: grid;
+        justify-items: start;
+        user-select: none;
+      }
+      #score .score-value {
+        font-size: 1.5rem;
+        font-weight: 600;
+        line-height: 1.1;
+        font-variant-numeric: tabular-nums;
+      }
+      #score .score-record {
+        font-size: 0.7rem;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: #6b7684;
+        font-variant-numeric: tabular-nums;
+      }
+      /* Beating the highscore is the whole point of showing both numbers. */
+      #score.record {
+        background: rgba(47, 127, 232, 0.9);
+        color: #fff;
+      }
+      #score.record .score-record {
+        color: rgba(255, 255, 255, 0.85);
+      }
+      #records {
+        margin: 0.75rem 0 0;
+        font-size: 0.8rem;
+        color: #5b6672;
+      }
     </style>
   </head>
   <body>
     <canvas id="game"></canvas>
+    <div id="score" hidden></div>
     <div id="leaderboard" hidden>
       <h2>Leaderboard</h2>
     </div>
@@ -132,6 +173,8 @@
           <button type="submit" disabled>Spielen</button>
         </form>
         <p id="status"></p>
+        <!-- Local records (spec §2.5) — filled by main.ts from localStorage. -->
+        <p id="records"></p>
       </div>
     </div>
     <script type="module" src="/src/main.ts"></script>

@@ -15,13 +15,22 @@ import { detectDeaths, type Death } from './collision.js';
 import { closeLoop, spawnTerritory } from './fill.js';
 import { appendTrailPoint, distanceToTerritory, pointInTerritory } from './geometry.js';
 import { recordHistory, retireTrail, viewedBy } from './history.js';
+import { mapSharePct } from './leaderboard.js';
 import { nextRandom } from './rng.js';
+import { lifeStats, type LifeStats } from './score.js';
 import type { HeadPose, PlayerSim, SimState, TurnSignal } from './state.js';
 
 /** Everything that can happen in one tick, in processing order. */
 export interface TickInputs {
   /** Player ids to spawn this tick (already-present ids are ignored). */
   joins?: readonly number[];
+  /**
+   * Bot ids to spawn this tick (ADR-0005, ticket 12) — spawned exactly like
+   * `joins` and steered through the same intents; the only difference is that
+   * they never count as company for anyone's score (spec §10.5). Processed
+   * after `joins`, so the spawn order stays deterministic.
+   */
+  botJoins?: readonly number[];
   /** Player ids to remove this tick. */
   leaves?: readonly number[];
   /** Steer intents; multiple per id coalesce to the last one (spec §8.3). */
@@ -55,6 +64,12 @@ export interface TickEvents {
    * Total-loss deaths (ticket 06) precede the collision deaths.
    */
   deaths: Death[];
+  /**
+   * Lives that ENDED this tick (ticket 09, spec §2.5): one entry per death,
+   * captured before the respawn reset the counters. The score is personal, so
+   * the server hands each entry to exactly the pilot whose life it was.
+   */
+  endedLives: LifeStats[];
 }
 
 const TURN_RATE_RAD = (BALANCE.movement.turnRateDegPerSec * Math.PI) / 180;
@@ -140,7 +155,8 @@ function rollSpawn(
   };
 }
 
-function spawnPlayer(state: SimState, id: number): void {
+function spawnPlayer(state: SimState, id: number, isBot: boolean): void {
+  const spawn = rollSpawn(state, null);
   state.players.push({
     id,
     turn: 0,
@@ -149,7 +165,12 @@ function spawnPlayer(state: SimState, id: number): void {
     trailEpoch: 0,
     retiredTrails: [],
     history: [],
-    ...rollSpawn(state, null),
+    isBot,
+    lifeTicks: 0,
+    // The fresh start block is the life's peak until a fill beats it.
+    peakPct: mapSharePct(spawn.territory, state.arenaSizeWU),
+    otherHumanTicks: 0,
+    ...spawn,
   });
 }
 
@@ -180,7 +201,28 @@ function applyDeaths(state: SimState, deaths: readonly Death[], safeIds: Set<num
   for (const victim of victims) {
     Object.assign(victim, rollSpawn(state, victim));
     victim.turn = 0;
+    // A new life starts a new score (spec §2.5: the score is per life) —
+    // the closing counters were already captured into `endedLives`.
+    victim.lifeTicks = 0;
+    victim.otherHumanTicks = 0;
+    victim.peakPct = mapSharePct(victim.territory, state.arenaSizeWU);
     safeIds.add(victim.id);
+  }
+}
+
+/**
+ * Fold this tick into every player's life counters (spec §10.5): one lived
+ * tick each, plus the number of OTHER humans alive alongside them — the time
+ * integral whose average is the score's ØandereMenschen. Bots count nobody
+ * as company and are company to nobody, so an arena padded with bots (or a
+ * private room full of them) grants no multiplier at all.
+ */
+function accrueLifeCounters(players: readonly PlayerSim[]): void {
+  let humans = 0;
+  for (const p of players) if (!p.isBot) humans += 1;
+  for (const p of players) {
+    p.lifeTicks += 1;
+    p.otherHumanTicks += p.isBot ? humans : humans - 1;
   }
 }
 
@@ -226,6 +268,10 @@ function trackTrail(
   );
   if (outcome) {
     p.territory = outcome.territory;
+    // A fill is the ONLY way land grows (spawn aside), so this is where the
+    // score's peak share can move — cheaper and exact, versus re-measuring
+    // every territory every tick (spec §10.5).
+    p.peakPct = Math.max(p.peakPct, mapSharePct(p.territory, state.arenaSizeWU));
     others.forEach((victim, i) => {
       const updated = outcome.others[i];
       if (updated === undefined || updated === victim.territory) return;
@@ -263,16 +309,19 @@ function clampViewDelay(value: number): number {
 
 /** One authoritative tick: leaves → joins → intents → movement → trails/fills → deaths. */
 export function step(state: SimState, inputs: TickInputs, dtSec: number): TickEvents {
-  const events: TickEvents = { fills: [], steals: [], deaths: [] };
+  const events: TickEvents = { fills: [], steals: [], deaths: [], endedLives: [] };
   if (inputs.leaves) {
     for (const id of inputs.leaves) {
       const idx = state.players.findIndex((p) => p.id === id);
       if (idx !== -1) state.players.splice(idx, 1);
     }
   }
-  if (inputs.joins) {
-    for (const id of inputs.joins) {
-      if (!state.players.some((p) => p.id === id)) spawnPlayer(state, id);
+  for (const [ids, isBot] of [
+    [inputs.joins, false],
+    [inputs.botJoins, true],
+  ] as const) {
+    for (const id of ids ?? []) {
+      if (!state.players.some((p) => p.id === id)) spawnPlayer(state, id, isBot);
     }
   }
   const byId = (id: number): PlayerSim | undefined => state.players.find((p) => p.id === id);
@@ -323,6 +372,13 @@ export function step(state: SimState, inputs: TickInputs, dtSec: number): TickEv
   // A steal survivor who still died this tick (e.g. cut while their land
   // shrank) is a death, not a steal — the respawn sync covers them.
   events.steals = events.steals.filter((id) => !dying.has(id));
+  // Everyone lived through this tick — including whoever dies at its end, who
+  // is credited the tick before their life is closed and their counters reset.
+  accrueLifeCounters(state.players);
+  for (const death of events.deaths) {
+    const victim = byId(death.victimId);
+    if (victim) events.endedLives.push(lifeStats(victim));
+  }
   applyDeaths(state, events.deaths, safeIds);
   state.tick += 1;
   recordHistory(state.players, state.tick, safeIds);

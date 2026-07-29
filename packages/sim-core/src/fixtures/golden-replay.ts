@@ -42,6 +42,11 @@ export function goldenScript(): Map<number, TickInputs> {
       { id: 2, viewDelayTicks: 7 },
     ],
   });
+  // Ticket 09: a bot in the arena puts the life counters' human/bot
+  // accounting on the golden path — it spawns and steers like anyone, so any
+  // determinism leak in the score bookkeeping moves the hash. Joins after
+  // player 1's fill (ticks 12–35) so it cannot disturb it.
+  script.set(40, { botJoins: [9] });
   script.set(60, { turns: [{ id: 2, turn: -1 }] });
   script.set(90, { turns: [{ id: 3, turn: 1 }] });
   script.set(150, { leaves: [2] });
@@ -58,9 +63,9 @@ export function goldenScript(): Map<number, TickInputs> {
 
 /**
  * Expected `hashSimState` after GOLDEN_TICKS — pinned once, guarded forever.
- * Regenerated for ticket 07 (rewind entered the state: view delays, pose
- * history and retired trails are hashed now, and the script gained the
- * `views` entries above): a deliberate semantics change, not drift.
- * Previous: '82bff39b' (ticket 05), '779967a5' (ticket 04).
+ * Regenerated for ticket 09 (the score entered the state: bot flag and the
+ * per-life counters are hashed now, and the script gained the bot join
+ * above): a deliberate semantics change, not drift.
+ * Previous: '9ebfdacf' (ticket 07), '82bff39b' (ticket 05), '779967a5' (04).
  */
-export const GOLDEN_END_HASH = '9ebfdacf';
+export const GOLDEN_END_HASH = 'a1106a61';

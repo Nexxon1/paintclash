@@ -26,6 +26,7 @@ import {
   decodeClientMessage,
   encodeDeath,
   encodeLeaderboard,
+  encodeScore,
   encodeSnapshot,
   encodeTerritory,
   encodeTrail,
@@ -37,6 +38,7 @@ import {
 import { BALANCE, LIMITS, type TurnSignal } from '@paintclash/shared';
 import {
   createSimState,
+  lifeStats,
   standings,
   step,
   type SimState,
@@ -385,6 +387,15 @@ export class ArenaCore {
       }
     }
 
+    // Each closed life's counters go to exactly the pilot whose life it was
+    // (ticket 09): the score is personal, never broadcast. Sent after this
+    // tick's death frame, so the client resets its running estimate first and
+    // then commits the final one to its local records.
+    for (const stats of events.endedLives) {
+      const connection = this.connections.get(stats.playerId);
+      if (connection?.joined) connection.socket.send(encodeScore(stats, true));
+    }
+
     const players: SnapshotPlayer[] = this.state.players.map((p) => ({
       id: p.id,
       x: p.x,
@@ -406,6 +417,25 @@ export class ArenaCore {
     }
 
     this.broadcastLeaderboard();
+    this.sendOwnScores();
+  }
+
+  /**
+   * The running life's score ingredients (ticket 09, spec §2.5), to each
+   * pilot's own socket every `scoreIntervalTicks`. Not deduped like the
+   * leaderboard: the survival term inside moves every tick, so every frame
+   * differs by construction — ten bytes twice a second is the whole cost, and
+   * it keeps the HUD number ANCHORED instead of accumulated forever from one
+   * early frame.
+   */
+  private sendOwnScores(): void {
+    if (this.state.tick % LIMITS.scoreIntervalTicks !== 0) return;
+    for (const [id, connection] of this.connections) {
+      if (!connection.joined) continue;
+      const player = this.state.players.find((p) => p.id === id);
+      // Joined but not yet spawned (the join's tick has not run): no life yet.
+      if (player) connection.socket.send(encodeScore(lifeStats(player), false));
+    }
   }
 
   /**

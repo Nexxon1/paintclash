@@ -1,4 +1,4 @@
-import { LEADERBOARD_PERCENT_SCALE } from '@paintclash/shared';
+import { MAP_SHARE_PERCENT_SCALE } from '@paintclash/shared';
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 
@@ -21,6 +21,10 @@ function owner(id: number, half: number, cx = 50, cy = 50): PlayerSim {
     trailEpoch: 0,
     retiredTrails: [],
     history: [],
+    isBot: false,
+    lifeTicks: 0,
+    peakPct: 0,
+    otherHumanTicks: 0,
   };
 }
 
@@ -117,8 +121,8 @@ describe('standings (spec §2.5: the metric is exclusively % of the map)', () =>
             const above = table[i - 1];
             const below = table[i];
             if (!above || !below) throw new Error('gap in the table');
-            const shownAbove = Math.round(above.areaPct * LEADERBOARD_PERCENT_SCALE);
-            const shownBelow = Math.round(below.areaPct * LEADERBOARD_PERCENT_SCALE);
+            const shownAbove = Math.round(above.areaPct * MAP_SHARE_PERCENT_SCALE);
+            const shownBelow = Math.round(below.areaPct * MAP_SHARE_PERCENT_SCALE);
             expect(shownAbove).toBeGreaterThanOrEqual(shownBelow);
             if (shownAbove === shownBelow) {
               expect(above.playerId).toBeLessThan(below.playerId);

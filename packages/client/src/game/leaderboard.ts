@@ -9,9 +9,9 @@
  */
 
 import type { LeaderboardRow } from '@paintclash/protocol';
-import { BALANCE } from '@paintclash/shared';
 
 import { playerCssColor, sameShownColor } from './colors.js';
+import { formatPercent } from './format.js';
 
 /** One rendered leaderboard line. */
 export interface LeaderboardRowView {
@@ -24,11 +24,6 @@ export interface LeaderboardRowView {
   percentText: string;
   /** The recipient's own row (spec §2.5: highlighted). */
   isSelf: boolean;
-}
-
-/** German percent, at the resolution the wire carries (~0,09 % per block). */
-function formatPercent(areaPct: number): string {
-  return `${areaPct.toFixed(BALANCE.leaderboard.percentDecimals).replace('.', ',')} %`;
 }
 
 /**

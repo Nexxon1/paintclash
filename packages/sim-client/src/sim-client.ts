@@ -32,6 +32,8 @@ export interface TerritoryUpdate {
 }
 
 export type DeathUpdate = Extract<ServerMessage, { type: 'death' }>;
+/** One own-score frame (ticket 09): the running life, or the closing one. */
+export type ScoreUpdate = Extract<ServerMessage, { type: 'score' }>;
 
 export class SimClient {
   /** Own id once the welcome arrived. */
@@ -56,6 +58,10 @@ export class SimClient {
   onDeath: ((death: DeathUpdate) => void) | null = null;
   /** Latest leaderboard as sent to THIS client (ticket 08): top N + own row. */
   leaderboard: readonly LeaderboardRow[] = [];
+  /** Newest own-score ingredients (ticket 09); null until the first frame. */
+  score: ScoreUpdate | null = null;
+  /** Every closed life seen, in arrival order — the score at each death. */
+  readonly finishedLives: ScoreUpdate[] = [];
 
   private readonly send: (frame: Uint8Array) => void;
   private readonly name: string;
@@ -106,6 +112,14 @@ export class SimClient {
     if (message.type === 'leaderboard') {
       // A board replaces the previous one wholesale (spec §2.5).
       this.leaderboard = message.rows;
+      return;
+    }
+    if (message.type === 'score') {
+      // The own life's score ingredients (ticket 09). A `final` frame closes
+      // a life; the render client turns these into the HUD number and its
+      // local records, the sim-client just records them for assertions.
+      this.score = message;
+      if (message.final) this.finishedLives.push(message);
       return;
     }
     if (this.snapshot && message.tick <= this.snapshot.tick) return;

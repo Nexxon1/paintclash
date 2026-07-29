@@ -75,6 +75,27 @@ export interface PlayerSim extends HeadPose {
   retiredTrails: RetiredTrail[];
   /** Rolling post-tick pose window, newest last (ticket 07 rewind). */
   history: PoseHistoryEntry[];
+  /**
+   * Server-driven bot (ADR-0005, ticket 12) — identical in every rule, they
+   * only never count as company for the score (spec §10.5).
+   */
+  isBot: boolean;
+  /**
+   * Ticks of the CURRENT life (ticket 09); reset by every respawn. Ticks, not
+   * seconds — the sim has no clock (ADR-0003).
+   */
+  lifeTicks: number;
+  /**
+   * Largest share of the map (percent) held in this life — arena-size
+   * independent, so a private room's score is comparable (spec §10.5).
+   * Sampled where area can GROW (spawn, fill), never per tick.
+   */
+  peakPct: number;
+  /**
+   * Time integral of concurrently alive other humans over this life, in
+   * player-ticks; divided by `lifeTicks` it is the spec's ØandereMenschen.
+   */
+  otherHumanTicks: number;
 }
 
 export interface SimState {
@@ -122,6 +143,7 @@ export function hashSimState(state: SimState): string {
   const numbers: number[] = [state.tick, state.rng, state.arenaSizeWU];
   for (const p of state.players) {
     numbers.push(p.id, p.x, p.y, p.heading, p.turn, p.viewDelayTicks, p.trailEpoch);
+    numbers.push(p.isBot ? 1 : 0, p.lifeTicks, p.peakPct, p.otherHumanTicks);
     numbers.push(p.territory.length);
     for (const poly of p.territory) {
       numbers.push(poly.length);

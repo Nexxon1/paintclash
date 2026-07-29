@@ -70,6 +70,15 @@ export const LIMITS = Object.freeze({
    */
   leaderboardIntervalTicks: 10,
   /**
+   * Ticks between two own-score frames (ticket 09, spec §2.5). Unlike the
+   * leaderboard these cannot be deduped — the survival time inside them
+   * moves every tick — so this interval IS the traffic: 10 ticks = 500 ms,
+   * ten bytes twice a second per player. The HUD number itself stays smooth
+   * regardless: the client advances the survival term on its own tick clock
+   * between frames and only re-anchors on arrival.
+   */
+  scoreIntervalTicks: 10,
+  /**
    * Deepest rewind (ticket 07, ADR-0003): the server judges an actor's
    * cuts/head-ons against opponents at the tick the actor was rendering,
    * at most this many ticks back (500 ms — the genre's latency tolerance,

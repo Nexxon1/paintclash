@@ -20,14 +20,17 @@ import {
   LIMITS,
   TICK_DT_MS,
   TICK_DT_SEC,
+  type LifeCounters,
   type Point,
   type Territory,
   type TurnSignal,
 } from '@paintclash/shared';
-import { pointInTerritory, territoryArea } from '@paintclash/sim-core';
+import { lifeScore, pointInTerritory, territoryArea } from '@paintclash/sim-core';
 
 import { angleDiff, Interpolator } from './interpolator.js';
 import { Predictor, type RenderPose } from './predictor.js';
+
+import type { FinishedLife } from './records.js';
 
 /** Sim ticks per batched input frame — the shared §6.3 batching cadence. */
 export const INPUT_FLUSH_TICKS = LIMITS.inputFlushTicks;
@@ -182,6 +185,16 @@ export interface RenderState {
   deaths: DeathView[];
   /** Top rows + the own one, straight from the server (ticket 08). */
   leaderboard: LeaderboardView;
+  /**
+   * The own score as it stands (ticket 09, spec §2.5) — null until the first
+   * score frame arrives, which is what hides the panel before the spawn.
+   */
+  liveScore: number | null;
+  /**
+   * The own life that ended since the last sample: what the local records are
+   * committed from (ADR-0006 seam 4). Drained like `deaths`.
+   */
+  finishedLife: FinishedLife | null;
 }
 
 export class ClientSession {
@@ -203,6 +216,16 @@ export class ClientSession {
   private pendingDeaths: DeathView[] = [];
   /** Latest global ranking; stands until the next board replaces it. */
   private leaderboard: LeaderboardView = { rev: 0, rows: [] };
+  /**
+   * Newest own-score ingredients from the server (ticket 09), plus the local
+   * tick they arrived at: between frames only the survival term advances, so
+   * the HUD number climbs smoothly instead of stepping twice a second — and
+   * it stays ANCHORED to the server rather than accumulating error.
+   */
+  private scoreAnchor: LifeCounters | null = null;
+  private scoreAnchorTick = 0;
+  /** The own life closed since the last renderSample (drained there). */
+  private pendingFinishedLife: FinishedLife | null = null;
   /** The own death's respawn must CUT, not glide — set until reconciled. */
   private snapOnReconcile = false;
   /**
@@ -308,6 +331,17 @@ export class ClientSession {
         this.ownTrail = [];
         this.ownRecent.length = 0;
         this.snapOnReconcile = true;
+        // The score died with the life (ticket 09): zero the anchor in place,
+        // so the panel reads the fresh life's 0 and climbs instead of blinking
+        // out for the half second until the next live frame re-anchors it.
+        // The company average carries over — it is the only term the new life
+        // inherits, and the server's next frame corrects it anyway.
+        this.scoreAnchor = {
+          peakPct: 0,
+          lifeTicks: 0,
+          avgOtherHumans: this.scoreAnchor?.avgOtherHumans ?? 0,
+        };
+        this.scoreAnchorTick = this.clientTicks;
       } else {
         this.enemyTrails.delete(message.victimId);
         this.enemyRecent.delete(message.victimId);
@@ -326,6 +360,23 @@ export class ClientSession {
       // Boards replace, never merge (spec §2.5) — the server sends one only
       // when it changed, so a bumped rev always means a real change.
       this.leaderboard = { rev: this.leaderboard.rev + 1, rows: message.rows };
+      return;
+    }
+    if (message.type === 'score') {
+      const { peakPct, lifeTicks, avgOtherHumans } = message;
+      if (message.final) {
+        // The life's last word (spec §2.5: the score is computed at death) —
+        // the same formula the live estimate uses, on the closing counters.
+        const survivalSec = lifeTicks * TICK_DT_SEC;
+        this.pendingFinishedLife = {
+          score: lifeScore({ peakPct, survivalSec, avgOtherHumans }),
+          peakPct,
+          survivalSec,
+        };
+        return;
+      }
+      this.scoreAnchor = { peakPct, lifeTicks, avgOtherHumans };
+      this.scoreAnchorTick = this.clientTicks;
       return;
     }
     const latest = this.interpolator.latestTick();
@@ -552,6 +603,8 @@ export class ClientSession {
     this.pendingFills = [];
     const deaths = this.pendingDeaths;
     this.pendingDeaths = [];
+    const finishedLife = this.pendingFinishedLife;
+    this.pendingFinishedLife = null;
     return {
       self,
       selfId: this.playerId,
@@ -562,6 +615,47 @@ export class ClientSession {
       fills,
       deaths,
       leaderboard: this.leaderboard,
+      liveScore: this.liveScore(),
+      finishedLife,
+    };
+  }
+
+  /**
+   * The own score as it stands (spec §2.5: live estimate, identical formula).
+   * The server's ingredients are anchored on arrival; between frames only the
+   * survival time advances — on the local tick clock, which is servoed to the
+   * server's real rate, so the estimate cannot drift away from the number the
+   * final frame will report.
+   */
+  private liveScore(): number | null {
+    return this.currentLife()?.score ?? null;
+  }
+
+  /**
+   * The running life as it stands — the same numbers the `final` frame would
+   * carry, from the anchor plus the ticks lived since it arrived. Null before
+   * the first score frame.
+   *
+   * `main.ts` commits this when the session ends WITHOUT a death (the socket
+   * dropped, the player closed the game): a life that was actually played must
+   * be able to set the max-% and survival records, which otherwise only a
+   * death could (spec §2.5 lists them as records, not as death scores). The
+   * numbers are a lower bound — at most one score interval stale — and
+   * committing keeps only maxima, so a double commit is harmless.
+   */
+  currentLife(): FinishedLife | null {
+    const anchor = this.scoreAnchor;
+    if (!anchor) return null;
+    const ticks = anchor.lifeTicks + Math.max(0, this.clientTicks - this.scoreAnchorTick);
+    const survivalSec = ticks * TICK_DT_SEC;
+    return {
+      score: lifeScore({
+        peakPct: anchor.peakPct,
+        survivalSec,
+        avgOtherHumans: anchor.avgOtherHumans,
+      }),
+      peakPct: anchor.peakPct,
+      survivalSec,
     };
   }
 

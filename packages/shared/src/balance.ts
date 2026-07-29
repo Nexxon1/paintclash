@@ -64,6 +64,24 @@ export const BALANCE = Object.freeze({
      */
     minFillAreaWU2: 0.01,
   }),
+  /**
+   * Score (spec §10.5) — the personal performance number
+   * `round(peakPct × √survivalSec × (1 + humanBonus × ØotherHumans) × scale)`.
+   * The sublinear time term is the formula's own shape, not a parameter.
+   */
+  score: Object.freeze({
+    /**
+     * Bonus per concurrently alive other HUMAN. Bots deliberately do not
+     * count (spec §10.5) — otherwise a bot-stuffed private room would be
+     * the cheapest way to farm the multiplier.
+     */
+    humanBonus: 0.25,
+    /**
+     * Overall scale. Purely presentational: it lifts the product into the
+     * readable range the spec's reference runs quote (≈ 116 / 3 286 / 18 187).
+     */
+    scale: 10,
+  }),
   /** Leaderboard (spec §2.5) — the global live ranking's shape. */
   leaderboard: Object.freeze({
     /**
@@ -83,11 +101,14 @@ export const BALANCE = Object.freeze({
 });
 
 /**
- * Integer resolution of a leaderboard share: `areaPct × this` is the number
- * the ranking compares, the wire carries and the HUD prints. One source, so
- * ranking, transport and display can never drift apart (spec §5.1/§2.5).
+ * Integer resolution of a share of the map: `areaPct × this` is the number the
+ * ranking compares, the wire carries and the HUD prints — for the leaderboard
+ * row (spec §2.5) and for the score's peak share alike (spec §10.5). One
+ * source, so ranking, score, transport and display can never drift apart
+ * (spec §5.1). The digits themselves come from the leaderboard group: they are
+ * what a player actually reads a share in.
  */
-export const LEADERBOARD_PERCENT_SCALE = 10 ** BALANCE.leaderboard.percentDecimals;
+export const MAP_SHARE_PERCENT_SCALE = 10 ** BALANCE.leaderboard.percentDecimals;
 
 /** Simulation tickrate (spec §6.2): 20 Hz — the splix-proven sweet spot. */
 export const TICK_HZ = 20;

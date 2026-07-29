@@ -34,6 +34,10 @@ function player(
     trailEpoch: 0,
     retiredTrails: [],
     history: [],
+    isBot: false,
+    lifeTicks: 0,
+    peakPct: 0,
+    otherHumanTicks: 0,
   };
 }
 

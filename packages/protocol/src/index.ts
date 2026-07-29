@@ -9,6 +9,7 @@ export {
   encodeInput,
   encodeJoin,
   encodeLeaderboard,
+  encodeScore,
   encodeSnapshot,
   encodeTerritory,
   encodeTrail,

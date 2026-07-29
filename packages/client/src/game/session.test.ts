@@ -3,6 +3,7 @@ import {
   decodeClientMessage,
   encodeDeath,
   encodeLeaderboard,
+  encodeScore,
   encodeSnapshot,
   encodeTerritory,
   encodeTrail,
@@ -10,6 +11,8 @@ import {
   type SnapshotPlayer,
 } from '@paintclash/protocol';
 import { describe, expect, it } from 'vitest';
+
+import { lifeScore } from '@paintclash/sim-core';
 
 import { ClientSession, INPUT_FLUSH_TICKS } from './session.js';
 
@@ -177,6 +180,74 @@ describe('snapshots feed reconciliation + interpolation', () => {
     expect(session.renderSample(1).leaderboard).toEqual(board);
     session.receive(encodeLeaderboard([{ rank: 1, playerId: 1, areaPct: 9, name: 'tester' }]));
     expect(session.renderSample(1).leaderboard.rev).toBe(2);
+  });
+
+  it('estimates the own score live and closes the life on the final frame (ticket 09)', () => {
+    const { session } = harness();
+    joined(session);
+    // Nothing to score before the first frame — the HUD stays hidden.
+    expect(session.renderSample(1).liveScore).toBeNull();
+
+    // 8 % held, 40 ticks (2 s) lived, one other human: the spec §10.5 formula
+    // is the one place this number comes from (`sim-core`'s lifeScore).
+    session.receive(encodeScore({ peakPct: 8, lifeTicks: 40, avgOtherHumans: 1 }, false));
+    const anchored = session.renderSample(1).liveScore;
+    expect(anchored).toBe(lifeScore({ peakPct: 8, survivalSec: 2, avgOtherHumans: 1 }));
+
+    // Between server frames the estimate advances on the local tick clock —
+    // 20 more ticks = one more second of survival, nothing else changed.
+    for (let i = 0; i < 20; i++) session.simTick(0);
+    expect(session.renderSample(1).liveScore).toBe(
+      lifeScore({ peakPct: 8, survivalSec: 3, avgOtherHumans: 1 }),
+    );
+
+    // The final frame reports the closed life exactly once.
+    expect(session.renderSample(1).finishedLife).toBeNull();
+    session.receive(encodeScore({ peakPct: 8.5, lifeTicks: 60, avgOtherHumans: 1 }, true));
+    expect(session.renderSample(1).finishedLife).toEqual({
+      score: lifeScore({ peakPct: 8.5, survivalSec: 3, avgOtherHumans: 1 }),
+      peakPct: 8.5,
+      survivalSec: 3,
+    });
+    expect(session.renderSample(1).finishedLife).toBeNull(); // drained
+  });
+
+  it('the own death restarts the running score at zero (ticket 09)', () => {
+    const { session } = harness();
+    joined(session);
+    session.receive(encodeScore({ peakPct: 8, lifeTicks: 40, avgOtherHumans: 1 }, false));
+    expect(session.renderSample(1).liveScore).toBeGreaterThan(0);
+    // An enemy death leaves the own score alone …
+    session.receive(encodeDeath(2, 1, 'trailCut'));
+    expect(session.renderSample(1).liveScore).toBeGreaterThan(0);
+    // … the own one ends the life: the panel must not keep counting up on a
+    // dead run while the fresh life's first frame is still in flight — but it
+    // must stay ON SCREEN, hence 0 rather than "no score at all".
+    session.receive(encodeDeath(1, 2, 'trailCut'));
+    expect(session.renderSample(1).liveScore).toBe(0);
+    // Time alone does not resurrect it either: the new life holds no land yet.
+    for (let i = 0; i < 20; i++) session.simTick(0);
+    expect(session.renderSample(1).liveScore).toBe(0);
+    session.receive(encodeScore({ peakPct: 0.09, lifeTicks: 2, avgOtherHumans: 1 }, false));
+    expect(session.renderSample(1).liveScore).toBe(
+      lifeScore({ peakPct: 0.09, survivalSec: 0.1, avgOtherHumans: 1 }),
+    );
+  });
+
+  it('hands the running life to the records when the session ends undeath (ticket 09)', () => {
+    const { session } = harness();
+    joined(session);
+    // Nothing played yet — nothing to commit.
+    expect(session.currentLife()).toBeNull();
+    session.receive(encodeScore({ peakPct: 8, lifeTicks: 40, avgOtherHumans: 1 }, false));
+    for (let i = 0; i < 20; i++) session.simTick(0);
+    // A player who disconnects mid-life keeps that life's records: same
+    // numbers the `final` frame would have carried, advanced locally.
+    expect(session.currentLife()).toEqual({
+      score: lifeScore({ peakPct: 8, survivalSec: 3, avgOtherHumans: 1 }),
+      peakPct: 8,
+      survivalSec: 3,
+    });
   });
 
   it('reports growing fills once, for the wave animation', () => {

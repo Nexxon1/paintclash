@@ -584,6 +584,89 @@ describe('death broadcast (ticket 05, spec §2.1)', () => {
   });
 });
 
+describe('own-score frames (ticket 09, spec §2.5/§10.5)', () => {
+  function scores(socket: FakeSocket): Extract<ServerMessage, { type: 'score' }>[] {
+    return socket.decoded().filter((m) => m.type === 'score');
+  }
+
+  /** Steer intents paced one per tick, like a real client. */
+  function drive(arena: ArenaCore, socket: FakeSocket, id: number, turns: (-1 | 0 | 1)[]): void {
+    for (const turn of turns) {
+      const tick = socket.lastSnapshot().tick;
+      arena.handleFrame(id, encodeInput([{ seq: tick, turn }], 0));
+      arena.tick(TICK_DT_SEC);
+    }
+  }
+
+  it('sends the running life to its own pilot only, on the score cadence', () => {
+    const arena = new ArenaCore(1);
+    const ada = joinedPlayer(arena, 'Ada');
+    const bo = joinedPlayer(arena, 'Bo');
+    for (let i = 0; i < LIMITS.scoreIntervalTicks; i++) arena.tick(TICK_DT_SEC);
+
+    const own = scores(ada.socket);
+    expect(own).toHaveLength(1);
+    const frame = own[0];
+    if (!frame) throw new Error('no score frame');
+    expect(frame.final).toBe(false);
+    expect(frame.lifeTicks).toBe(LIMITS.scoreIntervalTicks);
+    // The 6×6 start block of the 200 WU arena is 0,09 % of the map.
+    expect(frame.peakPct).toBeCloseTo(0.09, 6);
+    // One other human all along — and each pilot gets only its OWN frame.
+    expect(frame.avgOtherHumans).toBe(1);
+    expect(scores(bo.socket)).toEqual(own);
+  });
+
+  it('nothing between two cadence ticks, and nothing before the spawn', () => {
+    const arena = new ArenaCore(1);
+    const ada = joinedPlayer(arena, 'Ada');
+    // Tick 1..(interval-1): joined, spawned, but off-cadence.
+    for (let i = 0; i < LIMITS.scoreIntervalTicks - 1; i++) arena.tick(TICK_DT_SEC);
+    expect(scores(ada.socket)).toHaveLength(0);
+    // A socket that never joined gets no score frame even on the cadence.
+    const lurker = new FakeSocket();
+    expect(arena.connect(lurker)).not.toBeNull();
+    arena.tick(TICK_DT_SEC);
+    expect(scores(ada.socket)).toHaveLength(1);
+    expect(scores(lurker)).toHaveLength(0);
+  });
+
+  it('closes the life on death: a final frame with the counters it died with', () => {
+    const arena = new ArenaCore(20260721);
+    const a = joinedPlayer(arena, 'circler');
+    const witness = joinedPlayer(arena, 'witness');
+    arena.tick(TICK_DT_SEC);
+    // Straight out of the block, then a held max-rate circle → self-cut.
+    drive(arena, a.socket, a.id, [
+      ...Array.from({ length: 14 }, (): 0 => 0),
+      ...Array.from({ length: 30 }, (): 1 => 1),
+    ]);
+
+    const messages = a.socket.decoded();
+    const deathAt = messages.findIndex((m) => m.type === 'death');
+    expect(deathAt).toBeGreaterThanOrEqual(0);
+    // The final frame follows the death frame of the same tick, so a client
+    // resets its running estimate before committing the closed life.
+    const final = messages.slice(deathAt).find((m) => m.type === 'score' && m.final);
+    if (final?.type !== 'score') throw new Error('no final score frame after the death');
+    expect(final.lifeTicks).toBeGreaterThan(14);
+    expect(final.peakPct).toBeCloseTo(0.09, 6);
+    expect(final.avgOtherHumans).toBe(1);
+    // Nobody else learns a foreign score (spec §2.5: it is personal).
+    expect(scores(witness.socket).some((m) => m.final)).toBe(false);
+    // The next life starts over: the first live frame after the death counts
+    // a fresh, shorter life — the counters reset with the respawn.
+    for (let i = 0; i < LIMITS.scoreIntervalTicks; i++) arena.tick(TICK_DT_SEC);
+    const afterDeath = a.socket
+      .decoded()
+      .slice(deathAt)
+      .find((m) => m.type === 'score' && !m.final);
+    if (afterDeath?.type !== 'score') throw new Error('no live score frame after the death');
+    expect(afterDeath.lifeTicks).toBeLessThan(final.lifeTicks);
+    expect(afterDeath.lifeTicks).toBeLessThanOrEqual(LIMITS.scoreIntervalTicks);
+  });
+});
+
 describe('steal broadcast (ticket 06, spec §2.2)', () => {
   /**
    * Random spawns sit ≥ 25 WU apart — no scripted drive can steal within a

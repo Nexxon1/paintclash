@@ -4,6 +4,14 @@
  *
  * @see spec §5.1, ADR-0002
  */
-export { BALANCE, LEADERBOARD_PERCENT_SCALE, TICK_DT_MS, TICK_DT_SEC, TICK_HZ } from './balance.js';
+export { BALANCE, MAP_SHARE_PERCENT_SCALE, TICK_DT_MS, TICK_DT_SEC, TICK_HZ } from './balance.js';
 export { LIMITS } from './limits.js';
-export type { DeathCause, Point, Poly, Ring, Territory, TurnSignal } from './types.js';
+export type {
+  DeathCause,
+  LifeCounters,
+  Point,
+  Poly,
+  Ring,
+  Territory,
+  TurnSignal,
+} from './types.js';
