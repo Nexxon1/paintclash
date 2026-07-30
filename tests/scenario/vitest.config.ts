@@ -10,12 +10,13 @@ export default defineWorkersConfig({
     include: ['**/*.test.ts'],
     allowOnly: false,
     testTimeout: 30_000,
-    // One retry in CI, none locally (same deal as `playwright.config.ts`): the
-    // spawns are pinned (see wrangler.jsonc), so what is left to go wrong is
-    // TICK TIMING on a contended shared runner — a choreography that misses a
-    // window there is not a regression. Vitest still reports a retried test as
-    // flaky, so it stays visible instead of silently green.
-    retry: process.env.CI ? 1 : 0,
+    // NO retry, deliberately (unlike `playwright.config.ts`, which retries
+    // because it measures real frame pacing on a shared runner). These tests
+    // are meant to be STABLE, not re-rolled: the spawns are pinned
+    // (wrangler.jsonc), every stage waits on sim STATE rather than on a
+    // wall-clock bet, and every premise miss names itself. A retry here would
+    // hide the one signal that says a choreography has become fragile —
+    // and the last thing this suite needs is a way to be quietly green.
     poolOptions: {
       workers: {
         singleWorker: true,

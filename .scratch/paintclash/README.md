@@ -20,7 +20,7 @@ Die Suite unter [`../../tests/scenario/`](../../tests/scenario/) war über mehre
 1. **Der Seed ist gepinnt** (`tests/scenario/wrangler.jsonc` → `ARENA_SEED`). Spawns sind in Produktion zufällig; in der Suite wären sie eine Zufallsvariable pro Lauf, und jede Choreografie damit ein Manöver, das *meistens* klappt. Gepinnt gilt: was lokal grün ist, ist in CI grün — und was in CI fällt, fällt lokal reproduzierbar. (Belegt: zwei aufeinanderfolgende Läufe zeigen bis auf ~20 ms identische Test-Laufzeiten, d. h. denselben geflogenen Pfad.)
 2. **Jeder Prämissen-Fehlschlag benennt sich selbst.** „Hat nicht geklappt" kostet die nächste Sitzung eine Debugging-Runde; die Fehlermeldung nennt die Stufe (Weitungs-Runde, Orbit, Angriff) und den Messwert.
 3. **Fortschritts-Budgets, keine Wanduhr-Wetten.** Stufen warten auf Sim-Zustand (Fläche, `pointInTerritory`-Streak, Tode), mit großzügiger Wanduhr-Decke — ein langsamer Runner macht einen Test langsamer, nicht rot.
-4. **Ein Retry in CI, keiner lokal** (`vitest.config.ts`, wie `playwright.config.ts`). Was nach dem Seed-Pin bleibt, ist Tick-Timing auf einem geteilten Runner. Vitest meldet den Lauf als *flaky* — sichtbar, nicht heimlich grün.
+4. **Kein Retry.** Anders als bei Playwright (das echtes Frame-Pacing auf geteilten Runnern *messt* und deshalb einen Versuch nachlegt) soll diese Suite **stabil** sein, nicht neu gewürfelt. Ein Retry würde genau das Signal verstecken, das sagt „diese Choreografie ist fragil geworden". Wird ein Test rot, nennt seine Meldung die Stufe — dann wird die Ursache behoben, nicht der Lauf wiederholt.
 
 Vor jedem Commit lokal fahren: `pnpm test:scenario` (~160 s) **und** `pnpm test:e2e` (~30 s, `wrangler dev` läuft unter WSL2 einwandfrei — die alte „stallt"-Notiz gilt nicht mehr).
 
