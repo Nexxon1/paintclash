@@ -92,6 +92,21 @@ export const BALANCE = Object.freeze({
      */
     maxBots: 8,
     /**
+     * Arena area one entity needs, in WU². The spec's own room-sizing rule read
+     * backwards: §10.4 sizes a map as `edge = √(players × 5000)` (2p → 100 WU,
+     * 8p → 200 WU, 16p → 280 WU), i.e. ~5000 WU² per player — and the public
+     * arena's 200 WU gives exactly `targetPopulation` by that measure.
+     *
+     * It caps the population, because the target alone does not: eight bots in a
+     * 50 WU dev arena (`pnpm dev:small`) is SIXTEEN times the density the spec
+     * sizes for, and the fill cost grows with how interlocked territories are —
+     * that arena saturated and blew the 50 ms tick budget within 30 s. A small
+     * map now gets few bots or none, which is what the sizing rule always
+     * implied. It bounds density, never the reverse: it can only ever lower the
+     * count, so the 200 WU public arena is unaffected.
+     */
+    areaPerEntityWU2: 5000,
+    /**
      * Perception radius in WU: a foreign HEAD farther away than this does not
      * exist for a bot (ADR-0005 — deliberately only "what a human could see").
      * Sized after the client camera, which sits `CAMERA_DISTANCE_WU` = 40 WU

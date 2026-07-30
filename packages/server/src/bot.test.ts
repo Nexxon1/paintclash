@@ -97,6 +97,19 @@ describe('the core loop (ticket 12: out, close the loop, fill)', () => {
     expect(area, `area after 10 s: ${area.toFixed(1)} WU²`).toBeGreaterThan(START_BLOCK_AREA + 60);
   });
 
+  it('paints in an arena smaller than its own excursion', () => {
+    // Every one of the eight candidate lobes overshoots a 30 WU arena (the
+    // excursion alone is 18 WU from the centre), so each one's waypoints lie
+    // OUTSIDE the world. That is the second way a bot used to park forever: the
+    // barrier holds the head, an out-of-arena waypoint is never "reached", and a
+    // pinned head lays no new trail so the exposure cap never fires either.
+    // Waypoints are therefore flown clamped — while still being SCORED raw, so
+    // the choice can tell that a lobe runs into the wall.
+    const state = smallArenaWith(30, bot(1, 15, 15, 0));
+    const { fills } = flyBots(state, 400, 200);
+    expect(fills.get(1), 'loops closed in the last 10 s of a 30 WU arena').toBeGreaterThan(0);
+  });
+
   it('paints from a corner too — never presses into the soft barrier instead', () => {
     // A start block in the corner of a small arena (private-room sized): every
     // full-size lobe reaches past the edge, so the pilot has to plan around the
@@ -111,12 +124,22 @@ describe('the core loop (ticket 12: out, close the loop, fill)', () => {
     );
   });
 
-  // 8 bots × 40 s of real sim: the slowest test in the suite by design — a
-  // stall only shows up over time. Generous timeout so a shared runner makes it
-  // slow rather than red.
+  // A SMOKE test, and knowingly a weak one. Both stall mechanisms found so far
+  // have their own fast, precise guards — the 30 WU arena above (out-of-arena
+  // waypoints) and the pin test below (head exactly on its own border). This one
+  // flies the whole fleet on the chance of catching a mechanism nobody has
+  // thought of yet.
+  //
+  // It is short on purpose: the sim's cost per tick grows with territory
+  // complexity, so a saturating arena gets superlinearly more expensive. At 800
+  // ticks it cost 4.7 s here and 38.5 s on a shared CI runner, blowing a 30 s
+  // timeout. Shortening it to 400 also cost it its teeth — at 400 ticks it no
+  // longer catches the out-of-arena stall it originally found, which is exactly
+  // why that mechanism got its own test rather than being left to this one.
+  // Raise the tick count only with a fresh measurement of both.
   it(
     'every bot in a crowded small arena keeps playing — none of them stalls',
-    { timeout: 30_000 },
+    { timeout: 60_000 },
     () => {
       // The regression that named this test: a head can end up ON its own border
       // AND against the arena edge at once. The way home is then "where you
@@ -127,15 +150,15 @@ describe('the core loop (ticket 12: out, close the loop, fill)', () => {
       const state = createSimState(20260730, 60);
       const ids = [1, 2, 3, 4, 5, 6, 7, 8];
       step(state, { botJoins: ids }, TICK_DT_SEC);
-      // Counted over the LAST 20 s only: the bot that used to freeze had already
-      // painted twice before the barrier caught it, so "ever filled" was green
-      // while it was parked against the wall.
-      const { fills } = flyBots(state, 800, 400);
+      // Counted over the SECOND half only: the bot that used to freeze had
+      // already painted twice before the barrier caught it, so "ever filled" was
+      // green while it was parked against the wall.
+      const { fills } = flyBots(state, 400, 200);
       for (const id of ids) {
         const player = state.players.find((p) => p.id === id);
         expect(
           fills.get(id),
-          `bot ${String(id)} closed no loop in the last 20 s — parked at ` +
+          `bot ${String(id)} closed no loop in the last 10 s — parked at ` +
             `(${(player?.x ?? -1).toFixed(1)}, ${(player?.y ?? -1).toFixed(1)})`,
         ).toBeGreaterThan(0);
       }

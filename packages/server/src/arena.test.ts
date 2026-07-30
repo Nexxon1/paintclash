@@ -1091,7 +1091,11 @@ describe('bot population (ticket 12, spec §2.7: bots = clamp(target − humans,
   it('never exceeds the bot ceiling, whatever the target asks for', () => {
     // A target beyond the ceiling (a mis-set override, a future private room):
     // `clamp(…, 0, maxBots)` is the binding half of the rule.
-    const arena = new ArenaCore(1, undefined, maxBots + 5);
+    //
+    // Needs an arena LARGER than the public one to show that. With the spec's
+    // numbers the area cap grants exactly `targetPopulation` at 200 WU, so there
+    // the two ceilings coincide and the area one would be doing the work.
+    const arena = new ArenaCore(1, 300, maxBots + 5);
     joinedPlayer(arena, 'Ada');
     runTicks(arena, 2);
     expect(simPlayers(arena).filter((p) => p.isBot)).toHaveLength(maxBots);
@@ -1145,6 +1149,30 @@ describe('bot population (ticket 12, spec §2.7: bots = clamp(target − humans,
     // an empty arena would be the cheapest place to farm one.
     expect(simPlayers(arena).filter((p) => p.isBot).length).toBeGreaterThan(0);
     expect(score.avgOtherHumans).toBe(0);
+  });
+
+  it('caps the population by arena AREA, not just by the target', () => {
+    // The defect this pins: a flat target of 8 in `pnpm dev:small`'s 50 WU arena
+    // is 16× the density spec §10.4 sizes for. It saturated and blew the 50 ms
+    // tick budget within 30 s of play — a freeze, not a slowdown.
+    const tiny = new ArenaCore(1, 50, targetPopulation);
+    joinedPlayer(tiny, 'Ada');
+    runTicks(tiny, 3);
+    expect(simPlayers(tiny).filter((p) => p.isBot)).toHaveLength(0);
+
+    // 100 WU = the spec's own 2-player map: room for two entities, so one human
+    // gets exactly one companion.
+    const room = new ArenaCore(1, 100, targetPopulation);
+    joinedPlayer(room, 'Ada');
+    runTicks(room, 3);
+    expect(simPlayers(room).filter((p) => p.isBot)).toHaveLength(1);
+
+    // ...and the 200 WU public arena is untouched: its area grants exactly the
+    // balanced target, so the cap can never be what binds there.
+    const publicArena = populatedArena();
+    joinedPlayer(publicArena, 'Ada');
+    runTicks(publicArena, 3);
+    expect(simPlayers(publicArena)).toHaveLength(targetPopulation);
   });
 
   it('populates nothing unless a target was asked for (private rooms, tests)', () => {

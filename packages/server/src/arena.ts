@@ -356,10 +356,15 @@ export class ArenaCore {
    */
   private manageBots(): void {
     const humans = this.humanCount();
+    // How many entities this arena has ROOM for (spec §10.4's sizing rule read
+    // backwards). A small map must not be packed to the public arena's target:
+    // fill cost grows with how interlocked territories are, and a saturated
+    // arena overruns its tick budget — which players experience as a freeze.
+    const roomFor = Math.floor(this.state.arenaSizeWU ** 2 / BALANCE.bots.areaPerEntityWU2);
+    const target = Math.min(this.botTarget, roomFor);
     // The spec's formula verbatim — the lower bound matters: with MORE humans
     // than the target, `target − humans` is negative.
-    const wanted =
-      humans === 0 ? 0 : Math.max(0, Math.min(BALANCE.bots.maxBots, this.botTarget - humans));
+    const wanted = humans === 0 ? 0 : Math.max(0, Math.min(BALANCE.bots.maxBots, target - humans));
     while (this.bots.size < wanted) {
       const id = this.allocatePlayerId();
       this.bots.set(id, new BotPilot(id));
