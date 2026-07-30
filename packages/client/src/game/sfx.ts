@@ -107,7 +107,12 @@ export function browserAudioContext(): AudioContextLike | null {
 /** Level of the master bus when unmuted — mute takes it to 0. */
 export const MASTER_GAIN = 0.7;
 
-/** Attack of every one-shot envelope: long enough not to click. */
+/**
+ * Default attack of a one-shot envelope: long enough not to click. A voice may
+ * ask for a slower one — the startle in a bright sound is its ONSET, not its
+ * level (which is how alarms are built), so anything with energy up where the
+ * ear is most sensitive fades in instead of hitting.
+ */
 const ATTACK_SEC = 0.012;
 /** Exponential ramps cannot reach 0 — this is "off" for them. */
 const SILENT = 0.0001;
@@ -129,22 +134,26 @@ const NOISE_SEC = 1;
  * from arguments at the call sites.
  * ------------------------------------------------------------------ */
 
+/** The attack/decay shape every voice is played under. */
+interface VoiceEnvelope {
+  peak: number;
+  durationSec: number;
+  /** Fade-in; omitted = ATTACK_SEC. Longer takes the startle out of a voice. */
+  attackSec?: number;
+}
+
 /** An oscillator sweeping `fromHz` → `toHz` under one attack/decay envelope. */
-interface ToneVoice {
+interface ToneVoice extends VoiceEnvelope {
   wave: string;
   fromHz: number;
   /** Equal to `fromHz` for a steady note (no sweep is scheduled then). */
   toHz: number;
-  peak: number;
-  durationSec: number;
 }
 
 /** White noise through a band-pass under the same envelope. */
-interface NoiseVoice {
+interface NoiseVoice extends VoiceEnvelope {
   centerHz: number;
   q: number;
-  peak: number;
-  durationSec: number;
 }
 
 /** Event 1, the reward: a rising fifth, plus a sparkle a beat behind it. */
@@ -164,14 +173,34 @@ const FILL_SPARKLE: ToneVoice = {
 };
 const FILL_SPARKLE_DELAY_SEC = 0.055;
 
-/** Event 2, the kill: a filtered crack over a short low thump. */
-const KILL_CRACK: NoiseVoice = { centerHz: 1900, q: 1.4, peak: 0.2, durationSec: 0.11 };
+/**
+ * Event 2, the kill: a warm impact — a body that drops in pitch, with a soft
+ * knock for definition.
+ *
+ * Retuned after listening (spec §10: start values get adjusted against a
+ * playable build). The first version put a wide noise burst at 1900 Hz with a
+ * 12 ms attack, which is the recipe for an alarm: 2–4 kHz is where the ear is
+ * most sensitive, so it read as tinny AND much louder than its 0.2 suggested,
+ * and the fast onset made it a startle. Three changes: the noise moved down to
+ * a narrow band around 560 Hz (a wooden knock instead of a hiss) at a third of
+ * the level and with a slow fade-in; the body carries the event instead, as a
+ * TRIANGLE (a square's odd harmonics were half the metallic character); and it
+ * lands at 110 Hz rather than 90 — low enough to feel like weight, high enough
+ * that a laptop speaker still reproduces it.
+ */
+const KILL_KNOCK: NoiseVoice = {
+  centerHz: 560,
+  q: 2.2,
+  peak: 0.09,
+  durationSec: 0.09,
+  attackSec: 0.022,
+};
 const KILL_THUMP: ToneVoice = {
-  wave: 'square',
-  fromHz: 180,
-  toHz: 90,
-  peak: 0.16,
-  durationSec: 0.13,
+  wave: 'triangle',
+  fromHz: 260,
+  toHz: 110,
+  peak: 0.28,
+  durationSec: 0.19,
 };
 
 /** Event 3, the own death: the long fall, the only voice that takes its time. */
@@ -307,7 +336,7 @@ export class SfxEngine {
         this.tone(context, FILL_SPARKLE, now + FILL_SPARKLE_DELAY_SEC);
         break;
       case 'kill':
-        this.noiseVoice(context, KILL_CRACK, now);
+        this.noiseVoice(context, KILL_KNOCK, now);
         this.tone(context, KILL_THUMP, now);
         break;
       case 'death':
@@ -421,14 +450,10 @@ export class SfxEngine {
   }
 
   /** A fresh attack/decay gain into the master bus — the shape of every cue. */
-  private envelope(
-    context: AudioContextLike,
-    voice: Pick<ToneVoice, 'peak' | 'durationSec'>,
-    at: number,
-  ): GainNodeLike {
+  private envelope(context: AudioContextLike, voice: VoiceEnvelope, at: number): GainNodeLike {
     const env = context.createGain();
     env.gain.setValueAtTime(0, at);
-    env.gain.linearRampToValueAtTime(voice.peak, at + ATTACK_SEC);
+    env.gain.linearRampToValueAtTime(voice.peak, at + (voice.attackSec ?? ATTACK_SEC));
     env.gain.exponentialRampToValueAtTime(SILENT, at + voice.durationSec);
     if (this.master) env.connect(this.master);
     return env;

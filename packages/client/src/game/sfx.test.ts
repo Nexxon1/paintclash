@@ -244,6 +244,49 @@ describe('the five one-shots (spec §4.4: procedural, 0 asset bytes)', () => {
     }
   });
 
+  it('keeps the kill out of the ear’s alarm band, and fades its noise in', () => {
+    // The first version of this voice was a wide noise burst at 1900 Hz with
+    // the default 12 ms attack. 2–4 kHz is where hearing is most sensitive (it
+    // is where alarms are designed to sit), so it read as tinny AND far louder
+    // than its modest level, and the fast onset made it startle. Both
+    // properties are guarded, because both are easy to reintroduce by "just"
+    // retuning a number.
+    const { engine, context } = engineOn();
+    engine.play('kill');
+    for (const filter of context.filters) {
+      expect(filter.frequency.value).toBeLessThan(1000);
+    }
+    // Creation order in `play('kill')`: the noise knock's envelope is the first
+    // gain after the master bus.
+    const knock = context.gains[1];
+    const opened = knock?.gain.calls.find(([method]) => method === 'set')?.[2] ?? 0;
+    const peaked = knock?.gain.calls.find(([method]) => method === 'linear')?.[2] ?? 0;
+    expect(peaked - opened).toBeGreaterThanOrEqual(0.02);
+  });
+
+  it('never stacks a cue past the bus, and keeps the reward the loudest', () => {
+    const peaks = new Map<string, number>();
+    for (const cue of SFX_CUES) {
+      const { engine, context } = engineOn();
+      engine.play(cue);
+      const sum = context.gains
+        .slice(1)
+        .flatMap((gain) => gain.gain.calls.filter(([method]) => method === 'linear'))
+        .reduce((total, [, value]) => total + value, 0);
+      peaks.set(cue, sum);
+      // Voices of one cue overlap by design — together they must still leave
+      // the master bus headroom rather than clip it.
+      expect(sum, cue).toBeLessThan(1);
+    }
+    const fill = peaks.get('fill') ?? 0;
+    for (const [cue, peak] of peaks) {
+      // The reward is the loudest thing in the game (spec §4.4: "die Belohnung,
+      // das Herz"). A punishing cue that shouts over it makes the game feel
+      // hostile — which is exactly what the kill did before it was retuned.
+      expect(peak, cue).toBeLessThanOrEqual(fill);
+    }
+  });
+
   it('spends no nodes at all while muted', () => {
     const { engine, context } = engineOn(true);
     const before = context.nodeCount;
