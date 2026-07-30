@@ -245,12 +245,10 @@ describe('the five one-shots (spec §4.4: procedural, 0 asset bytes)', () => {
   });
 
   it('keeps the kill out of the ear’s alarm band, and fades its noise in', () => {
-    // The first version of this voice was a wide noise burst at 1900 Hz with
-    // the default 12 ms attack. 2–4 kHz is where hearing is most sensitive (it
-    // is where alarms are designed to sit), so it read as tinny AND far louder
-    // than its modest level, and the fast onset made it startle. Both
-    // properties are guarded, because both are easy to reintroduce by "just"
-    // retuning a number.
+    // Two properties, both one constant away from being lost again: nothing in
+    // 2–4 kHz, where hearing is most sensitive and a burst reads as tinny and
+    // far louder than its level, and a noise voice that fades in rather than
+    // hits (what startles in a sound is its onset, not its level).
     const { engine, context } = engineOn();
     engine.play('kill');
     for (const filter of context.filters) {
@@ -262,6 +260,19 @@ describe('the five one-shots (spec §4.4: procedural, 0 asset bytes)', () => {
     const opened = knock?.gain.calls.find(([method]) => method === 'set')?.[2] ?? 0;
     const peaked = knock?.gain.calls.find(([method]) => method === 'linear')?.[2] ?? 0;
     expect(peaked - opened).toBeGreaterThanOrEqual(0.02);
+  });
+
+  it('starts the own-death fall softly, on a wave without the metal', () => {
+    // Over this fundamental a sawtooth's harmonics (600/900/1200 Hz) read as
+    // metallic, and a fast onset startles — this voice should land as a fall.
+    // Both are one constant away from being lost, so both are pinned.
+    const { engine, context } = engineOn();
+    engine.play('death');
+    expect(context.oscillators[0]?.type).toBe('triangle');
+    const envelope = context.gains[1];
+    const opened = envelope?.gain.calls.find(([method]) => method === 'set')?.[2] ?? 0;
+    const peaked = envelope?.gain.calls.find(([method]) => method === 'linear')?.[2] ?? 0;
+    expect(peaked - opened).toBeGreaterThanOrEqual(0.025);
   });
 
   it('never stacks a cue past the bus, and keeps the reward the loudest', () => {
@@ -281,8 +292,8 @@ describe('the five one-shots (spec §4.4: procedural, 0 asset bytes)', () => {
     const fill = peaks.get('fill') ?? 0;
     for (const [cue, peak] of peaks) {
       // The reward is the loudest thing in the game (spec §4.4: "die Belohnung,
-      // das Herz"). A punishing cue that shouts over it makes the game feel
-      // hostile — which is exactly what the kill did before it was retuned.
+      // das Herz") — a punishing cue that shouts over it makes the game feel
+      // hostile.
       expect(peak, cue).toBeLessThanOrEqual(fill);
     }
   });

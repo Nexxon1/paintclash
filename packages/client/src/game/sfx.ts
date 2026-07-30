@@ -177,16 +177,14 @@ const FILL_SPARKLE_DELAY_SEC = 0.055;
  * Event 2, the kill: a warm impact — a body that drops in pitch, with a soft
  * knock for definition.
  *
- * Retuned after listening (spec §10: start values get adjusted against a
- * playable build). The first version put a wide noise burst at 1900 Hz with a
- * 12 ms attack, which is the recipe for an alarm: 2–4 kHz is where the ear is
- * most sensitive, so it read as tinny AND much louder than its 0.2 suggested,
- * and the fast onset made it a startle. Three changes: the noise moved down to
- * a narrow band around 560 Hz (a wooden knock instead of a hiss) at a third of
- * the level and with a slow fade-in; the body carries the event instead, as a
- * TRIANGLE (a square's odd harmonics were half the metallic character); and it
- * lands at 110 Hz rather than 90 — low enough to feel like weight, high enough
- * that a laptop speaker still reproduces it.
+ * Both voices deliberately stay out of 2–4 kHz, where hearing is most
+ * sensitive and where alarms are placed on purpose: a burst up there reads as
+ * tinny and much louder than its level suggests. So the noise sits in a narrow
+ * band around 560 Hz (a wooden knock rather than a hiss), at a third of the
+ * body's level and with a slow fade-in, and the body carries the event — a
+ * triangle (a square's odd harmonics would put the metal back) landing at
+ * 110 Hz: low enough to feel like weight, high enough for a laptop speaker to
+ * reproduce (spec §10: start values get adjusted against a playable build).
  */
 const KILL_KNOCK: NoiseVoice = {
   centerHz: 560,
@@ -203,13 +201,23 @@ const KILL_THUMP: ToneVoice = {
   durationSec: 0.19,
 };
 
-/** Event 3, the own death: the long fall, the only voice that takes its time. */
+/**
+ * Event 3, the own death: the long fall, the only voice that takes its time.
+ *
+ * A triangle rather than a sawtooth — over this fundamental a sawtooth's
+ * harmonics (600/900/1200 Hz) read as metallic, and the voice should land as a
+ * fall, not as a rasp. The 30 ms fade-in is the other half of that: what
+ * startles in a sound is its onset, not its level. Pitch path and level picked
+ * by ear against the alternatives (spec §10: start values get adjusted against
+ * a playable build).
+ */
 const DEATH_FALL: ToneVoice = {
-  wave: 'sawtooth',
+  wave: 'triangle',
   fromHz: 300,
   toHz: 55,
   peak: 0.26,
   durationSec: 0.7,
+  attackSec: 0.03,
 };
 
 /** Event 4, join/respawn: soft and short — a life starts, it does not brag. */
