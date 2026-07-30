@@ -18,6 +18,8 @@
 
 import {
   BALANCE,
+  TICK_DT_SEC,
+  TURN_RADIUS_WU,
   type Point,
   type Ring,
   type Territory,
@@ -72,20 +74,21 @@ export function senseFor(state: SimState, botId: number): BotSight | null {
 }
 
 const TWO_PI = 2 * Math.PI;
-/** Turn radius at the balanced speed/turn rate ≈ 1.61 WU. */
-const TURN_RADIUS_WU =
-  BALANCE.movement.speedWuPerSec / ((BALANCE.movement.turnRateDegPerSec * Math.PI) / 180);
 /**
- * How close counts as "waypoint reached". Must exceed the turn radius: a head
- * that misses a tighter target can only orbit it, never touch it.
+ * How close counts as "waypoint reached". Must exceed the turn radius
+ * (≈ 1,61 WU): a head that misses a tighter target can only orbit it forever,
+ * never touch it.
  */
 const WAYPOINT_REACH_WU = TURN_RADIUS_WU + 0.5;
 /**
- * Steering deadband in radians — below half a tick's turn authority (16°/tick)
- * a correction would overshoot, so the pilot holds course instead of chattering
- * ±1 around its bearing.
+ * Steering deadband in radians: half of one tick's turn authority. Below that a
+ * correction would overshoot, so the pilot holds course instead of chattering
+ * ±1 around its bearing. Same quantity, and deliberately the same expression, as
+ * the human aim deadzone in `client/game/input.ts` — both answer "smaller than
+ * the sim can steer", so both must move with the tickrate.
  */
-const STEER_DEADBAND_RAD = ((BALANCE.movement.turnRateDegPerSec * Math.PI) / 180) * 0.025;
+const STEER_DEADBAND_RAD =
+  ((BALANCE.movement.turnRateDegPerSec * TICK_DT_SEC) / 2) * (Math.PI / 180);
 /**
  * Trail length that turns an excursion into a committed one. Below it the head
  * has merely grazed its own border (the sub-radius wobble of ticket 20) — the

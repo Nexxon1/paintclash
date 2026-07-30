@@ -69,10 +69,16 @@ export const BALANCE = Object.freeze({
    * not architecture: the pilot in `server/src/bot.ts` reads every number
    * below, so "competent but beatable" is tunable without touching its logic.
    *
-   * Affordability is settled: the DO-CPU benchmark (build ticket 02,
-   * `docs/benchmarks/do-cpu-benchmark.md`) measured 8 entities at ≈ 0,02 ms per
-   * tick locally — with the 4× hardware safety factor ≈ 0,2 % of the 50 ms
-   * budget. The target is a gameplay choice, not a CPU ceiling.
+   * The target is a gameplay choice, and affordable — but do not read the
+   * benchmark's headline for it. Ticket 12 measured both halves against real
+   * code (addendum in `docs/benchmarks/do-cpu-benchmark.md`): the bot pilots
+   * themselves cost ≈ 0,017 ms/tick for all 8 together, i.e. nothing, while a
+   * real tick with 8 painting entities costs ≈ 2,74 ms — about 100× the
+   * benchmark's synthetic estimate for that N, because the polygon fill
+   * dominates. With the 4× hardware factor that is ≈ 11 ms of the 50 ms budget:
+   * inside the 25 ms criterion, without the two orders of magnitude of reserve
+   * the benchmark's interpretation assumes. Raising the target is therefore a
+   * CPU decision as well — ticket 16 re-measures against the real build.
    */
   bots: Object.freeze({
     /**
@@ -86,17 +92,25 @@ export const BALANCE = Object.freeze({
      */
     maxBots: 8,
     /**
-     * Perception radius in WU: heads and trails farther away than this do not
-     * exist for a bot (ADR-0005 — deliberately only "what a human could
-     * see"). Sized after the client camera, which sits
-     * `CAMERA_DISTANCE_WU` = 40 WU from the head: a bot knows about as much of
-     * the arena as the player it plays against.
+     * Perception radius in WU: a foreign HEAD farther away than this does not
+     * exist for a bot (ADR-0005 — deliberately only "what a human could see").
+     * Sized after the client camera, which sits `CAMERA_DISTANCE_WU` = 40 WU
+     * from the head: a bot knows about as much of the arena as the player it
+     * plays against.
+     *
+     * Heads are all a pilot senses, and that is not an omission: touching a
+     * foreign trail kills its OWNER (spec §2.1), so a rival's line is an
+     * opportunity rather than a danger. What can kill a bot is a head met
+     * outside (`evadeRadiusWU`) and its own trail — which it avoids by the
+     * SHAPE of its excursion, not by looking.
      */
     sightRadiusWU: 40,
     /**
      * Ticks between two decisions. Between them a bot keeps steering its
      * current plan — it cannot react to anything, which is the second half of
-     * "beatable": 4 ticks = 200 ms, human reaction time (spec §6.3).
+     * "beatable". 4 ticks = 200 ms, roughly human reaction time; well under the
+     * genre's ~500 ms latency tolerance (spec §6.3), so a bot is not reacting
+     * faster than the players it shares the arena with.
      */
     reactionTicks: 4,
     /** How far from home an excursion reaches before turning back, in WU. */
@@ -172,6 +186,17 @@ export const BALANCE = Object.freeze({
  * what a player actually reads a share in.
  */
 export const MAP_SHARE_PERCENT_SCALE = 10 ** BALANCE.leaderboard.percentDecimals;
+
+/**
+ * Tightest circle a head can fly, in WU (CONTEXT: **Wenderadius**) — speed over
+ * turn rate in radians. Derived, never tuned: it falls out of the two movement
+ * values above. One source because it is a real geometric bound that several
+ * packages reason against (the bot pilot's lane offsets and waypoint tolerance,
+ * the self-cut grace window's upper bound) — three hand-rolled copies of the
+ * same conversion is how those arguments silently drift apart.
+ */
+export const TURN_RADIUS_WU =
+  BALANCE.movement.speedWuPerSec / ((BALANCE.movement.turnRateDegPerSec * Math.PI) / 180);
 
 /** Simulation tickrate (spec §6.2): 20 Hz — the splix-proven sweet spot. */
 export const TICK_HZ = 20;

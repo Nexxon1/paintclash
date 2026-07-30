@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { BALANCE, TICK_DT_MS, TICK_DT_SEC, TICK_HZ } from './balance.js';
+import { BALANCE, TICK_DT_MS, TICK_DT_SEC, TICK_HZ, TURN_RADIUS_WU } from './balance.js';
 import { LIMITS } from './limits.js';
 
 // Sanity only (spec §9.3): value ranges valid, structure frozen. The values
@@ -68,10 +68,8 @@ describe('BALANCE', () => {
     // Must forgive the trail glued to the head (> 2 × radius) but stay below
     // π × turn radius — beyond that, genuine self-crossings become possible
     // and would be forgiven (see balance.ts rationale).
-    const turnRadius =
-      BALANCE.movement.speedWuPerSec / ((BALANCE.movement.turnRateDegPerSec * Math.PI) / 180);
     expect(BALANCE.trail.selfCutGraceWU).toBeGreaterThan(2 * BALANCE.trail.collisionRadiusWU);
-    expect(BALANCE.trail.selfCutGraceWU).toBeLessThan(Math.PI * turnRadius);
+    expect(BALANCE.trail.selfCutGraceWU).toBeLessThan(Math.PI * TURN_RADIUS_WU);
   });
 
   it('carries the spec §2.7 bot population rule', () => {
@@ -84,11 +82,9 @@ describe('BALANCE', () => {
   });
 
   it('keeps the bot pilot inside its geometric window', () => {
-    const turnRadius =
-      BALANCE.movement.speedWuPerSec / ((BALANCE.movement.turnRateDegPerSec * Math.PI) / 180);
     // The return lane must clear the U-turn at the tip, or every excursion
     // would end in a self-cut (see balance.ts rationale).
-    expect(BALANCE.bots.laneOffsetWU).toBeGreaterThan(2 * turnRadius);
+    expect(BALANCE.bots.laneOffsetWU).toBeGreaterThan(2 * TURN_RADIUS_WU);
     // An excursion has to leave the start block behind to enclose anything.
     expect(BALANCE.bots.excursionWU).toBeGreaterThan(BALANCE.spawn.startBlockWU);
     // Evasion must start before the head-on distance decides the matter.

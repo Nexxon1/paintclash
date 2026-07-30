@@ -12,7 +12,7 @@
 - [x] Bots fließen **nicht** in `ØandereMenschen` (Score) ein — verifiziert mit Ticket 09. → die `isBot`-Naht aus T09 trägt; verifiziert am Arena-Seam **und** über die echte Leitung (`avgOtherHumans === 0` bei 1 Mensch + 7 Bots).
 - [x] Ziel-Zahl 8 gegen Ticket 02 (DO-CPU-Benchmark) abgeglichen und ggf. angepasst (dokumentiert). → bleibt **8**; Nachtrag in [`docs/benchmarks/do-cpu-benchmark.md`](../../../docs/benchmarks/do-cpu-benchmark.md) inkl. erstmaliger Messung der Heuristik (**0,017 ms/Tick** für alle 8) und eines Funds für T16 (s. Answer).
 - [x] Szenario-Test: Belebung folgt der clamp-Regel bei Join/Leave. → [`tests/scenario/bots.test.ts`](../../../tests/scenario/bots.test.ts), beide Richtungen über die echte Leitung.
-- [x] CI grün inkl. Coverage (§9.7) — lokal alle Gates grün: typecheck, lint (0 Fehler), format, **477** Unit/Property, **18** Szenario (16 hermetisch + 2 Bots), Coverage-Böden (`server` 96,6 % vs. Boden 75 %; `bot.ts` 100 % Zeilen), **12** E2E.
+- [x] CI grün inkl. Coverage (§9.7) — lokal alle Gates grün: typecheck, lint (0 Fehler), format, **477** Unit/Property, **19** Szenario (17 hermetisch + 2 Bots), Coverage-Böden (`server` 96,6 % vs. Boden 75 %; `bot.ts` 100 % Zeilen), **13** E2E.
 
 _Referenz: spec §2.7, §10.4; ADR-0005._
 
@@ -70,3 +70,43 @@ gedrängten 60-WU-Arena: 308 Fills, 9 Tode — sie sterben, wenn es eng wird, ni
 - **Bots tragen keinen Bot-Namen.** Ohne Verbindung greift der bestehende `guestName`-Fallback,
   sie erscheinen also als „Gast-####" wie ein Mensch ohne Namen — die Naht, die der Kommentar
   in `broadcastLeaderboard` seit T08 vorgesehen hat. Namens-Politik ist Ticket 13.
+
+## Review-Nachtrag (2026-07-30)
+
+`/code-review` (zwei parallele Achsen: Standards + Spec, unabhängig vom Baukontext) fand
+fünf Dinge, die eine Inline-Prüfung übersehen hatte. Alle behoben; die Befunde sind
+lehrreicher als die Fixes:
+
+1. **Zwei Kommentare in `balance.ts` behaupteten Falsches.** (a) Die Affordability-Notiz
+   zitierte die *synthetischen* 0,02 ms/Tick als „settled" — während der Benchmark-Nachtrag
+   **im selben Commit** 2,74 ms misst. Wer `BALANCE` zum Tunen liest, bekam einen um 100×
+   falschen Eindruck. (b) `sightRadiusWU` behauptete „heads **and trails**"; wahrgenommen
+   werden nur Köpfe. Das ist auch keine Lücke: einen fremden Trail zu berühren tötet dessen
+   **Besitzer** (§2.1) — eine fremde Linie ist Chance, nicht Gefahr. Jetzt steht das da.
+2. **Latente Kopplung:** `STEER_DEADBAND_RAD` hatte `0,025` hart kodiert — also
+   `TICK_DT_SEC / 2`, aber stumm. Ein Umstellen von `TICK_HZ` hätte die Deadband
+   klammheimlich von der Tickrate entkoppelt. Schlimmer: `client/game/input.ts:30` rechnet
+   **dieselbe** Größe (halbe Tick-Lenkautorität) längst korrekt — der Pilot hatte ein
+   vorhandenes Idiom mit einer Magic Number nachgebaut. Jetzt derselbe Ausdruck.
+3. **DoD §9.7.3 verletzt:** „Neue/geänderte Domänenbegriffe → `CONTEXT.md`". Vier neue
+   Begriffe (**Pilot**, **Wahrnehmungs-Sicht**, **Exkursion**, **Ziel-Population**) lebten nur
+   in diesem Ticket, und der `Bot`-Eintrag war der einzige seiner Nachbarschaft ohne
+   `Code:`-Zeiger. Nachgetragen.
+4. **Wenderadius dreifach von Hand abgeleitet** (`bot.ts`, 2× `balance.test.ts`) — bei
+   dokumentiertem Domänenbegriff. Jetzt ein abgeleitetes `TURN_RADIUS_WU` in `shared`.
+5. **Der Hermetik-Schalter konnte lautlos kippen.** `ARENA_BOTS: "0"` schaltet Bots aus, aber
+   `botTargetOverride` liest alles Unparsbare als „nicht gesetzt" → Fallback auf das
+   Produktions-Ziel. Ein Tippfehler (`"O"`, `"false"`) hätte Bots **an**geschaltet und sechs
+   Choreografien mit je eigener, irreführender Prämissen-Meldung rot gemacht. Neu:
+   [`tests/scenario/hermetic.test.ts`](../../../tests/scenario/hermetic.test.ts) prüft die
+   Prämisse der ganzen Suite *einmal* und benennt sie (README-Regel 2). Verifiziert: mit
+   `"O"` schlägt genau dieser Test fehl und nennt Variable plus Datei.
+
+**Nicht** geändert, bewusst: die Achse „Spec" kritisierte, dass E2E jetzt eine Konfiguration
+fährt, die Produktion nie hat (`ARENA_BOTS:0`), und dass damit §2.5-Deckung im Browser
+verloren geht. Der Einwand ist teils berechtigt — kein Test fährt Browser **gegen volle
+Arena**. Die Alternative (E2E mit Bots, Leaderboard-Assertion auf „eigener Rang" umzielen)
+verliert dafür die Zwei-Browser-Sichtbarkeit, die den Test überhaupt begründet, und macht sie
+von Ranking-Glück abhängig. §2.5 bleibt in der Szenario-Schicht und in den Client-Unit-Tests
+gedeckt; im Browser ändert sich für Bots nichts am Rendering. Bleibt als offene Abwägung
+notiert, nicht als erledigt behauptet.
