@@ -56,6 +56,33 @@ polyclips Martinez-Sweep skaliert mit der Gesamt-Vertex-Zahl.
 — davon ändern **42 (14 %)** überhaupt Land, und **148 (48 %)** betreffen Gebiete, deren
 **Bounding-Boxen sich nicht einmal berühren**.
 
+## Mess-Werkzeug: zwei Artefakte, nur eines bleibt
+
+Die Zahlen oben stammen aus **Wegwerf-Instrumentierung**, die absichtlich **nicht** im Repo
+liegt: temporäre `*.test.ts`-Proben unter `packages/server/src/` plus Zeitmess-Punkte direkt in
+`sim-core/step.ts` und `fill.ts`. Alles wurde nach der Messung wieder entfernt (verifiziert:
+`grep -rn "DEBUG-f713" --include=*.ts .` → 0 Treffer). Wer dieses Ticket bearbeitet, baut sie
+neu — die Methode steht oben vollständig, und die Kurve ist mit gepinntem Seed reproduzierbar.
+
+**Die beiden Artefakte nicht verwechseln:**
+
+| | Diagnose-Instrumentierung | Budget-Test (Akzeptanz) |
+|---|---|---|
+| Zweck | Kosten *aufschlüsseln* (Phasen, Op-Zählungen, Sweeps) | Regression halten: kein Tick über Budget |
+| Ort | temporär, wo es gerade passt — auch mitten in `sim-core` | dauerhaft, **`bench/`** (manuell, wie `bench/do-cpu`) |
+| Danach | **wird gelöscht** | bleibt eingecheckt |
+
+Regeln für die Wegwerf-Hälfte (aus dem Diagnose-Workflow):
+
+- Jede temporäre Zeile mit **einem einheitlichen Präfix** taggen (z. B. `[DEBUG-<4 hex>]`),
+  damit das Aufräumen **ein** `grep` ist statt Erinnerungsarbeit.
+- Vor dem Commit: Präfix greppen (0 Treffer), temporäre Test-Dateien löschen, `git status`
+  muss clean sein. Instrumentierung in `sim-core` ist besonders heikel — sie liegt im
+  Determinismus-Pfad und darf nicht versehentlich bleiben.
+- Der dauerhafte Budget-Test gehört **nicht** in die Unit-Suite: ein 8-Bot-Lauf über echte
+  Sim-Zeit kostete in Ticket 12 lokal 4,7 s und auf dem CI-Runner 38,5 s und riss dessen
+  30-s-Timeout. Messungen, die Minuten laufen, laufen manuell.
+
 ## Wichtig vorab: konstanter Faktor ≠ Wachstum
 
 Die drei Ansätze unten sind **nicht austauschbar**, und die Reihenfolge ist nach
@@ -94,7 +121,8 @@ braucht 3**; wer nur den berichteten Freeze wegbekommen will, kommt mit 1 (+2) w
       unbegrenzte Wachstum stoppen. Verändert Geometrie minimal ⇒ **rotiert den Replay-Hash**
       und braucht eine Balance-Entscheidung zur Toleranz.
 - [ ] Akzeptanz: Repro-Harness (8 Bots, 200 WU **und** 50 WU, 5 min) hält jeden Tick unter dem
-      Budget; als Test verankert, nicht nur einmal gemessen.
+      Budget; als Messung in `bench/` verankert, nicht nur einmal gemessen — und die
+      Diagnose-Instrumentierung, die dahin geführt hat, ist restlos entfernt (s. oben).
 - [ ] Property-Tests aus §9.2 bleiben grün (Summe + neutral = 100 %, Disjunktheit, kein Loch);
       Golden-Replay bewusst rotiert **nur** falls Ansatz 3 gefahren wird.
 
