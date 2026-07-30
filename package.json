@@ -19,8 +19,10 @@
     "format:check": "prettier --check .",
     "prepare": "husky",
     "test:scenario": "pnpm --filter @paintclash/scenario-tests test",
+    "dev": "pnpm --filter @paintclash/client build && pnpm --filter @paintclash/server exec wrangler dev --port 8787",
+    "dev:bots": "pnpm --filter @paintclash/client build && pnpm --filter @paintclash/server exec wrangler dev --port 8787 --var ARENA_SIZE_WU:160",
     "e2e:server": "pnpm --filter @paintclash/client build && pnpm --filter @paintclash/server exec wrangler dev --port 8787 --var ARENA_BOTS:0",
-    "dev:small": "pnpm --filter @paintclash/client build && pnpm --filter @paintclash/server exec wrangler dev --port 8787 --var ARENA_SIZE_WU:50",
+    "dev:small": "pnpm --filter @paintclash/client build && pnpm --filter @paintclash/server exec wrangler dev --port 8787 --var ARENA_SIZE_WU:50 --var ARENA_BOTS:3",
     "soak": "node tests/soak/soak.mjs"
   },
   "pnpm": {

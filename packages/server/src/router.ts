@@ -75,6 +75,24 @@ export function botTargetOverride(raw: string | undefined): number | undefined {
     : undefined;
 }
 
+/**
+ * How many entities to keep an arena of this size populated to, when nobody said
+ * otherwise. The spec's own room-sizing rule read backwards (§10.4:
+ * `edge = √(players × 5000)`, so ~`areaPerEntityWU2` per entity), capped by the
+ * balanced target — the 200 WU public arena lands on exactly that target, while
+ * a small dev or private map gets proportionally fewer.
+ *
+ * It exists because a flat target does not survive a small map: fill cost grows
+ * with how interlocked territories are, and eight bots in a 50 WU arena (16× the
+ * density the spec sizes for) saturated it and blew the 50 ms tick budget inside
+ * 30 s — a freeze. This is only the DEFAULT: an explicit `ARENA_BOTS`, or a
+ * private room's host setting, is a deliberate choice and overrides it.
+ */
+export function defaultBotTarget(arenaSizeWU: number): number {
+  const roomFor = Math.floor(arenaSizeWU ** 2 / BALANCE.bots.areaPerEntityWU2);
+  return Math.max(0, Math.min(BALANCE.bots.targetPopulation, roomFor));
+}
+
 /** Health-probe payload — small, dependency-free, trivially assertable. */
 export function healthPayload(commit: string): {
   status: 'ok';

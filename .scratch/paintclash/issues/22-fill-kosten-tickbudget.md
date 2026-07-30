@@ -56,6 +56,23 @@ polyclips Martinez-Sweep skaliert mit der Gesamt-Vertex-Zahl.
 — davon ändern **42 (14 %)** überhaupt Land, und **148 (48 %)** betreffen Gebiete, deren
 **Bounding-Boxen sich nicht einmal berühren**.
 
+## Wichtig vorab: konstanter Faktor ≠ Wachstum
+
+Die drei Ansätze unten sind **nicht austauschbar**, und die Reihenfolge ist nach
+(Wirkung/Risiko) sortiert, **nicht** nach Endgültigkeit:
+
+- **1 und 2 sind konstante Faktoren.** Sie senken die Kosten *pro Fill* deutlich, ändern aber
+  nichts daran, dass die Kosten mit der Vertex-Zahl **weiter wachsen**. Sie kaufen Zeit
+  (schätzungsweise 2–5× länger bis zum Budget-Überlauf), keine Immunität. Auf einer
+  always-on-Arena (ADR-0004) heißt das: die Kurve steigt weiter, nur später.
+- **3 greift das Wachstum selbst an.** Nur eine Deckelung der Vertex-Zahl macht die Kosten pro
+  Fill *beschränkt* und die Kurve flach.
+
+Praktisch entschärft die Sägezahn-Natur des Spiels viel: Tode setzen Gebiete auf Startblöcke
+zurück, die gemessene Kurve fällt danach wieder (t=45 s: 4 182 → 3 135 Vertices). Eine belebte
+Arena pendelt also eher, als dass sie divergiert. **Wer den Fund dauerhaft schließen will,
+braucht 3**; wer nur den berichteten Freeze wegbekommen will, kommt mit 1 (+2) weit.
+
 ## Lösungsansätze, nach (Wirkung, Risiko) sortiert
 
 - [ ] **1. Bounding-Box-Vorfilter im Carve-Loop.** Überlappen die Boxen nicht, kann
@@ -63,6 +80,10 @@ polyclips Martinez-Sweep skaliert mit der Gesamt-Vertex-Zahl.
       Eingabe-Referenz behalten. **Semantisch beweisbar identisch** (genau das tut der Code
       heute schon, wenn nichts gestohlen wurde) ⇒ **Hash-neutral, keine Golden-Replay-Rotation**.
       Erwartung: −48 % der Carve-Ops ⇒ ~−43 % der Fill-Zeit. Kleiner Diff, geringes Risiko.
+      **Achtung, das ist eine Hochrechnung aus Op-ZÄHLUNGEN, keine Messung** — sie nimmt an,
+      dass eine übersprungene Op durchschnittlich so teuer ist wie eine behaltene (plausibel:
+      der Martinez-Sweep verarbeitet ohnehin alle Kanten beider Polygone). Erste Aufgabe des
+      Tickets: die Zahl **messen**, nicht übernehmen.
 - [ ] **2. Gegen den NEUEN Streifen carven, nicht gegen das ganze Union.** `other` ist von dem
       *alten* Gebiet des Spielers bereits disjunkt (dokumentierte Invariante, `fill.ts`-Kopf),
       also genügt die neu gewonnene Fläche als Carve-Region — drastisch kleineres Polygon.

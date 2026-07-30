@@ -20,7 +20,12 @@ import { DurableObject } from 'cloudflare:workers';
 import { BALANCE, TICK_DT_MS, TICK_DT_SEC } from '@paintclash/shared';
 
 import { ArenaCore } from './arena.js';
-import { arenaSeedOverride, arenaSizeOverride, botTargetOverride } from './router.js';
+import {
+  arenaSeedOverride,
+  arenaSizeOverride,
+  botTargetOverride,
+  defaultBotTarget,
+} from './router.js';
 
 import type { Env } from './router.js';
 
@@ -37,14 +42,18 @@ export class ArenaDO extends DurableObject<Env> {
     const [client, server] = [pair[0], pair[1]];
     this.ctx.acceptWebSocket(server);
 
+    const arenaSizeWU = arenaSizeOverride(this.env.ARENA_SIZE_WU) ?? BALANCE.arena.sizeWU;
     this.arena ??= new ArenaCore(
       // A pinned seed (dev/test only) makes every spawn reproducible; without
       // it each arena gets its own random world.
       arenaSeedOverride(this.env.ARENA_SEED) ?? crypto.getRandomValues(new Uint32Array(1))[0] ?? 1,
-      arenaSizeOverride(this.env.ARENA_SIZE_WU),
+      arenaSizeWU,
       // This is the PUBLIC arena (ADR-0004), so it is the one that gets kept
       // populated (spec §2.7) — `ArenaCore` itself stays bot-free unless asked.
-      botTargetOverride(this.env.ARENA_BOTS) ?? BALANCE.bots.targetPopulation,
+      // An explicit ARENA_BOTS is a deliberate choice and wins; otherwise the
+      // default is sized to the arena, because a flat target does not survive a
+      // small map (see `defaultBotTarget`).
+      botTargetOverride(this.env.ARENA_BOTS) ?? defaultBotTarget(arenaSizeWU),
     );
     const arena = this.arena;
     const playerId = arena.connect({

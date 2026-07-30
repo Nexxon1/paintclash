@@ -1,9 +1,11 @@
+import { BALANCE } from '@paintclash/shared';
 import { describe, expect, it } from 'vitest';
 
 import {
   arenaSeedOverride,
   arenaSizeOverride,
   botTargetOverride,
+  defaultBotTarget,
   handleFetch,
   healthPayload,
   type Env,
@@ -77,6 +79,21 @@ describe('dev-only env overrides', () => {
     for (const raw of ['', 'seed', '1.5', '-1', '4294967296', 'NaN', 'Infinity']) {
       expect(arenaSeedOverride(raw)).toBeUndefined();
     }
+  });
+
+  it('sizes the DEFAULT bot target to the arena, never above the balanced one', () => {
+    // The spec's own room-sizing ladder (§10.4) read backwards: ~5000 WU² per
+    // entity. The public arena lands on exactly the balanced target.
+    expect(defaultBotTarget(BALANCE.arena.sizeWU)).toBe(BALANCE.bots.targetPopulation);
+    expect(defaultBotTarget(100)).toBe(2); // the spec's 2-player map
+    expect(defaultBotTarget(140)).toBe(3); // the spec's 4-player map
+    // A map too small for even one entity's worth of room gets none. Eight bots
+    // in a 50 WU arena is 16× the density the spec sizes for; it saturated and
+    // blew the tick budget within 30 s of play.
+    expect(defaultBotTarget(50)).toBe(0);
+    // Never ABOVE the balanced target, however much room there is — the ceiling
+    // is a gameplay decision, not an area one.
+    expect(defaultBotTarget(1000)).toBe(BALANCE.bots.targetPopulation);
   });
 
   it('takes a bot target within the population rule and refuses anything else', () => {
