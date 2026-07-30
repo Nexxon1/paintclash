@@ -131,8 +131,10 @@ test('the mouse steers the head in follow mode, and the mode outlives a reload',
   // Persisted (localStorage): the reload comes back on the chosen mode.
   await page.reload();
   await expect(chip(page, 'pointer')).toHaveClass(/active/);
+  // One envelope holds every setting — the mode picked here and the sound
+  // (ticket 11, spec §4.4: on by default, so `muted: false`).
   expect(await page.evaluate(() => localStorage.getItem('paintclash.settings.v1'))).toBe(
-    JSON.stringify({ version: 1, controlMode: 'pointer' }),
+    JSON.stringify({ version: 1, controlMode: 'pointer', muted: false }),
   );
 });
 

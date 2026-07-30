@@ -22,6 +22,18 @@ function fakeStore(seed: Record<string, string> = {}): LocalStore & { data: type
   };
 }
 
+/** A browser that refuses storage outright (private mode, policy). */
+function deniedStore(): LocalStore {
+  return {
+    getItem: () => {
+      throw new Error('denied');
+    },
+    setItem: () => {
+      throw new Error('denied');
+    },
+  };
+}
+
 describe('control-mode defaults (spec §3)', () => {
   it('starts on the keyboard with a mouse and on finger-follow with a touchscreen', () => {
     expect(defaultControlMode(false)).toBe('keyboard');
@@ -65,6 +77,7 @@ describe('persisted settings (spec §3: the chosen mode survives a reload)', () 
     expect(JSON.parse(store.data[SETTINGS_STORAGE_KEY] ?? '{}')).toEqual({
       version: 1,
       controlMode: 'joystick',
+      muted: false,
     });
   });
 
@@ -102,15 +115,7 @@ describe('persisted settings (spec §3: the chosen mode survives a reload)', () 
   });
 
   it('stays usable when the browser denies storage', () => {
-    const hostile: LocalStore = {
-      getItem: () => {
-        throw new Error('denied');
-      },
-      setItem: () => {
-        throw new Error('denied');
-      },
-    };
-    const settings = new Settings(false, hostile);
+    const settings = new Settings(false, deniedStore());
     expect(settings.controlMode).toBe('keyboard');
     settings.controlMode = 'pointer';
     expect(settings.controlMode).toBe('pointer');
@@ -120,5 +125,71 @@ describe('persisted settings (spec §3: the chosen mode survives a reload)', () 
     const settings = new Settings(true, null);
     settings.controlMode = 'keyboard';
     expect(settings.controlMode).toBe('keyboard');
+  });
+});
+
+describe('persisted sound setting (ticket 11, spec §4.4)', () => {
+  it('starts with the sound ON', () => {
+    expect(new Settings(false, fakeStore()).muted).toBe(false);
+  });
+
+  it('keeps both settings in the one envelope, whichever changes', () => {
+    const store = fakeStore();
+    const settings = new Settings(false, store);
+    settings.muted = true;
+    expect(JSON.parse(store.data[SETTINGS_STORAGE_KEY] ?? '{}')).toEqual({
+      version: 1,
+      controlMode: 'keyboard',
+      muted: true,
+    });
+    // Writing the OTHER setting must not silently un-mute the game.
+    settings.controlMode = 'pointer';
+    expect(JSON.parse(store.data[SETTINGS_STORAGE_KEY] ?? '{}')).toEqual({
+      version: 1,
+      controlMode: 'pointer',
+      muted: true,
+    });
+    expect(settings.muted).toBe(true);
+  });
+
+  it('reads a stored mute flag back', () => {
+    const store = fakeStore({
+      [SETTINGS_STORAGE_KEY]: JSON.stringify({ version: 1, controlMode: 'pointer', muted: true }),
+    });
+    expect(new Settings(false, store).muted).toBe(true);
+  });
+
+  it('treats anything but a stored `true` as sound on', () => {
+    // Includes the envelope written by the build BEFORE this ticket (no flag
+    // at all) — the spec's default is sound ON, so absence means unmuted.
+    for (const raw of [
+      JSON.stringify({ version: 1, controlMode: 'keyboard' }),
+      JSON.stringify({ version: 1, controlMode: 'keyboard', muted: 'yes' }),
+      JSON.stringify({ version: 1, controlMode: 'keyboard', muted: 1 }),
+      'not json',
+    ]) {
+      expect(new Settings(false, fakeStore({ [SETTINGS_STORAGE_KEY]: raw })).muted).toBe(false);
+    }
+  });
+
+  it('keeps the stored mode when only the mute flag is junk (and vice versa)', () => {
+    // The two settings are independent: one unreadable field must not cost
+    // the player the other one.
+    const junkFlag = fakeStore({
+      [SETTINGS_STORAGE_KEY]: JSON.stringify({ version: 1, controlMode: 'pointer', muted: {} }),
+    });
+    expect(new Settings(false, junkFlag).controlMode).toBe('pointer');
+    const junkMode = fakeStore({
+      [SETTINGS_STORAGE_KEY]: JSON.stringify({ version: 1, controlMode: 'telepathy', muted: true }),
+    });
+    const settings = new Settings(false, junkMode);
+    expect(settings.controlMode).toBe('keyboard');
+    expect(settings.muted).toBe(true);
+  });
+
+  it('stays usable when the browser denies storage', () => {
+    const settings = new Settings(false, deniedStore());
+    settings.muted = true;
+    expect(settings.muted).toBe(true);
   });
 });

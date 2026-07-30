@@ -1,12 +1,12 @@
 /**
  * DOM HUD (spec §2.5/§3): the live leaderboard — top rows plus the own,
  * highlighted one, each with a swatch of that player's territory color — the
- * own score panel beside the personal record, the control-mode picker and the
- * virtual joystick. Pure data sinks like the scene: they paint what the session
- * sampled and never touch game logic. Excluded from unit coverage; the
- * Playwright E2E exercises them (the display rules themselves live in
- * `game/leaderboard.ts`, `game/score.ts` and `game/settings.ts` and are
- * unit-tested there).
+ * own score panel beside the personal record, the control-mode picker, the mute
+ * toggle (spec §4.4) and the virtual joystick. Pure data sinks like the scene:
+ * they paint what the session sampled and never touch game logic. Excluded from
+ * unit coverage; the Playwright E2E exercises them (the display rules
+ * themselves live in `game/leaderboard.ts`, `game/score.ts` and
+ * `game/settings.ts` and are unit-tested there).
  */
 
 import { leaderboardView, type LeaderboardRowView } from '../game/leaderboard.js';
@@ -171,6 +171,50 @@ export class ControlsHud {
   private open(open: boolean): void {
     this.list.hidden = !open;
     this.toggle.setAttribute('aria-expanded', String(open));
+  }
+}
+
+/**
+ * The mute toggle (spec §4.4: sound is ON, the toggle is binary and persisted).
+ *
+ * Shares the top bar with the control picker — same pill, one grid cell over —
+ * for the same reason that panel sits there: the bottom corners belong to the
+ * steering thumb, and a resting thumb must not mute the game. It is reachable
+ * on the join card too, so a player who wants silence can have it before the
+ * first sound ever plays.
+ *
+ * The button owns what it shows; `main.ts` owns what the toggle MEANS (persist
+ * the setting, tell the engine).
+ */
+export class SoundHud {
+  private readonly button: HTMLButtonElement;
+  private muted: boolean;
+
+  constructor(root: HTMLElement, muted: boolean, onToggle: (muted: boolean) => void) {
+    this.muted = muted;
+    this.button = document.createElement('button');
+    this.button.type = 'button';
+    this.button.className = 'sound-toggle';
+    this.button.addEventListener('click', () => {
+      this.update(!this.muted);
+      onToggle(this.muted);
+      // Same reason as the mode chips: a focused button would answer the next
+      // Space/Enter — or a steering key — instead of the game.
+      this.button.blur();
+    });
+    root.append(this.button);
+    this.update(muted);
+  }
+
+  /** Paint the state the sound is actually in. */
+  update(muted: boolean): void {
+    this.muted = muted;
+    // The glyph says what IS (muted = crossed-out speaker), the label says
+    // what a click would DO — a lone icon is ambiguous to a screen reader.
+    this.button.textContent = muted ? '🔇' : '🔊';
+    this.button.setAttribute('aria-label', muted ? 'Ton einschalten' : 'Ton ausschalten');
+    this.button.setAttribute('aria-pressed', String(muted));
+    this.button.title = muted ? 'Ton aus' : 'Ton an';
   }
 }
 

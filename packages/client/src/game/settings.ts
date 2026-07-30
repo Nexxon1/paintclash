@@ -1,7 +1,7 @@
 /**
- * Player settings (spec §3): which control mode steers the head. Persisted in
- * `localStorage`, so the choice survives a reload — there is no account
- * (CONTEXT: Spieler-ID).
+ * Player settings: which control mode steers the head (spec §3) and whether the
+ * SFX core is muted (spec §4.4). Persisted in `localStorage`, so the choices
+ * survive a reload — there is no account (CONTEXT: Spieler-ID).
  *
  * The five modes the spec names collapse to FOUR implementations: desktop
  * "Maus folgen" and mobile "Finger folgen" are the same rule over the same
@@ -72,15 +72,19 @@ export class Settings {
   private readonly store: LocalStore | null;
   private readonly offered: readonly ControlMode[];
   private mode: ControlMode;
+  private mute: boolean;
 
   constructor(coarsePointer: boolean, store: LocalStore | null = browserStore()) {
     this.store = store;
     this.offered = controlModesFor(coarsePointer);
+    const stored = this.load();
     // A mode this device does not offer is not steering the player: the phone
     // that stored "Tastatur" on a docked keyboard would be stuck otherwise.
-    const stored = this.load();
     this.mode =
-      stored !== null && this.offered.includes(stored) ? stored : defaultControlMode(coarsePointer);
+      stored.controlMode !== null && this.offered.includes(stored.controlMode)
+        ? stored.controlMode
+        : defaultControlMode(coarsePointer);
+    this.mute = stored.muted;
   }
 
   /** The modes the picker shows here (spec §3, device split). */
@@ -94,30 +98,63 @@ export class Settings {
 
   set controlMode(mode: ControlMode) {
     this.mode = mode;
-    writeStored(
-      this.store,
-      SETTINGS_STORAGE_KEY,
-      JSON.stringify({ version: STORAGE_VERSION, controlMode: mode }),
-    );
+    this.save();
   }
 
-  /** The stored mode, or null when there is nothing trustworthy stored. */
-  private load(): ControlMode | null {
+  /** Sound off (spec §4.4: the default is ON, so this starts false). */
+  get muted(): boolean {
+    return this.mute;
+  }
+
+  set muted(muted: boolean) {
+    this.mute = muted;
+    this.save();
+  }
+
+  /**
+   * What is stored, field by field. The two settings are independent: an
+   * unreadable mode must not cost the player their mute choice, and vice
+   * versa — hence one result object instead of an all-or-nothing envelope.
+   */
+  private load(): { controlMode: ControlMode | null; muted: boolean } {
+    const nothing = { controlMode: null, muted: false };
     const raw = readStored(this.store, SETTINGS_STORAGE_KEY);
-    if (raw === null) return null;
+    if (raw === null) return nothing;
     let parsed: unknown = null;
     try {
       parsed = JSON.parse(raw);
     } catch {
-      return null; // corrupted — the device default writes over it
+      return nothing; // corrupted — the defaults write over it
     }
     // Another tab, an older build or a poke in devtools can put anything here:
     // check the fields rather than trusting a cast (as `records.ts` does).
-    if (typeof parsed !== 'object' || parsed === null) return null;
-    const { version, controlMode } = parsed as { version?: unknown; controlMode?: unknown };
+    if (typeof parsed !== 'object' || parsed === null) return nothing;
+    const { version, controlMode, muted } = parsed as {
+      version?: unknown;
+      controlMode?: unknown;
+      muted?: unknown;
+    };
     // A foreign version is for a future migration to read, not for this one to
     // guess at — a settings key is cheap to re-choose.
-    if (version !== STORAGE_VERSION) return null;
-    return isControlMode(controlMode) ? controlMode : null;
+    if (version !== STORAGE_VERSION) return nothing;
+    return {
+      controlMode: isControlMode(controlMode) ? controlMode : null,
+      // Only a literal `true` mutes: an envelope from before this ticket has
+      // no flag at all, and the spec's default is sound ON.
+      muted: muted === true,
+    };
+  }
+
+  /** Both settings live in one envelope — every change writes all of it. */
+  private save(): void {
+    writeStored(
+      this.store,
+      SETTINGS_STORAGE_KEY,
+      JSON.stringify({
+        version: STORAGE_VERSION,
+        controlMode: this.mode,
+        muted: this.mute,
+      }),
+    );
   }
 }

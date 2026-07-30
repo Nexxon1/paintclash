@@ -172,6 +172,10 @@
          z-index: the overlay would otherwise swallow every click). It sits at
          the top edge and collapses: the bottom corners belong to the steering
          thumb (Lenken L/R rests there, the joystick is planted there). */
+      /* Two cells wide: the "Steuerung" pill and the mute toggle (spec §4.4)
+         share the bar, the mode menu spans both underneath. The cells are
+         assigned explicitly, so neither panel depends on the other's DOM
+         order — main.ts builds them independently. */
       #controls {
         position: fixed;
         top: 0.75rem;
@@ -179,9 +183,24 @@
         transform: translateX(-50%);
         z-index: 2;
         display: grid;
+        grid-template-columns: auto auto;
+        justify-content: center;
         justify-items: center;
         gap: 0.35rem;
         user-select: none;
+      }
+      #controls .control-toggle {
+        grid-area: 1 / 1;
+      }
+      #controls .sound-toggle {
+        grid-area: 1 / 2;
+        /* Square-ish: the glyph is one character, and a pill as wide as
+           "Steuerung" would read as the more important of the two. */
+        padding: 0.35rem 0.55rem;
+        line-height: 1;
+      }
+      #controls .control-modes {
+        grid-area: 2 / 1 / 3 / 3;
       }
       #controls button {
         font: inherit;
@@ -252,8 +271,9 @@
     <div id="leaderboard" hidden>
       <h2>Leaderboard</h2>
     </div>
-    <!-- Control modes (spec §3) — filled by main.ts, which knows the device:
-         it decides both which modes are offered and what they are called. -->
+    <!-- Top bar: control modes (spec §3) — filled by main.ts, which knows the
+         device: it decides both which modes are offered and what they are
+         called — plus the mute toggle (spec §4.4). -->
     <div id="controls"></div>
     <div id="joystick" hidden></div>
     <div id="overlay">

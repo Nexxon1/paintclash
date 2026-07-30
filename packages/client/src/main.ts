@@ -11,16 +11,24 @@ import { LocalRecords } from './game/records.js';
 import { recordsText } from './game/score.js';
 import { ClientSession } from './game/session.js';
 import { Settings } from './game/settings.js';
-import { ControlsHud, JoystickHud, LeaderboardHud, ScoreHud } from './render/hud.js';
+import { SfxCues } from './game/sfx-cues.js';
+import { SfxEngine } from './game/sfx.js';
+import { ControlsHud, JoystickHud, LeaderboardHud, ScoreHud, SoundHud } from './render/hud.js';
 import { ArenaScene } from './render/scene.js';
 
 import type { RenderState } from './game/session.js';
 
 declare global {
   interface Window {
-    /** Debug/E2E hook: the running session, the pose actually drawn, and
-     * the count of blocked non-finite poses (see ArenaScene.poseAnomalies). */
-    __paintclash?: { session: ClientSession; lastRender?: RenderState; scene?: ArenaScene };
+    /** Debug/E2E hook: the running session, the pose actually drawn, the
+     * count of blocked non-finite poses (see ArenaScene.poseAnomalies) and the
+     * SFX core (whose context state only a real browser can show). */
+    __paintclash?: {
+      session: ClientSession;
+      lastRender?: RenderState;
+      scene?: ArenaScene;
+      sfx: SfxEngine;
+    };
   }
 }
 
@@ -69,6 +77,21 @@ const controlsHud = new ControlsHud(
   },
 );
 controlsHud.update(settings.controlMode);
+
+/**
+ * Sound (spec §4.4): the SFX core lives for the whole page, like the steering —
+ * the shared `AudioContext` must survive a reconnect (a second one per game
+ * would leak an audio thread each time), and the mute choice is a setting, not
+ * a property of one game. The context itself is only built on the join click
+ * below, which is the user gesture the autoplay policy wants.
+ */
+const sfx = new SfxEngine(settings.muted);
+// No reference kept: the button paints its own state, and nothing else in the
+// page has an opinion about how it looks.
+new SoundHud(query('#controls', HTMLDivElement), settings.muted, (muted) => {
+  settings.muted = muted; // persisted right here (localStorage)
+  sfx.setMuted(muted);
+});
 
 const syncViewport = (): void => {
   steering.resize(window.innerWidth, window.innerHeight);
@@ -128,8 +151,12 @@ function start(name: string): void {
   const session = new ClientSession((frame) => {
     ws.send(frame);
   }, name);
-  window.__paintclash = { session };
+  window.__paintclash = { session, sfx };
   let stopped = false;
+  // The cue rules are per GAME (the join cue, the own rank, the pending
+  // respawn) while the engine is per page — a reconnect starts a new life and
+  // must greet it, but must not build a second audio context.
+  const sfxCues = new SfxCues();
 
   ws.addEventListener('open', () => {
     session.join();
@@ -197,6 +224,9 @@ function start(name: string): void {
     // The stick is drawn from the render loop that is dying with this game — a
     // finger still down would leave the ring frozen over the join card.
     joystickHud.update(null);
+    // Same for the "eat" loop: the frame loop that would fade it out is gone,
+    // so a player who died mid-bite would hear it chew over the join card.
+    sfx.silence();
     scene.dispose();
     if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) ws.close();
   };
@@ -224,6 +254,12 @@ function start(name: string): void {
     if (renderState.finishedLife) records.commit(renderState.finishedLife);
     scoreHud.update(renderState.liveScore, records.records);
     joystickHud.update(steering.joystickView());
+    // Sound reads the very frame that was just drawn (spec §4.4: additive to
+    // the visuals, never a channel of its own) — after the scene, so a cue can
+    // never be heard before the thing it comments on is on screen.
+    const audio = sfxCues.sample(renderState, frameDtMs);
+    for (const cue of audio.cues) sfx.play(cue);
+    sfx.setEating(audio.eating);
     requestAnimationFrame(frame);
   };
   requestAnimationFrame(frame);
@@ -232,6 +268,10 @@ function start(name: string): void {
 form.addEventListener('submit', (event) => {
   event.preventDefault();
   status.textContent = 'Verbinde …';
+  // Inside the gesture that started the game: the autoplay policy only lets a
+  // context start here (spec §4.4 — no separate "enable sound" prompt). Before
+  // the socket, so a slow connect cannot cost us the activation.
+  sfx.unlock();
   start(nameInput.value.trim() || 'Gast');
 });
 
