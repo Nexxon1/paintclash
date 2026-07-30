@@ -13,6 +13,17 @@ Die Frontier Ticket für Ticket mit `/implement` abarbeiten (Kontext zwischen Ti
 
 Erste startbare Tickets (nur durch `01` bzw. nichts geblockt): **01** (Monorepo-Gerüst + GitHub-Remote + CI/CD), danach **02** (DO-CPU-Benchmark) und **03** (Walking Skeleton).
 
+## Szenario-Tests: die Regeln gegen rote Pipelines
+
+Die Suite unter [`../../tests/scenario/`](../../tests/scenario/) war über mehrere Tickets hinweg die häufigste Quelle roter CI-Läufe — nie wegen einer verletzten Regel, fast immer weil die **Prämisse** eines Tests nicht zustande kam (ein Kopf musste erst in einen Zustand *geflogen* werden). Vier Regeln, seit Ticket 11 durchgesetzt:
+
+1. **Der Seed ist gepinnt** (`tests/scenario/wrangler.jsonc` → `ARENA_SEED`). Spawns sind in Produktion zufällig; in der Suite wären sie eine Zufallsvariable pro Lauf, und jede Choreografie damit ein Manöver, das *meistens* klappt. Gepinnt gilt: was lokal grün ist, ist in CI grün — und was in CI fällt, fällt lokal reproduzierbar. (Belegt: zwei aufeinanderfolgende Läufe zeigen bis auf ~20 ms identische Test-Laufzeiten, d. h. denselben geflogenen Pfad.)
+2. **Jeder Prämissen-Fehlschlag benennt sich selbst.** „Hat nicht geklappt" kostet die nächste Sitzung eine Debugging-Runde; die Fehlermeldung nennt die Stufe (Weitungs-Runde, Orbit, Angriff) und den Messwert.
+3. **Fortschritts-Budgets, keine Wanduhr-Wetten.** Stufen warten auf Sim-Zustand (Fläche, `pointInTerritory`-Streak, Tode), mit großzügiger Wanduhr-Decke — ein langsamer Runner macht einen Test langsamer, nicht rot.
+4. **Ein Retry in CI, keiner lokal** (`vitest.config.ts`, wie `playwright.config.ts`). Was nach dem Seed-Pin bleibt, ist Tick-Timing auf einem geteilten Runner. Vitest meldet den Lauf als *flaky* — sichtbar, nicht heimlich grün.
+
+Vor jedem Commit lokal fahren: `pnpm test:scenario` (~160 s) **und** `pnpm test:e2e` (~30 s, `wrangler dev` läuft unter WSL2 einwandfrei — die alte „stallt"-Notiz gilt nicht mehr).
+
 ## Warum ein eigener Slug?
 
 `draw-race` durchlief `/wayfinder` → `/to-spec`; dabei füllte sich `draw-race/issues/` mit den **Entscheidungs-Tickets** (01–15). `/to-tickets` legt die **Bau-Tickets** ebenfalls in einem `issues/` ab (ab 01) — ein eigener Effort-Slug (`paintclash`, = der finale Projektname) gibt ihnen ein frisches `issues/`, statt die Wayfinding-Tickets zu überschreiben. `draw-race/` bleibt unverändertes Wayfinding-Archiv (Map, Entscheidungs-Tickets, Research, Prototypen, Spec).

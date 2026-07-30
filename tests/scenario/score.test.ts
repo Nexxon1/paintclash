@@ -43,7 +43,13 @@ async function connect(name: string): Promise<{ client: SimClient; ws: WebSocket
   if (!ws) throw new Error('server did not upgrade the connection');
   ws.accept();
   const client = new SimClient((frame) => {
-    ws.send(frame);
+    try {
+      ws.send(frame);
+    } catch {
+      // The test tore this socket down while a queued frame was still
+      // flushing. Uncaught, it lands in the DO's event loop as an unhandled
+      // TypeError and buries the real failure in a wall of workerd stacks.
+    }
   }, name);
   ws.addEventListener('message', (event) => {
     if (typeof event.data !== 'string') client.receive(event.data);

@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
-import { handleFetch, healthPayload, type Env } from './router.js';
+import {
+  arenaSeedOverride,
+  arenaSizeOverride,
+  handleFetch,
+  healthPayload,
+  type Env,
+} from './router.js';
 
 function fakeEnv(overrides: Partial<Env> = {}): Env & { forwarded: Request[] } {
   const forwarded: Request[] = [];
@@ -47,5 +53,28 @@ describe('router worker (ADR-0004: stateless, routes WS to the arena DO)', () =>
     const response = await handleFetch(new Request('https://x/index.html'), env);
     expect(await response.text()).toBe('asset');
     expect(env.forwarded).toHaveLength(0);
+  });
+});
+
+describe('dev-only env overrides', () => {
+  it('takes a playable arena size and refuses anything else', () => {
+    expect(arenaSizeOverride('50')).toBe(50);
+    expect(arenaSizeOverride(undefined)).toBeUndefined();
+    // An operator typo must fall back to the BALANCE default, never produce a
+    // 1-WU or NaN-sized arena.
+    for (const raw of ['', 'fifty', '9', '1001', 'NaN', 'Infinity', '-50']) {
+      expect(arenaSizeOverride(raw)).toBeUndefined();
+    }
+  });
+
+  it('takes a uint32 arena seed and refuses anything else', () => {
+    // A pinned seed is what makes scenario spawns reproducible (§9.1) — so a
+    // typo must degrade to "random", not to a seed of 0 by accident.
+    expect(arenaSeedOverride('20260730')).toBe(20_260_730);
+    expect(arenaSeedOverride('0')).toBe(0);
+    expect(arenaSeedOverride(undefined)).toBeUndefined();
+    for (const raw of ['', 'seed', '1.5', '-1', '4294967296', 'NaN', 'Infinity']) {
+      expect(arenaSeedOverride(raw)).toBeUndefined();
+    }
   });
 });

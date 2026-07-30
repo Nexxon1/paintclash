@@ -23,5 +23,12 @@
   ],
   "vars": {
     "COMMIT_SHA": "scenario",
+    // Pinned RNG seed ⇒ FIXED spawns (start blocks and headings). The scenario
+    // choreographies have to fly real heads into the state a rule needs — with
+    // random spawns that setup is a probabilistic maneuver that mostly works,
+    // which is exactly how a suite ends up red on a shared CI runner every few
+    // tickets. Pinned, a choreography that works works every run, and one that
+    // does not fails locally too, where it can be fixed.
+    "ARENA_SEED": "20260730",
   },
 }

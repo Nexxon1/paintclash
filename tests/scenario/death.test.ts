@@ -15,9 +15,13 @@ const STEP_WU = BALANCE.movement.speedWuPerSec * TICK_DT_SEC;
 
 /**
  * Scenario (ticket 05, spec §2.1): real Arena-DO in workerd, two headless
- * sim-clients over the real wire. Spawns are random (the DO seeds itself),
- * so both scenarios STEER by feedback from the snapshots instead of relying
- * on any fixed geometry.
+ * sim-clients over the real wire.
+ *
+ * Production spawns are random; the scenario suite pins the arena seed
+ * (`wrangler.jsonc` → `ARENA_SEED`) so a run is REPRODUCIBLE — a choreography
+ * that works works every time, and a CI failure can be replayed locally. The
+ * pin is a convenience, not a contract: everything below still STEERS by
+ * feedback from the snapshots rather than assuming any fixed geometry.
  */
 
 function sleep(ms: number): Promise<void> {
@@ -46,7 +50,13 @@ async function connect(name: string): Promise<{ client: SimClient; ws: WebSocket
   if (!ws) throw new Error('server did not upgrade the connection');
   ws.accept();
   const client = new SimClient((frame) => {
-    ws.send(frame);
+    try {
+      ws.send(frame);
+    } catch {
+      // The test tore this socket down while a queued frame was still
+      // flushing. Uncaught, it lands in the DO's event loop as an unhandled
+      // TypeError and buries the real failure in a wall of workerd stacks.
+    }
   }, name);
   ws.addEventListener('message', (event) => {
     if (typeof event.data !== 'string') client.receive(event.data);
@@ -391,7 +401,13 @@ describe('death over the real wire (ticket 05)', () => {
         // rule, and buys another attempt from the fresh state. A defender death
         // while it WAS settled is the regression this test guards: it falls
         // through to the assertions and fails there, loudly.
+        //
+        // Every miss records WHICH stage missed. A premise failure that only
+        // says "it did not work" costs a full debugging session next time it
+        // shows up in CI; the stage name says where to look, and with the seed
+        // pinned (`wrangler.jsonc`) it can be replayed locally.
         let death: (StampedDeath & { settled: boolean }) | null = null;
+        const missed: string[] = [];
         for (let attempt = 0; attempt < 2 && death === null; attempt++) {
           charging = false;
           const ownDeaths = (): number =>
@@ -409,28 +425,50 @@ describe('death over the real wire (ticket 05)', () => {
             () => ownDeaths() > before || defender.client.territoryAreaOf(defenderId) > 150,
             40_000,
           );
-          if (!grown || ownDeaths() > before) continue;
+          if (!grown) {
+            missed.push(
+              `widening lap never closed (area ${defender.client.territoryAreaOf(defenderId).toFixed(1)} WU², box ${box.minX.toFixed(1)},${box.minY.toFixed(1)}–${box.maxX.toFixed(1)},${box.maxY.toFixed(1)})`,
+            );
+            continue;
+          }
+          if (ownDeaths() > before) {
+            missed.push('defender died on the widening lap (out in the open, premise void)');
+            continue;
+          }
 
           // 2. Park at the box center — inside the fresh fill by construction,
           //    and several WU clear of every edge — and let the orbit settle.
           pilot.fly([centerOf(box)]);
           safeStreak = 0;
-          if (!(await waitFor(() => safeStreak >= ORBIT_TICKS, 15_000))) continue;
+          if (!(await waitFor(() => safeStreak >= ORBIT_TICKS, 15_000))) {
+            missed.push(`orbit never settled inside the fill (best streak ${String(safeStreak)})`);
+            continue;
+          }
 
           // 3. Charge. The record starts HERE: a death from the widening flight
           //    (the defender was out in the open then) must not be mistaken for
           //    the outcome of a charge onto a parked head.
           deaths.length = 0;
           charging = true;
-          if (!(await waitFor(() => deaths.length > 0, 60_000))) continue;
+          if (!(await waitFor(() => deaths.length > 0, 60_000))) {
+            missed.push('the charge never produced a death');
+            continue;
+          }
           // Same-tick partners arrive in the same frame batch, a follow-up cut
           // a tick or two later — let the whole engagement land before judging.
           await sleep(300);
           const defenderDeath = deaths.find((d) => d.victimId === defenderId);
-          if (defenderDeath && !defenderDeath.settled) continue;
+          if (defenderDeath && !defenderDeath.settled) {
+            missed.push('defender died while it had drifted off its own land');
+            continue;
+          }
           death = deaths[0] ?? null;
         }
-        if (!death) throw new Error('the defender never held a parked charge (2 attempts)');
+        if (!death) {
+          throw new Error(
+            `the defender never held a parked charge — attempts: ${missed.join('; ')}`,
+          );
+        }
 
         expect(death.victimId).toBe(attackerId);
         expect(death.killerId).toBe(defenderId);
