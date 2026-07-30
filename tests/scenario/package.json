@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run"
+    "test": "vitest run && vitest run --config vitest.bots.config.ts"
   },
   "dependencies": {
     "@paintclash/server": "workspace:*",

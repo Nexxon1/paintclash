@@ -1028,3 +1028,131 @@ describe('rewind view tracking (ticket 07)', () => {
     expect(simPlayer(arena, id).viewDelayTicks).toBe(0);
   });
 });
+
+describe('bot population (ticket 12, spec §2.7: bots = clamp(target − humans, 0, max))', () => {
+  const { targetPopulation, maxBots } = BALANCE.bots;
+
+  /** An arena configured like the public one: bots on, at the balanced target. */
+  function populatedArena(): ArenaCore {
+    return new ArenaCore(1, undefined, targetPopulation);
+  }
+
+  /** Everyone the sim holds, humans and bots alike (white-box, as above). */
+  function simPlayers(arena: ArenaCore): { id: number; isBot: boolean }[] {
+    const { state } = arena as unknown as { state: SimState };
+    return state.players;
+  }
+
+  /** What a joined client actually SEES: the ids in its newest snapshot. */
+  function seenIds(socket: FakeSocket): number[] {
+    return socket.lastSnapshot().players.map((p) => p.id);
+  }
+
+  function runTicks(arena: ArenaCore, ticks: number): void {
+    for (let i = 0; i < ticks; i++) arena.tick(TICK_DT_SEC);
+  }
+
+  it('fills a lone human’s arena up to the target population', () => {
+    const arena = populatedArena();
+    const ada = joinedPlayer(arena, 'Ada');
+    // Bots join like anyone else: queued this tick, spawned on the next.
+    runTicks(arena, 2);
+    expect(seenIds(ada.socket)).toHaveLength(targetPopulation);
+    const bots = simPlayers(arena).filter((p) => p.isBot);
+    expect(bots).toHaveLength(targetPopulation - 1);
+    // ...and they are marked as bots in the sim, which is what keeps them out
+    // of everyone's score company (spec §10.5).
+    expect(simPlayers(arena).find((p) => p.id === ada.id)?.isBot).toBe(false);
+  });
+
+  it('retires a bot for every human that arrives — humans first', () => {
+    const arena = populatedArena();
+    const humans = [joinedPlayer(arena, 'H1')];
+    runTicks(arena, 2);
+    expect(simPlayers(arena)).toHaveLength(targetPopulation);
+    // Fill up to the target one human at a time; the population must stay put
+    // and the bot share must shrink by exactly one each time.
+    while (humans.length < targetPopulation) {
+      humans.push(joinedPlayer(arena, `H${String(humans.length + 1)}`));
+      runTicks(arena, 2);
+      expect(simPlayers(arena), `${String(humans.length)} humans`).toHaveLength(targetPopulation);
+      expect(simPlayers(arena).filter((p) => p.isBot)).toHaveLength(
+        targetPopulation - humans.length,
+      );
+    }
+    // Past the target, humans are simply added — bots never displace them and
+    // never come back to compete for slots.
+    humans.push(joinedPlayer(arena, 'extra'));
+    runTicks(arena, 2);
+    expect(simPlayers(arena).filter((p) => p.isBot)).toHaveLength(0);
+    expect(simPlayers(arena)).toHaveLength(targetPopulation + 1);
+  });
+
+  it('never exceeds the bot ceiling, whatever the target asks for', () => {
+    // A target beyond the ceiling (a mis-set override, a future private room):
+    // `clamp(…, 0, maxBots)` is the binding half of the rule.
+    const arena = new ArenaCore(1, undefined, maxBots + 5);
+    joinedPlayer(arena, 'Ada');
+    runTicks(arena, 2);
+    expect(simPlayers(arena).filter((p) => p.isBot)).toHaveLength(maxBots);
+  });
+
+  it('keeps no bots without a human — the arena empties for hibernation', () => {
+    const arena = populatedArena();
+    const ada = joinedPlayer(arena, 'Ada');
+    runTicks(arena, 2);
+    expect(simPlayers(arena)).toHaveLength(targetPopulation);
+    arena.disconnect(ada.id);
+    runTicks(arena, 2);
+    // 0 humans → 0 bots (spec §2.7): nothing left to tick, so the DO shell can
+    // stop its ticker and hibernate at zero cost.
+    expect(simPlayers(arena)).toHaveLength(0);
+  });
+
+  it('a connected socket that never joined is not a human — no bots for it', () => {
+    const arena = populatedArena();
+    const lurker = new FakeSocket();
+    expect(arena.connect(lurker)).not.toBeNull();
+    runTicks(arena, 3);
+    expect(simPlayers(arena)).toHaveLength(0);
+  });
+
+  it('a bot never takes an id a human is using', () => {
+    const arena = populatedArena();
+    const ada = joinedPlayer(arena, 'Ada');
+    runTicks(arena, 2);
+    const ids = simPlayers(arena).map((p) => p.id);
+    expect(new Set(ids).size, 'ids are unique').toBe(ids.length);
+    // A human joining now must still get a free id, not a bot's.
+    const bo = joinedPlayer(arena, 'Bo');
+    runTicks(arena, 2);
+    expect(bo.id).not.toBe(ada.id);
+    const after = simPlayers(arena).map((p) => p.id);
+    expect(new Set(after).size).toBe(after.length);
+    expect(after).toContain(bo.id);
+  });
+
+  it('grants no score company for bots — a lone human plays solo (spec §10.5)', () => {
+    const arena = populatedArena();
+    const ada = joinedPlayer(arena, 'Ada');
+    runTicks(arena, LIMITS.scoreIntervalTicks);
+    const score = ada.socket
+      .decoded()
+      .filter((m) => m.type === 'score')
+      .at(-1);
+    if (score?.type !== 'score') throw new Error('no score frame');
+    // Seven bots alongside, and the multiplier still says "alone" — otherwise
+    // an empty arena would be the cheapest place to farm one.
+    expect(simPlayers(arena).filter((p) => p.isBot).length).toBeGreaterThan(0);
+    expect(score.avgOtherHumans).toBe(0);
+  });
+
+  it('populates nothing unless a target was asked for (private rooms, tests)', () => {
+    // The default is bots OFF: spec §10.4 gives private rooms exactly that, and
+    // an arena under test must hold nobody the test did not put in it.
+    const arena = new ArenaCore(1);
+    joinedPlayer(arena, 'Ada');
+    runTicks(arena, 3);
+    expect(simPlayers(arena).filter((p) => p.isBot)).toHaveLength(0);
+  });
+});

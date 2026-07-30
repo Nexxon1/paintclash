@@ -181,6 +181,25 @@ Runtime-Reversibilität (ADR-0002/0003) vorzeitig zu ziehen.
   eines Batches werden gemittelt. Das 25-ms-Kriterium wird also gegen eine geglättete
   Statistik geprüft — bei ~2 Grössenordnungen Abstand unkritisch.
 
+## Nachtrag (2026-07-30, Bau-Ticket 12: Bots)
+
+Ticket 12 hat das **Bot-Ziel 8 gegen dieses Dokument abgeglichen — es bleibt 8.** Dabei
+sind zwei der Caveats oben erstmals gegen echten Code gemessen worden (Node 24, WSL2,
+`sim-core` + `server`, 8 Bots × 1 200 Ticks in der 200-WU-Arena, ohne WS-I/O):
+
+| Grösse | Messwert | Einordnung |
+|---|---|---|
+| **Bot-Heuristik** (8 Pilots, Wahrnehmung + Entscheidung + Steuern) | **0,017 ms/Tick** für alle 8 | Der oben als „nicht modelliert" geführte Posten ist **vernachlässigbar**: ~0,03 % des 50-ms-Budgets, dieselbe Grössenordnung wie die synthetischen 0,02 ms für 8 Entities. |
+| **Echter Tick** (Sim für 8 malende Entities, gewachsene Gebiete) | **2,74 ms/Tick** | ~100× die synthetische Schätzung für N = 8. Ursache ist der echte polygonbasierte Fill (polyclip-Boolean-Ops auf über 60 s gewachsenen Ringen), nicht die Bots. |
+
+Konsequenz: die **Bot-Zahl** ist bestätigt, die **synthetische Last unterschätzt den
+echten Fill deutlich**. Mit dem 4×-Faktor liegen 8 Entities bei ~11 ms von 50 ms — noch
+innerhalb des 25-ms-Kriteriums, aber ohne die zwei Grössenordnungen Reserve, die die
+Interpretation oben annimmt. Das ist ein Fund **für Ticket 16** (Re-Konfirmation gegen den
+echten Build): dort ist die Populationsgrenze gegen den echten Sim zu messen, nicht gegen
+die synthetische Kurve. Node ≠ workerd und die Gebiete wuchsen hier ungestört (8 Bots
+halten nach 60 s ~12,8 % der Karte) — beides macht die Zahl konservativ.
+
 ## Anhang — vollständige Kurve (Lauf 1, ms/Tick)
 
 | Variante | N | ms/Tick avg | ms/Tick p95 | ms/Tick max | SegChecks/Tick | Fills/s |

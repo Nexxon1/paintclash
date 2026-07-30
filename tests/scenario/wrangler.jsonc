@@ -21,6 +21,8 @@
       "new_sqlite_classes": ["ArenaDO"],
     },
   ],
+  // Top level = the arena as production runs it, bots included (spec §2.7) —
+  // used by `bots.test.ts` through `vitest.bots.config.ts`.
   "vars": {
     "COMMIT_SHA": "scenario",
     // Pinned RNG seed ⇒ FIXED spawns (start blocks and headings). The scenario
@@ -30,5 +32,32 @@
     // tickets. Pinned, a choreography that works works every run, and one that
     // does not fails locally too, where it can be fixed.
     "ARENA_SEED": "20260730",
+    // ARENA_BOTS deliberately unset here = the balanced bot target.
+  },
+
+  // Everything EXCEPT bots.test.ts runs here (see `vitest.config.ts`): the same
+  // worker with the population switched off. Same reason the seed is pinned —
+  // each choreography flies specific heads into a specific state, and seven
+  // extra entities painting, stealing and killing through the scene would turn
+  // every one of them into a maneuver that mostly works.
+  //
+  // Wrangler inherits neither `vars` nor `durable_objects` into a named
+  // environment, so both are restated in full.
+  "env": {
+    "hermetic": {
+      "durable_objects": {
+        "bindings": [
+          {
+            "name": "ARENA",
+            "class_name": "ArenaDO",
+          },
+        ],
+      },
+      "vars": {
+        "COMMIT_SHA": "scenario",
+        "ARENA_SEED": "20260730",
+        "ARENA_BOTS": "0",
+      },
+    },
   },
 }

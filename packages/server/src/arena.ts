@@ -45,6 +45,8 @@ import {
   type Standing,
 } from '@paintclash/sim-core';
 
+import { BotPilot, senseFor } from './bot.js';
+
 /** What ArenaCore needs from a transport — a DO WebSocket satisfies this. */
 export interface ArenaSocket {
   send(frame: Uint8Array): void;
@@ -118,9 +120,28 @@ export class ArenaCore {
   private readonly connections = new Map<number, Connection>();
   private pendingJoins: number[] = [];
   private pendingLeaves: number[] = [];
+  /**
+   * Live bot pilots by player id (ticket 12), in the order they were added —
+   * retirement takes the newest, which has the least invested. Entries appear
+   * the tick a bot is queued, so a bot is never spawned twice.
+   */
+  private readonly bots = new Map<number, BotPilot>();
+  private pendingBotJoins: number[] = [];
 
-  /** `arenaSizeWU` overrides the BALANCE default (dev/testing, private rooms). */
-  constructor(seed: number, arenaSizeWU?: number) {
+  /**
+   * `arenaSizeWU` overrides the BALANCE default (dev/testing, private rooms).
+   *
+   * `botTarget` is the population bots keep the arena at (spec §2.7). It is
+   * **off unless asked for**, like the arena size and seed the DO shell decides:
+   * the public arena passes `BALANCE.bots.targetPopulation`
+   * (`arena-do.ts`), private rooms default to bots off per spec §10.4, and the
+   * unit/scenario tests get an arena holding nobody they did not put there.
+   */
+  constructor(
+    seed: number,
+    arenaSizeWU?: number,
+    private readonly botTarget = 0,
+  ) {
     this.state = createSimState(seed, arenaSizeWU);
   }
 
@@ -165,6 +186,7 @@ export class ArenaCore {
     for (let id = 1; ; id++) {
       if (
         !this.connections.has(id) &&
+        !this.bots.has(id) &&
         !this.state.players.some((p) => p.id === id) &&
         !this.pendingLeaves.includes(id)
       ) {
@@ -312,6 +334,61 @@ export class ArenaCore {
     }
   }
 
+  /** Joined connections — the humans the population rule counts (spec §2.7). */
+  private humanCount(): number {
+    let humans = 0;
+    for (const connection of this.connections.values()) {
+      if (connection.joined) humans += 1;
+    }
+    return humans;
+  }
+
+  /**
+   * Keep the arena populated (spec §2.7, ADR-0005):
+   * `bots = clamp(target − humans, 0, maxBots)`, and 0 humans → 0 bots so an
+   * empty arena drains and the DO can hibernate at zero cost.
+   *
+   * Humans always come first — bots are counted against the target, never
+   * against `LIMITS.maxConnections`, so a bot can neither occupy a connection
+   * slot nor stand between a human and one. A human who joins this tick already
+   * counts here, so a bot retires the moment they arrive rather than a tick
+   * later.
+   */
+  private manageBots(): void {
+    const humans = this.humanCount();
+    // The spec's formula verbatim — the lower bound matters: with MORE humans
+    // than the target, `target − humans` is negative.
+    const wanted =
+      humans === 0 ? 0 : Math.max(0, Math.min(BALANCE.bots.maxBots, this.botTarget - humans));
+    while (this.bots.size < wanted) {
+      const id = this.allocatePlayerId();
+      this.bots.set(id, new BotPilot(id));
+      this.pendingBotJoins.push(id);
+    }
+    // Newest first: it has the least invested (and, mid-join, nothing at all).
+    for (const id of [...this.bots.keys()].reverse().slice(0, this.bots.size - wanted)) {
+      this.bots.delete(id);
+      const queued = this.pendingBotJoins.indexOf(id);
+      // Queued but never spawned: drop the join instead of asking the sim to
+      // remove a player it has not created (which would leak the id).
+      if (queued !== -1) this.pendingBotJoins.splice(queued, 1);
+      else this.pendingLeaves.push(id);
+    }
+  }
+
+  /**
+   * Each bot's intent for this tick, through the very seam a decoded client
+   * frame ends up in (ADR-0005: same input interface, source = local heuristic
+   * instead of a WebSocket). A bot queued this tick has no body yet — it spawns
+   * with the step below and steers from the next tick on.
+   */
+  private steerBots(turns: { id: number; turn: TurnSignal }[]): void {
+    for (const [id, pilot] of this.bots) {
+      const sight = senseFor(this.state, id);
+      if (sight) turns.push({ id, turn: pilot.steer(sight) });
+    }
+  }
+
   /** One authoritative 20 Hz tick: apply each tick-mapped intent, snapshot all. */
   tick(dtSec: number): void {
     const turns: { id: number; turn: TurnSignal }[] = [];
@@ -345,13 +422,27 @@ export class ArenaCore {
       // else: input still in flight — the sim persists the current turn and
       // the ack below moves past this tick regardless ("processed").
     }
-    const spawned = this.pendingJoins;
+    // Population last, so a human who joined this tick is already counted and
+    // the bots steer against the same pre-step state everyone else does.
+    this.manageBots();
+    this.steerBots(turns);
+
+    // Bot spawns need the same territory sync as human ones — a start block
+    // nobody was told about would be invisible land until its first fill.
+    const spawned = [...this.pendingJoins, ...this.pendingBotJoins];
     const events = step(
       this.state,
-      { joins: this.pendingJoins, leaves: this.pendingLeaves, turns, views },
+      {
+        joins: this.pendingJoins,
+        botJoins: this.pendingBotJoins,
+        leaves: this.pendingLeaves,
+        turns,
+        views,
+      },
       dtSec,
     );
     this.pendingJoins = [];
+    this.pendingBotJoins = [];
     this.pendingLeaves = [];
 
     // Event frames of this tick, sent BEFORE its snapshot. Deaths first

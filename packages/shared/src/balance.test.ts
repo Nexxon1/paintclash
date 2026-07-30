@@ -32,10 +32,11 @@ describe('BALANCE', () => {
     expect(Object.isFrozen(BALANCE.movement)).toBe(true);
     expect(Object.isFrozen(BALANCE.spawn)).toBe(true);
     expect(Object.isFrozen(BALANCE.trail)).toBe(true);
+    expect(Object.isFrozen(BALANCE.bots)).toBe(true);
   });
 
   it('has only positive, finite magnitudes', () => {
-    const groups = [BALANCE.arena, BALANCE.movement, BALANCE.spawn, BALANCE.trail];
+    const groups = [BALANCE.arena, BALANCE.movement, BALANCE.spawn, BALANCE.trail, BALANCE.bots];
     for (const group of groups) {
       for (const value of Object.values(group)) {
         expect(Number.isFinite(value)).toBe(true);
@@ -71,5 +72,35 @@ describe('BALANCE', () => {
       BALANCE.movement.speedWuPerSec / ((BALANCE.movement.turnRateDegPerSec * Math.PI) / 180);
     expect(BALANCE.trail.selfCutGraceWU).toBeGreaterThan(2 * BALANCE.trail.collisionRadiusWU);
     expect(BALANCE.trail.selfCutGraceWU).toBeLessThan(Math.PI * turnRadius);
+  });
+
+  it('carries the spec §2.7 bot population rule', () => {
+    expect(BALANCE.bots.targetPopulation).toBe(8);
+    expect(BALANCE.bots.maxBots).toBe(8);
+    // A bot may never displace a human: the ceiling cannot exceed the target,
+    // or `clamp(target − humans, 0, maxBots)` could keep bots around while
+    // humans are still arriving.
+    expect(BALANCE.bots.maxBots).toBeLessThanOrEqual(BALANCE.bots.targetPopulation);
+  });
+
+  it('keeps the bot pilot inside its geometric window', () => {
+    const turnRadius =
+      BALANCE.movement.speedWuPerSec / ((BALANCE.movement.turnRateDegPerSec * Math.PI) / 180);
+    // The return lane must clear the U-turn at the tip, or every excursion
+    // would end in a self-cut (see balance.ts rationale).
+    expect(BALANCE.bots.laneOffsetWU).toBeGreaterThan(2 * turnRadius);
+    // An excursion has to leave the start block behind to enclose anything.
+    expect(BALANCE.bots.excursionWU).toBeGreaterThan(BALANCE.spawn.startBlockWU);
+    // Evasion must start before the head-on distance decides the matter.
+    expect(BALANCE.bots.evadeRadiusWU).toBeGreaterThan(2 * BALANCE.trail.collisionRadiusWU);
+    // ...and a bot must be able to see the threat it is asked to evade.
+    expect(BALANCE.bots.sightRadiusWU).toBeGreaterThan(BALANCE.bots.evadeRadiusWU);
+    // The trail budget has to cover a full planned excursion (out and back
+    // along the offset lane) — otherwise the safety net fires on every run.
+    expect(BALANCE.bots.maxTrailWU).toBeGreaterThan(2 * BALANCE.bots.excursionWU);
+    // Planning margin and excursion must fit the arena from its centre.
+    expect(BALANCE.bots.excursionWU + BALANCE.bots.wallMarginWU).toBeLessThan(
+      BALANCE.arena.sizeWU / 2,
+    );
   });
 });

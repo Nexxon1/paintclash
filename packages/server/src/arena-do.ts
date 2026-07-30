@@ -17,10 +17,10 @@
  */
 
 import { DurableObject } from 'cloudflare:workers';
-import { TICK_DT_MS, TICK_DT_SEC } from '@paintclash/shared';
+import { BALANCE, TICK_DT_MS, TICK_DT_SEC } from '@paintclash/shared';
 
 import { ArenaCore } from './arena.js';
-import { arenaSeedOverride, arenaSizeOverride } from './router.js';
+import { arenaSeedOverride, arenaSizeOverride, botTargetOverride } from './router.js';
 
 import type { Env } from './router.js';
 
@@ -42,6 +42,9 @@ export class ArenaDO extends DurableObject<Env> {
       // it each arena gets its own random world.
       arenaSeedOverride(this.env.ARENA_SEED) ?? crypto.getRandomValues(new Uint32Array(1))[0] ?? 1,
       arenaSizeOverride(this.env.ARENA_SIZE_WU),
+      // This is the PUBLIC arena (ADR-0004), so it is the one that gets kept
+      // populated (spec §2.7) — `ArenaCore` itself stays bot-free unless asked.
+      botTargetOverride(this.env.ARENA_BOTS) ?? BALANCE.bots.targetPopulation,
     );
     const arena = this.arena;
     const playerId = arena.connect({

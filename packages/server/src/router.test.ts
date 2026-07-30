@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   arenaSeedOverride,
   arenaSizeOverride,
+  botTargetOverride,
   handleFetch,
   healthPayload,
   type Env,
@@ -75,6 +76,20 @@ describe('dev-only env overrides', () => {
     expect(arenaSeedOverride(undefined)).toBeUndefined();
     for (const raw of ['', 'seed', '1.5', '-1', '4294967296', 'NaN', 'Infinity']) {
       expect(arenaSeedOverride(raw)).toBeUndefined();
+    }
+  });
+
+  it('takes a bot target within the population rule and refuses anything else', () => {
+    // 0 is a MEANING, not a typo: it switches the population off, which is how
+    // the scenario choreographies stay hermetic.
+    expect(botTargetOverride('0')).toBe(0);
+    expect(botTargetOverride('4')).toBe(4);
+    expect(botTargetOverride(undefined)).toBeUndefined();
+    // Above the ceiling is a mis-set var, not a wish: falling back to the
+    // BALANCE target is the only safe reading — an arena must never be flooded
+    // by a stray environment variable.
+    for (const raw of ['', ' ', 'eight', '2.5', '-1', 'NaN', 'Infinity', '999']) {
+      expect(botTargetOverride(raw)).toBeUndefined();
     }
   });
 });

@@ -6,6 +6,8 @@
  * imports so it stays unit-testable in plain node.
  */
 
+import { BALANCE } from '@paintclash/shared';
+
 /** Bindings declared in `wrangler.jsonc`. */
 export interface Env {
   readonly ASSETS: { fetch(request: Request): Promise<Response> };
@@ -25,6 +27,13 @@ export interface Env {
    * deploys — production seeds itself from `crypto`.
    */
   readonly ARENA_SEED?: string;
+  /**
+   * Dev/test-only override of the arena's bot target population (spec §2.7).
+   * Unset means the public arena's balanced target; `0` switches bots off,
+   * which is what keeps the scenario choreographies hermetic
+   * (`tests/scenario/wrangler.jsonc`).
+   */
+  readonly ARENA_BOTS?: string;
 }
 
 /**
@@ -49,6 +58,21 @@ export function arenaSeedOverride(raw: string | undefined): number | undefined {
   if (raw === undefined || raw.trim() === '') return undefined;
   const seed = Number(raw);
   return Number.isInteger(seed) && seed >= 0 && seed <= 0xffff_ffff ? seed : undefined;
+}
+
+/**
+ * Parse the dev/test-only ARENA_BOTS override (see `Env`). A target above the
+ * ceiling of the population rule (`BALANCE.bots.maxBots` bots on top of the
+ * humans present) is a mis-set variable rather than a wish, and falls back to
+ * the balanced target — no environment typo may flood an arena. `0` is a
+ * meaning, not a typo: it switches the population off.
+ */
+export function botTargetOverride(raw: string | undefined): number | undefined {
+  if (raw === undefined || raw.trim() === '') return undefined;
+  const target = Number(raw);
+  return Number.isInteger(target) && target >= 0 && target <= BALANCE.bots.maxBots
+    ? target
+    : undefined;
 }
 
 /** Health-probe payload — small, dependency-free, trivially assertable. */

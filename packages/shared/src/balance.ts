@@ -65,6 +65,69 @@ export const BALANCE = Object.freeze({
     minFillAreaWU2: 0.01,
   }),
   /**
+   * Bots (spec §2.7/§10.4, ADR-0005) — density *and* behaviour are balance,
+   * not architecture: the pilot in `server/src/bot.ts` reads every number
+   * below, so "competent but beatable" is tunable without touching its logic.
+   *
+   * Affordability is settled: the DO-CPU benchmark (build ticket 02,
+   * `docs/benchmarks/do-cpu-benchmark.md`) measured 8 entities at ≈ 0,02 ms per
+   * tick locally — with the 4× hardware safety factor ≈ 0,2 % of the 50 ms
+   * budget. The target is a gameplay choice, not a CPU ceiling.
+   */
+  bots: Object.freeze({
+    /**
+     * Entities (humans + bots) the public arena is kept populated to while at
+     * least one human plays: `bots = clamp(target − humans, 0, maxBots)`.
+     */
+    targetPopulation: 8,
+    /**
+     * Ceiling on bots regardless of the target — the invariant that a bot can
+     * never take a slot a human could have had (spec §2.7: humans first).
+     */
+    maxBots: 8,
+    /**
+     * Perception radius in WU: heads and trails farther away than this do not
+     * exist for a bot (ADR-0005 — deliberately only "what a human could
+     * see"). Sized after the client camera, which sits
+     * `CAMERA_DISTANCE_WU` = 40 WU from the head: a bot knows about as much of
+     * the arena as the player it plays against.
+     */
+    sightRadiusWU: 40,
+    /**
+     * Ticks between two decisions. Between them a bot keeps steering its
+     * current plan — it cannot react to anything, which is the second half of
+     * "beatable": 4 ticks = 200 ms, human reaction time (spec §6.3).
+     */
+    reactionTicks: 4,
+    /** How far from home an excursion reaches before turning back, in WU. */
+    excursionWU: 18,
+    /**
+     * Lateral offset of the return leg from the outbound one, in WU. Must
+     * exceed twice the turn radius (2 × 1,61 = 3,22 WU) or the U-turn at the
+     * tip would cross the outbound trail — a self-cut, i.e. suicide.
+     */
+    laneOffsetWU: 5,
+    /**
+     * Clearance kept from the arena edge when planning, in WU. The soft
+     * barrier is survivable (spec §2.4) but a pinned head slides instead of
+     * steering, which strands a bot mid-loop.
+     */
+    wallMarginWU: 10,
+    /**
+     * A foreign head this close (WU) aborts the excursion and sends the bot
+     * home — the "ausweichen" half of the core loop. Well above the head-on
+     * distance (2 × 0,5 WU), so evasion starts before contact is decided.
+     */
+    evadeRadiusWU: 12,
+    /**
+     * Trail path length (WU) after which a bot heads home regardless of its
+     * plan. A safety net for runs that never reach their last waypoint (an
+     * evade detour, a wall-pinned tick): every WU outside is exposure, and an
+     * unclosed loop paints nothing.
+     */
+    maxTrailWU: 120,
+  }),
+  /**
    * Score (spec §10.5) — the personal performance number
    * `round(peakPct × √survivalSec × (1 + humanBonus × ØotherHumans) × scale)`.
    * The sublinear time term is the formula's own shape, not a parameter.
