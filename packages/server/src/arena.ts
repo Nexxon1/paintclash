@@ -7,7 +7,9 @@
  * Trust boundary (spec §8.2): clients speak *only* via `handleFrame`, which
  * decodes, validates and queues steer intents. Positions are re-derived from
  * `sim-core` every tick — nothing a client sends can express position,
- * speed, or another player's id.
+ * speed, or another player's id. The one piece of client-supplied *content*
+ * that reaches other players is the nickname, and it passes the shared policy
+ * here before it is stored (spec §8.3 point 5, ticket 13).
  *
  * Input timeline (ticket 17, tick-mapped): a client samples one intent per
  * sim tick, `seq` IS its sim-tick counter. Per connection the server tracks
@@ -35,7 +37,7 @@ import {
   type LeaderboardRow,
   type SnapshotPlayer,
 } from '@paintclash/protocol';
-import { BALANCE, LIMITS, type TurnSignal } from '@paintclash/shared';
+import { BALANCE, LIMITS, checkNickname, type TurnSignal } from '@paintclash/shared';
 import {
   createSimState,
   lifeStats,
@@ -60,17 +62,28 @@ export interface ArenaSocket {
 const MARGIN_EMA_START = (LIMITS.tickMapMinMarginTicks + LIMITS.tickMapMaxMarginTicks) / 2;
 
 /**
- * Auto guest name for a client that supplied none (spec §2.8: "Leerer Name →
- * Auto-Gastname (Gast-####)") — the leaderboard must not render a blank row,
- * and one shared "Gast" for everyone would be no name at all. Numbered by
- * player id, which every row carries anyway.
- *
- * The REST of the nickname policy is ticket 13: names still reach other
- * clients here unfiltered (no blocklist, no zero-width/control filtering) —
- * the wire caps length, nothing else does yet.
+ * Auto guest name for a client whose name did not survive the policy (spec
+ * §2.8: "Leerer Name → Auto-Gastname (Gast-####)") — the leaderboard must not
+ * render a blank row, and one shared "Gast" for everyone would be no name at
+ * all. Numbered by player id, which every row carries anyway.
  */
 function guestName(playerId: number): string {
   return `Gast-${String(playerId).padStart(4, '0')}`;
+}
+
+/**
+ * The display name this connection gets (ticket 13, spec §2.8/§8.3 point 5).
+ *
+ * This is the **enforcement** point: the client runs the very same
+ * `checkNickname` as a UX pre-check, but nothing it says is trusted — a
+ * hand-crafted join frame carrying a blocked name, control characters or a
+ * zero-width-padded blank reaches exactly this line and is answered with a
+ * guest name. A rejection is silent on purpose: the name is cosmetic, and
+ * refusing the join over one would cost a player their game for nothing.
+ */
+function displayName(requested: string, playerId: number): string {
+  const verdict = checkNickname(requested);
+  return verdict.ok ? verdict.name : guestName(playerId);
 }
 
 interface Connection {
@@ -232,7 +245,7 @@ export class ArenaCore {
     if (message.type === 'join') {
       if (!connection.joined) {
         connection.joined = true;
-        connection.name = message.name.trim() || guestName(playerId);
+        connection.name = displayName(message.name, playerId);
         connection.socket.send(encodeWelcome(playerId, this.state.arenaSizeWU));
         // World sync for the joiner (ticket 04): every existing territory
         // and every active trail, full — from here on, territory changes

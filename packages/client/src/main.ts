@@ -4,9 +4,10 @@
  * rendering in `render/`. Exercised by the Playwright E2E.
  */
 
-import { TICK_DT_MS } from '@paintclash/shared';
+import { TICK_DT_MS, sanitizeNickname } from '@paintclash/shared';
 
 import { Steering, type PointerSample } from './game/input.js';
+import { nicknameHint } from './game/nickname-hint.js';
 import { LocalRecords } from './game/records.js';
 import { recordsText } from './game/score.js';
 import { ClientSession } from './game/session.js';
@@ -41,6 +42,7 @@ function query<T extends HTMLElement>(selector: string, type: new () => T): T {
 const overlay = query('#overlay', HTMLDivElement);
 const form = query('#join-form', HTMLFormElement);
 const nameInput = query('#name', HTMLInputElement);
+const nameHint = query('#name-hint', HTMLParagraphElement);
 const status = query('#status', HTMLParagraphElement);
 const canvas = query('#game', HTMLCanvasElement);
 const leaderboard = new LeaderboardHud(query('#leaderboard', HTMLDivElement));
@@ -265,6 +267,18 @@ function start(name: string): void {
   requestAnimationFrame(frame);
 }
 
+/**
+ * The nickname pre-check (spec §2.8, ticket 13) — UX only: the server runs the
+ * same rule and has the last word. Shown live so a player learns about a
+ * refusal or a filtered character while the field still has focus.
+ */
+function showNameHint(): void {
+  const hint = nicknameHint(nameInput.value);
+  nameHint.textContent = hint.text ?? '';
+  nameHint.classList.toggle('blocked', hint.blocked);
+}
+nameInput.addEventListener('input', showNameHint);
+
 form.addEventListener('submit', (event) => {
   event.preventDefault();
   status.textContent = 'Verbinde …';
@@ -272,7 +286,14 @@ form.addEventListener('submit', (event) => {
   // context start here (spec §4.4 — no separate "enable sound" prompt). Before
   // the socket, so a slow connect cannot cost us the activation.
   sfx.unlock();
-  start(nameInput.value.trim() || 'Gast');
+  // Sanitized, not judged: filtering saves the wire from cutting a name by code
+  // point (which could split a character), while a name the blocklist refuses
+  // is sent as-is and REPLACED BY THE SERVER — the hint above already said so.
+  // Refusing the join here instead would make the client the authority on a
+  // rule it only pre-checks (ticket 13: "Server erzwingt"), and would cost a
+  // player their game over a cosmetic string. An empty name stays empty: only
+  // the server can number the guest (`Gast-####`).
+  start(sanitizeNickname(nameInput.value));
 });
 
 // Only now is a click safe (no native submit/reload) — see index.html.

@@ -1,4 +1,4 @@
-import { BALANCE, LIMITS, TICK_DT_SEC, type Point } from '@paintclash/shared';
+import { BALANCE, LIMITS, NICKNAME, TICK_DT_SEC, type Point } from '@paintclash/shared';
 import {
   decodeServerMessage,
   encodeInput,
@@ -1155,5 +1155,121 @@ describe('bot population (ticket 12, spec §2.7: bots = clamp(target − humans,
     joinedPlayer(arena, 'Ada');
     runTicks(arena, 3);
     expect(simPlayers(arena).filter((p) => p.isBot)).toHaveLength(0);
+  });
+});
+
+describe('nickname policy (ticket 13, spec §2.8, §8.3 point 5)', () => {
+  const ZWSP = '\u200B';
+  const ZWJ = '\u200D';
+  const RLO = '\u202E';
+  const HANGUL_FILLER = '\u3164';
+
+  function runTicks(arena: ArenaCore, ticks: number): void {
+    for (let i = 0; i < ticks; i++) arena.tick(TICK_DT_SEC);
+  }
+
+  /**
+   * The name the server actually PUBLISHES for `id` — read off a leaderboard
+   * frame, the only place a nickname leaves the arena. Asserting on the wire
+   * rather than on `connection.name` is the point: what the policy has to
+   * protect is what the other players get to see.
+   */
+  function publishedName(arena: ArenaCore, socket: FakeSocket, id: number): string {
+    runTicks(arena, LIMITS.leaderboardIntervalTicks);
+    const board = socket
+      .decoded()
+      .filter((m) => m.type === 'leaderboard')
+      .at(-1);
+    if (board?.type !== 'leaderboard') throw new Error('no leaderboard received');
+    const row = board.rows.find((r) => r.playerId === id);
+    if (!row) throw new Error('row missing from the board');
+    return row.name;
+  }
+
+  function guestName(id: number): string {
+    return `Gast-${String(id).padStart(4, '0')}`;
+  }
+
+  /**
+   * A join carrying `name`, put straight on the wire. `encodeJoin` is all a
+   * manipulated client is: the real client pre-checks with `checkNickname`
+   * and would never send most of what these tests send — which is exactly
+   * why the server may not rely on it having done so (spec §8.3).
+   */
+  function joinWith(name: string): { arena: ArenaCore; socket: FakeSocket; id: number } {
+    const arena = new ArenaCore(1);
+    const socket = new FakeSocket();
+    const id = arena.connect(socket);
+    if (id === null) throw new Error('arena unexpectedly full');
+    arena.handleFrame(id, encodeJoin(name));
+    arena.tick(TICK_DT_SEC);
+    return { arena, socket, id };
+  }
+
+  it('keeps an ordinary name as it was typed', () => {
+    const { arena, socket, id } = joinWith('Ada Lovelace');
+    expect(publishedName(arena, socket, id)).toBe('Ada Lovelace');
+  });
+
+  it('names an empty join Gast-#### (spec §2.8)', () => {
+    const { arena, socket, id } = joinWith('');
+    expect(publishedName(arena, socket, id)).toBe(guestName(id));
+  });
+
+  it('enforces the blocklist against a manipulated client', () => {
+    const { arena, socket, id } = joinWith('nazi');
+    expect(publishedName(arena, socket, id)).toBe(guestName(id));
+  });
+
+  it('enforces it on the SANITIZED name — zero-width padding buys nothing', () => {
+    const { arena, socket, id } = joinWith(`n${ZWSP}a${ZWSP}z${ZWSP}i`);
+    expect(publishedName(arena, socket, id)).toBe(guestName(id));
+  });
+
+  it('refuses a name that renders as nothing', () => {
+    // Blank-rendering characters only: passes every wire check, and would
+    // otherwise show up as an empty leaderboard row.
+    const { arena, socket, id } = joinWith(`${HANGUL_FILLER}${ZWSP}\u00A0`);
+    expect(publishedName(arena, socket, id)).toBe(guestName(id));
+  });
+
+  it('strips control and zero-width characters out of an otherwise fine name', () => {
+    const { arena, socket, id } = joinWith(`  A\u0000d${ZWJ}a${RLO}  `);
+    expect(publishedName(arena, socket, id)).toBe('Ada');
+  });
+
+  it('truncates an over-long name to the cap', () => {
+    // ASCII, so the code-point cap and spec §2.8's visible-character cap agree
+    // here; where they part company is pinned in `shared/nickname.test.ts`.
+    const { arena, socket, id } = joinWith('x'.repeat(NICKNAME.maxCodePoints + 4));
+    expect(publishedName(arena, socket, id)).toBe('x'.repeat(NICKNAME.maxCodePoints));
+  });
+
+  it('never lets a rejected name reach the other players', () => {
+    const arena = new ArenaCore(1);
+    const ada = joinedPlayer(arena, 'Ada');
+    const troll = joinedPlayer(arena, 'nazi');
+    arena.tick(TICK_DT_SEC);
+    // Read the troll's row off ADA's board: the name is filtered for everyone,
+    // not merely hidden from the sender.
+    expect(publishedName(arena, ada.socket, troll.id)).toBe(guestName(troll.id));
+  });
+
+  it('lets two players share one name — a name is cosmetic, never an identity', () => {
+    // Spec §2.8: names are non-unique and never an authorization key; every
+    // piece of player data hangs off `playerId`, so a duplicate is harmless.
+    const arena = new ArenaCore(1);
+    const first = joinedPlayer(arena, 'Ada');
+    const second = joinedPlayer(arena, 'Ada');
+    arena.tick(TICK_DT_SEC);
+    expect(first.id).not.toBe(second.id);
+    expect(publishedName(arena, first.socket, first.id)).toBe('Ada');
+    expect(publishedName(arena, first.socket, second.id)).toBe('Ada');
+  });
+
+  it('ignores a second join, so a name cannot be swapped mid-game', () => {
+    const { arena, socket, id } = joinWith('Ada');
+    arena.handleFrame(id, encodeJoin('Bo'));
+    expect(publishedName(arena, socket, id)).toBe('Ada');
   });
 });

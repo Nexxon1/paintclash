@@ -20,7 +20,12 @@ Jede Arena braucht ein konsistentes „Gehirn", das ihren Zustand hält und die 
 - **SQLite (im DO):** nur die **Raum-Registry** privater Räume (Code → Konfig), selten geschrieben.
 - **Persönliche Rekorde: lokal im Browser (localStorage)**, kein Server-Speicher (bis Accounts, ADR-0006).
 - **Leaderboard:** live aus dem Speicher berechnet (nur %).
-- **Nickname-Blockliste:** statische, mit dem Server ausgelieferte Daten.
+- **Nickname-Blockliste:** statische Daten, **in `shared` einkompiliert** (Ticket 13) — also
+  mit dem Server ausgeliefert *und* im Client-Bundle. Kein Wire-Format, kein SQLite, kein
+  Runtime-I/O: der Server erzwingt, der Client prüft nur vor (§2.8), und beide Seiten
+  müssen dieselbe Liste sehen — eine über die Leitung geschickte Liste könnte driften, eine
+  gemeinsam kompilierte nicht. Preis: die Wortliste ist im Bundle öffentlich lesbar. Das
+  ist tragbar, weil §8.3 Blocklisten-Umgehung ohnehin als akzeptiertes Restrisiko führt.
 
 ## Konsequenzen
 

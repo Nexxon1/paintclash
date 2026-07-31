@@ -16,6 +16,7 @@
 import {
   BALANCE,
   MAP_SHARE_PERCENT_SCALE,
+  NICKNAME,
   type DeathCause,
   type LifeCounters,
   type Point,
@@ -35,9 +36,13 @@ export type { DeathCause };
  */
 export const PROTOCOL_VERSION = 5;
 
-/** Nickname cap on the wire: 16 code points, ≤ 64 UTF-8 bytes. */
-export const MAX_NAME_CHARS = 16;
-export const MAX_NAME_BYTES = 64;
+/**
+ * Nickname caps on the wire. Taken from the shared nickname policy rather than
+ * restated, so the format and the rule that produces names (spec §2.8, ticket
+ * 13) cannot drift into a sanitizer that emits what the encoder would cut.
+ */
+export const MAX_NAME_CHARS = NICKNAME.maxCodePoints;
+export const MAX_NAME_BYTES = NICKNAME.maxUtf8Bytes;
 
 /** Inputs per batched frame (spec §6.3 input batching, WS 20:1 budget). */
 export const MAX_INPUT_BATCH = 20;
@@ -171,8 +176,10 @@ function capName(name: string): string {
   let capped = '';
   let chars = 0;
   let bytes = 0;
-  // for…of iterates code points — full nickname policy (visible-character
-  // counting, filtering) is ticket 13; the wire only guarantees hard caps.
+  // for…of iterates code points. The wire only guarantees the hard caps; the
+  // display policy (visible-character counting, filtering, blocklist) lives in
+  // `shared/nickname.ts` and already fits inside them, so this is the net that
+  // catches a hand-crafted frame, not the everyday path.
   for (const cp of name) {
     const cpBytes = textEncoder.encode(cp).length;
     if (chars + 1 > MAX_NAME_CHARS || bytes + cpBytes > MAX_NAME_BYTES) break;

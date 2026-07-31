@@ -59,6 +59,18 @@
         color: #5b6672;
         margin: 0.75rem 0 0;
       }
+      /* Nickname pre-check line. Reserves its height so the card does not jump
+         while typing; emphasised only when the name is going to be replaced.
+         It never gates the button — the server enforces (ticket 13). */
+      #name-hint {
+        min-height: 1.2em;
+        font-size: 0.9rem;
+        color: #5b6672;
+        margin: 0.5rem 0 0;
+      }
+      #name-hint.blocked {
+        color: #c62828;
+      }
       /* Live leaderboard (spec §2.5): top 5 + the own, highlighted row. */
       #leaderboard {
         position: fixed;
@@ -280,11 +292,20 @@
       <div class="card">
         <h1>paintclash</h1>
         <form id="join-form">
+          <!-- `maxlength` counts UTF-16 units, not the code points the policy
+               caps at, so it is a coarse guard: exact for the ASCII names
+               nearly everyone types, conservative for emoji (an astral
+               character costs two). It can only ever stop a name SHORT, never
+               let an illegal one through, and the hint below previews whatever
+               the policy does change. -->
           <input id="name" maxlength="16" placeholder="Dein Name" autocomplete="off" />
           <!-- Enabled by main.ts once the module is wired — a click before
                that would fire a native submit and reload the page. -->
           <button type="submit" disabled>Spielen</button>
         </form>
+        <!-- Nickname pre-check (spec §2.8, ticket 13). UX only: the server
+             runs the same rule and enforces it whatever this says. -->
+        <p id="name-hint"></p>
         <p id="status"></p>
         <!-- Local records (spec §2.5) — filled by main.ts from localStorage. -->
         <p id="records"></p>

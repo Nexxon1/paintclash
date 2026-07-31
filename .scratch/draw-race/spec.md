@@ -180,6 +180,23 @@ endlose quadratische Arena mit festen Wänden.
 - Namen sind **nicht eindeutig** und **rein kosmetisch** — Unterscheidung über
   Farbe/Spieler-ID; nie ein Autorisierungs-Schlüssel (Autorität hängt an der `playerId`).
 
+**Umsetzung (Ticket 13, `shared/src/nickname.ts`):** Die Länge wird als **Code-Points
+≤ 16** durchgesetzt, nicht als sichtbare Zeichen. Grund: das Wire-Format begrenzt den
+Namen auf 16 Code-Points (`protocol`: `MAX_NAME_CHARS`, von beiden Decodern geprüft) —
+mehr durchzulassen wäre ein **brechender** Protokollwechsel (`PROTOCOL_VERSION`), also
+keine Nickname-Entscheidung. Folge: ein Name mit **Kombinationszeichen** (`e` + ◌́ statt
+`é`) bekommt weniger als 16 sichtbare Zeichen, weil jede Marke einen Code-Point kostet.
+Die Grenze ist damit immer **strenger** als „16 sichtbare Zeichen", nie großzügiger; der
+Unterschied ist in `nickname.test.ts` festgenagelt, nicht dem Zufall überlassen. Sichtbare
+Zeichen bleiben die *ausgesprochene* Regel (`NICKNAME.maxVisible`) — sie greift, sobald
+das Wire je breiter wird.
+
+**Bewusst nicht normalisiert:** kein NFC/NFKC vor dem Zählen (das würde `e` + ◌́ zu `é`
+verdichten und das Budget entspannen). Unicode-/Homoglyph-Normalisierung ist in §8.4
+ausdrücklich verschoben; sie hier für die Längenzählung einzuführen wäre dieselbe
+Maschinerie unter anderem Namen — und ICU-Versionen unterscheiden sich zwischen Browser
+und workerd, was Client-Vorschau und Server-Urteil auseinanderlaufen ließe.
+
 ---
 
 ## 3. Steuerung & Bewegungsmodell
@@ -302,7 +319,7 @@ Vorhersage im Client — geteilter Code kann nicht driften.
 |---|---|
 | **`sim-core`** | reine, **deterministische** Spiel-Logik: Bewegung, Trail, Loop-Schluss, Fill, Kollision, Regeln. **Kein** Netz, **kein** Rendering, **keine** Uhr/Zufall von außen. Headless testbar. |
 | **`protocol`** | Binär-Wire-Format (encode/decode) + Nachrichtentypen; Client und Server teilen es exakt. |
-| **`shared`** | Balance-Parameter (`BALANCE`, Kapitel 10) + gemeinsame Konstanten/Typen inkl. Tickrate. Eine Quelle der Wahrheit. |
+| **`shared`** | Balance-Parameter (`BALANCE`, Kapitel 10) + gemeinsame Konstanten/Typen inkl. Tickrate — und die wenigen **Regeln, die beide Wire-Enden identisch entscheiden müssen** (die Nickname-Politik, §2.8: Server erzwingt, Client prüft vor; zwei Implementierungen driften). Eine Quelle der Wahrheit. |
 | **`server`** | Workers/DO-Schale: Arenen, Verbindungen, 20-Hz-Tick, Input, Bots; fährt `sim-core` autoritativ; Transport hinter Interface. |
 | **`client`** | Browser: three.js-Rendering, Input, Prediction (fährt `sim-core` lokal), Reconciliation, Interpolation, HUD, Sound. |
 
@@ -541,7 +558,7 @@ Operative Kurzfassung → `CLAUDE.md`; Vokabular → `CONTEXT.md`.
 |---|---|---|
 | **`sim-core`** (rein, deterministisch) | Unit + **Property-based** + **Replay-Determinismus/Golden-Fixtures** — Fill, Trail-Schnitt, Kollision, Tod-Bedingungen, Loop-Schluss, Kopf-an-Kopf, Barriere | **tragend** |
 | **`protocol`** | Round-trip-Property (`decode(encode(x))==x`) + Golden-Byte-Tests | mittel, billig |
-| **`shared`** | nur Sanity (Wertebereiche/Balance gültig) | minimal |
+| **`shared`** | nur Sanity (Wertebereiche/Balance gültig) — **Ausnahme:** die Nickname-Politik (§2.8) ist echte Verzweigungslogik und wird wie jedes andere Modul getestet (Unit + Blockliste) | minimal, außer Nickname |
 | **`server`** (Workers/DO) | Integration via `@cloudflare/vitest-pool-workers` gegen echtes DO — Raum-Lifecycle, Tick treibt Sim, Input-Validierung, Bot-Injektion, Join/Leave, Reconnect | mittel |
 | **`client`** | Rendering (three.js) **ausgenommen**; Prediction/Reconciliation-**Logik** headless getestet | dünn |
 
@@ -570,7 +587,7 @@ Darüber zwei **stack-durchgreifende** Schichten (Kern-Mechanik als Regressions-
 |---|---|---|
 | `sim-core` | ≥ 95 % Branch | Vollabdeckung; sonst `c8 ignore` + Begründung |
 | `protocol` | ≥ 90 % | — |
-| `shared` | ausgenommen | — |
+| `shared` | ausgenommen **je Datei**, nicht je Paket: `balance.ts`, `limits.ts`, `types.ts`, `index.ts` sind deklarierte Konstanten ohne Zweige. `nickname.ts` + `nickname-blocklist.ts` **≥ 95 % Branch** | Der Boden steigt nur: ein neues `shared`-Modul mit Logik ist gemessen, bis es begründet ausgenommen wird |
 | `server` | ≥ 75 % Zeilen | Vollabdeckung; Hibernation/Reconnect begründet ausnehmbar |
 | `client`-Logik | ≥ 80 % (Render ausgenommen) | — |
 | Szenario/E2E | zählen **nicht** in %; getrackt als Szenario-Checkliste | — |

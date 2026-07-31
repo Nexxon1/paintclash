@@ -5,7 +5,9 @@ import { defineConfig } from 'vitest/config';
  * gates are declared **per package** as glob-keyed thresholds — the mechanical
  * "no shortcuts" floor that only ever rises.
  *
- * `shared` is exempt from coverage (sanity-only, §9.3). Scenario/E2E tests live
+ * `shared` is exempt from coverage where it is sanity-only (§9.3) — file by
+ * file, so a module with real logic in it cannot inherit the exemption.
+ * Scenario/E2E tests live
  * outside this config (`tests/scenario`, `tests/e2e`) and do not count toward %.
  */
 export default defineConfig({
@@ -20,7 +22,14 @@ export default defineConfig({
       exclude: [
         '**/*.test.ts',
         '**/dist/**',
-        'packages/shared/**',
+        // `shared` is sanity-only (§9.3) — declared constants, no branches to
+        // cover. Its nickname policy (ticket 13) is the exception: real
+        // branching logic that both ends of the wire depend on, so it is
+        // measured and gated like any other module.
+        'packages/shared/src/balance.ts',
+        'packages/shared/src/limits.ts',
+        'packages/shared/src/types.ts',
+        'packages/shared/src/index.ts',
         // Transport/DO shell without logic — exercised by the scenario tests
         // (tests/scenario/), which run in workerd and don't count toward %
         // (spec §9.3: hibernation/transport justifiably exempt).
@@ -36,6 +45,14 @@ export default defineConfig({
       ],
       reporter: ['text', 'json-summary', 'lcov'],
       thresholds: {
+        // Only the nickname policy remains after the exclusions above, and a
+        // pure string filter has no excuse for uncovered branches.
+        'packages/shared/src/**/*.ts': {
+          branches: 95,
+          functions: 95,
+          lines: 95,
+          statements: 95,
+        },
         'packages/sim-core/src/**/*.ts': {
           branches: 95,
           functions: 95,
