@@ -70,15 +70,17 @@ export const BALANCE = Object.freeze({
    * below, so "competent but beatable" is tunable without touching its logic.
    *
    * The target is a gameplay choice, and affordable — but do not read the
-   * benchmark's headline for it. Ticket 12 measured both halves against real
-   * code (addendum in `docs/benchmarks/do-cpu-benchmark.md`): the bot pilots
-   * themselves cost ≈ 0,017 ms/tick for all 8 together, i.e. nothing, while a
-   * real tick with 8 painting entities costs ≈ 2,74 ms — about 100× the
-   * benchmark's synthetic estimate for that N, because the polygon fill
-   * dominates. With the 4× hardware factor that is ≈ 11 ms of the 50 ms budget:
-   * inside the 25 ms criterion, without the two orders of magnitude of reserve
-   * the benchmark's interpretation assumes. Raising the target is therefore a
-   * CPU decision as well — ticket 16 re-measures against the real build.
+   * benchmark's headline for it. Tickets 12 and 22 measured both halves against
+   * real code (addenda in `docs/benchmarks/do-cpu-benchmark.md`): the bot pilots
+   * themselves cost ≈ 0,017 ms/tick for all 8 together, i.e. nothing, while the
+   * polygon fill is ≈ 99 % of everything else. Ticket 22 brought a saturating
+   * 8-bot tick down to p95 12 ms / max 36–43 ms over 5 minutes (from max
+   * 189 ms). That is inside the 50 ms budget LOCALLY; derated by the
+   * benchmark's 4× hardware factor, p95 lands at the budget and the max is
+   * roughly 3× over it — so this is not headroom, and the curve still climbs
+   * with the map's vertex count. Raising the target is therefore a CPU
+   * decision as well; ticket 16 measures it against the real build, ticket 23
+   * holds the remaining growth.
    */
   bots: Object.freeze({
     /**

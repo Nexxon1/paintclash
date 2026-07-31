@@ -4,7 +4,9 @@ Ergebnis-Dokument zu **Bau-Ticket 02** (`.scratch/paintclash/issues/02-do-cpu-be
 graduiert aus Wayfinder-Ticket 14. Referenziert von T15 (Populationsgrenze) und T16
 (Re-Konfirmation gegen den echten Build). Harness: [`bench/do-cpu/`](../../bench/do-cpu/).
 
-Stand: 2026-07-19.
+Stand: 2026-07-19. **Teilweise überholt** — siehe die Nachträge von T12 (2026-07-30) und
+T22 (2026-07-31) am Ende: gegen echten Code ist der Kern-Befund dieses Dokuments
+umgekehrt. Der Fill dominiert den Tick, die Kollision ist vernachlässigbar.
 
 ## TL;DR
 
@@ -20,9 +22,12 @@ Stand: 2026-07-19.
   §10.2), nicht CPU-motiviert.
 - **Bot-Ziel 8 (Spec §2.7): tragbar.** 8 Entities ≈ 0,02 ms/Tick lokal (× 4 ≈ 0,08 ms
   ≈ 0,2 % des Budgets).
-- Die eine wirksame CPU-Mitigation ist der **Spatial-Hash für die Trail-Kollision**
+- ~~Die eine wirksame CPU-Mitigation ist der **Spatial-Hash für die Trail-Kollision**
   (~10× ab N ≥ 48). **Fill rastern ist CPU-seitig neutral** — die Wahl Polygon vs.
-  Raster darf nach Korrektheit/Einfachheit fallen, nicht nach CPU.
+  Raster darf nach Korrektheit/Einfachheit fallen, nicht nach CPU.~~
+  **Widerlegt durch T22** (Nachtrag unten): gegen echten Code ist der Fill **~99 %** der
+  Tick-Zeit und die Kollision 0,01 ms. Der Spatial-Hash ist damit keine Priorität, und
+  „Raster statt Polygon" ist wieder eine **offene CPU-Frage**.
 
 ## Messaufbau
 
@@ -199,6 +204,43 @@ Interpretation oben annimmt. Das ist ein Fund **für Ticket 16** (Re-Konfirmatio
 echten Build): dort ist die Populationsgrenze gegen den echten Sim zu messen, nicht gegen
 die synthetische Kurve. Node ≠ workerd und die Gebiete wuchsen hier ungestört (8 Bots
 halten nach 60 s ~12,8 % der Karte) — beides macht die Zahl konservativ.
+
+## Nachtrag (2026-07-31, Bau-Ticket 22: Fill-Kosten) — korrigiert den Kern-Befund
+
+Der Nachtrag von T12 („die synthetische Last unterschätzt den echten Fill deutlich") war
+noch zu milde. Gegen echten Code aufgeschlüsselt (Node 24, WSL2, `sim-core` + `server`,
+8 Bots, `ARENA_SEED=20260730`, Phasen-Stoppuhren im Tick) steht der **Kern-Befund oben
+auf dem Kopf**:
+
+| Phase im Tick | Synthetische Aussage oben | Gegen echten Code (200 WU, t = 40 s) |
+|---|---|---|
+| **Fill** | „CPU-neutral", Wahl polygon/raster darf nach Korrektheit fallen | **~99 % der Tick-Zeit**; einzelne Fills bis ~90 ms |
+| **Kollision** | dominiert (Spatial-Hash bringt ~10×) | **0,01–0,03 ms** — unter der Messauflösung des Budgets |
+
+Ursache der Fehleinschätzung: die synthetische Last modelliert den Fill als Kanten-Sweep
+über auf **64 Vertices dezimierte** Ringe. Echte Gebiete werden nie dezimiert — nach
+5 min tragen acht Bots zusammen **~5 000–6 000 Vertices**, und die Boolean-Ops skalieren
+mit dieser Zahl. Damit ist **„Raster statt Polygon" wieder eine offene CPU-Frage**, und
+zwar die wichtigste: die Empfehlung oben, sie nach Korrektheit/Einfachheit zu
+entscheiden, stützt sich auf eine Messung, die genau den teuren Teil wegmodelliert hat.
+
+Ebenso zu korrigieren ist die T12-Zeile „echter Tick 2,74 ms": das war ein **Mittelwert
+über 60 s**, und der Mittelwert ist bei diesem Profil die falsche Grösse — `p50` liegt
+bei **0,05 ms** (die allermeisten Ticks füllen nichts), die Kosten stecken vollständig in
+den Fill-Ticks. Nach den Optimierungen aus T22 (Bounding-Box-Vorfilter + Carve gegen die
+neu gewonnene Region) über **5 min** in der 200-WU-Arena:
+
+| | vorher | nachher |
+|---|---|---|
+| mean | 6,89 ms | **1,69 ms** |
+| p95 | — | **12,4 ms** |
+| max | 189 ms | **36–43 ms** |
+| Ticks über 50 ms | 269 | **0** |
+
+Das 25-ms-p95-Kriterium hält damit lokal, mit dem 4×-Faktor aber nur **knapp** (p95 ≈
+50 ms von 50 ms Budget) — und die Kurve steigt in einer reinen Bot-Arena weiter mit der
+Vertex-Zahl. **T16 misst das gegen echte Infrastruktur**; der offene Rest ist Ticket 23.
+Dauerhafte Messung: [`bench/fill-budget`](../../bench/fill-budget/).
 
 ## Anhang — vollständige Kurve (Lauf 1, ms/Tick)
 

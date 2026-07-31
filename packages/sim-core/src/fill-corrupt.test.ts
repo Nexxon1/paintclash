@@ -39,8 +39,21 @@ describe('corrupt clipper output (topology guard)', () => {
   it('closeLoop refuses to store it — capture forfeited', () => {
     // Corrupt holes can only come out of the difference step (union output
     // is hole-filled anyway) — so a foreign territory must be in the field.
-    const enemy: Territory = [[squareRing(20, 20, 4)]];
+    // It must also OVERLAP the capture: since ticket 22 a territory whose
+    // bounding box cannot meet the capture is skipped without a clipper op,
+    // and a skipped op produces no corrupt output to refuse. The mocked
+    // union claims (0..10)², so the enemy is placed across it.
+    const enemy: Territory = [[squareRing(8, 8, 3)]];
     expect(closeLoop([[squareRing(5, 5, 3)]], trail, [enemy])).toBeNull();
+  });
+
+  it('a far-away territory is never carved, so its corruption cannot forfeit the fill', () => {
+    // The other side of the same premise, stated as behaviour: the forfeit
+    // guards geometry the fill touches, not every territory on the map.
+    const distant: Territory = [[squareRing(50, 50, 4)]];
+    const outcome = closeLoop([[squareRing(5, 5, 3)]], trail, [distant]);
+    expect(outcome).not.toBeNull();
+    expect(outcome?.others[0]).toBe(distant);
   });
 
   it('spawnTerritory falls back to the raw block', () => {

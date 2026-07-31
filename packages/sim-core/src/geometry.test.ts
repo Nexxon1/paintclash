@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   appendTrailPoint,
+  boundsSeparated,
   cloneTerritory,
   distanceToTerritory,
   pointInTerritory,
@@ -11,7 +12,9 @@ import {
   snapWU,
   squareRing,
   territoryArea,
+  territoryBounds,
   validPolyTopology,
+  type Bounds,
 } from './geometry.js';
 
 const unitSquare: Ring = [
@@ -250,5 +253,63 @@ describe('squareRing / cloneTerritory', () => {
     if (!point) throw new Error('clone lost its shape');
     point[0] = 99;
     expect(original[0]?.[0]?.[0]?.[0]).toBe(-1);
+  });
+});
+
+describe('territoryBounds / boundsSeparated', () => {
+  it('spans every piece of a territory', () => {
+    expect(territoryBounds([[squareRing(5, 5, 3)], [squareRing(20, 1, 1)]])).toEqual([2, 0, 21, 8]);
+  });
+
+  it('yields the empty (inverted) box for a territory that owns nothing', () => {
+    const empty: Bounds = [Infinity, Infinity, -Infinity, -Infinity];
+    expect(territoryBounds([])).toEqual(empty);
+    expect(territoryBounds([[]])).toEqual(empty);
+    // Empty means "separated from everything" — the answer a caller needs,
+    // and the reason this is total instead of nullable.
+    const land = territoryBounds([[squareRing(5, 5, 3)]]);
+    expect(boundsSeparated(territoryBounds([]), land)).toBe(true);
+    expect(boundsSeparated(land, territoryBounds([]))).toBe(true);
+    expect(boundsSeparated(territoryBounds([]), territoryBounds([]))).toBe(true);
+  });
+
+  it('ignores hole rings — a hole cannot reach past its outer ring', () => {
+    const withHole: Territory = [[squareRing(5, 5, 3), squareRing(5, 5, 1)]];
+    expect(territoryBounds(withHole)).toEqual(territoryBounds([[squareRing(5, 5, 3)]]));
+  });
+
+  it('separates boxes with a gap, in either order and on either axis', () => {
+    const left = territoryBounds([[squareRing(0, 0, 1)]]);
+    const right = territoryBounds([[squareRing(10, 0, 1)]]);
+    const above = territoryBounds([[squareRing(0, 10, 1)]]);
+    expect(boundsSeparated(left, right)).toBe(true);
+    expect(boundsSeparated(right, left)).toBe(true);
+    expect(boundsSeparated(left, above)).toBe(true);
+    expect(boundsSeparated(above, left)).toBe(true);
+  });
+
+  it('does NOT separate overlapping or merely touching boxes', () => {
+    const a = territoryBounds([[squareRing(0, 0, 1)]]);
+    const overlapping = territoryBounds([[squareRing(1, 0, 1)]]);
+    // Touching along x = 1: no shared area, but the conservative answer is
+    // "run the clip" — nothing downstream may depend on the fast path.
+    const touching = territoryBounds([[squareRing(2, 0, 1)]]);
+    expect(boundsSeparated(a, overlapping)).toBe(false);
+    expect(boundsSeparated(a, touching)).toBe(false);
+  });
+
+  it('property: separated boxes never contain a common point', () => {
+    const coord = fc.double({ min: -50, max: 50, noNaN: true });
+    fc.assert(
+      fc.property(coord, coord, coord, coord, coord, coord, (ax, ay, bx, by, px, py) => {
+        const a = territoryBounds([[squareRing(ax, ay, 2)]]);
+        const b = territoryBounds([[squareRing(bx, by, 3)]]);
+        if (!boundsSeparated(a, b)) return;
+        const inA = px >= a[0] && px <= a[2] && py >= a[1] && py <= a[3];
+        const inB = px >= b[0] && px <= b[2] && py >= b[1] && py <= b[3];
+        expect(inA && inB).toBe(false);
+      }),
+      { numRuns: 300 },
+    );
   });
 });

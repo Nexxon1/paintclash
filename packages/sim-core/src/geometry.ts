@@ -171,6 +171,49 @@ export function validPolyTopology(poly: Ring[]): boolean {
   return true;
 }
 
+/** Axis-aligned bounding box `[minX, minY, maxX, maxY]`. */
+export type Bounds = readonly [number, number, number, number];
+
+/**
+ * Axis-aligned bounds of a territory. Only OUTER rings are walked: a hole
+ * lies inside its outer ring by definition (`validPolyTopology`), so it can
+ * never widen the box.
+ *
+ * A territory owning nothing yields the INVERTED box (`min = +∞`,
+ * `max = −∞`), which is the empty box rather than a missing one: it contains
+ * no point and `boundsSeparated` reports it as separated from everything —
+ * both exactly true of a player with no land. Total on purpose, so callers
+ * carry no null case for a question that always has an answer.
+ */
+export function territoryBounds(territory: Territory): Bounds {
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const poly of territory) {
+    for (const [x, y] of poly[0] ?? []) {
+      if (x < minX) minX = x;
+      if (y < minY) minY = y;
+      if (x > maxX) maxX = x;
+      if (y > maxY) maxY = y;
+    }
+  }
+  return [minX, minY, maxX, maxY];
+}
+
+/**
+ * True when the two boxes share no point at all — so the shapes inside them
+ * cannot overlap either, and a boolean op between them is decided in advance.
+ *
+ * Deliberately conservative at the boundary: boxes that merely TOUCH are not
+ * separated. They enclose no common area, but nothing downstream may depend
+ * on that subtlety — the cheap test only ever earns the right to skip work,
+ * never to guess at a result.
+ */
+export function boundsSeparated(a: Bounds, b: Bounds): boolean {
+  return a[2] < b[0] || b[2] < a[0] || a[3] < b[1] || b[3] < a[1];
+}
+
 /** Axis-aligned CCW square ring around (cx, cy) — the spawn start block. */
 export function squareRing(cx: number, cy: number, half: number): Ring {
   return [

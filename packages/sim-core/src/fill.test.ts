@@ -1,9 +1,10 @@
 import { BALANCE, type Point, type Territory } from '@paintclash/shared';
 import fc from 'fast-check';
-import { intersection } from 'polyclip-ts';
+import { difference, intersection } from 'polyclip-ts';
 import { describe, expect, it } from 'vitest';
 
 import { closeLoop } from './fill.js';
+import { LATTICE_NOISE_WU2 } from './fixtures/tolerances.js';
 import { pointInTerritory, squareRing, territoryArea } from './geometry.js';
 
 /** Own 6×6-ish block on (2..8)² — 36 WU². */
@@ -115,7 +116,8 @@ describe('closeLoop', () => {
 
   it('returns a foreign territory untouched by the loop as the same reference', () => {
     // Bit-stable state for uninvolved players: no phantom hash change, no
-    // pointless territory sync.
+    // pointless territory sync. Far away, so the bounding-box prefilter
+    // (ticket 22) answers this without a clipper op at all.
     const enemy: Territory = [[squareRing(25, 25, 2)]];
     const trail: Point[] = [
       [7, 5],
@@ -127,6 +129,52 @@ describe('closeLoop', () => {
     const outcome = closeLoop(ownSquare(), trail, [enemy]);
     expect(outcome).not.toBeNull();
     expect(outcome?.others[0]).toBe(enemy);
+  });
+
+  it('keeps the reference for an enemy whose BOX overlaps but whose land does not', () => {
+    // The prefilter's other side: capture is [7..12]×[5..10], the enemy an
+    // L around it whose bounding box covers the capture completely while its
+    // land stays clear. The clipper runs, finds nothing to remove, and the
+    // area check keeps the input reference — the outcome must not depend on
+    // which of the two paths decided it.
+    const enemy: Territory = [
+      [
+        [
+          [13, 4],
+          [15, 4],
+          [15, 12],
+          [6, 12],
+          [6, 11],
+          [13, 11],
+        ],
+      ],
+    ];
+    const trail: Point[] = [
+      [7, 5],
+      [12, 5],
+      [12, 10],
+      [7, 10],
+      [7, 7],
+    ];
+    const outcome = closeLoop(ownSquare(), trail, [enemy]);
+    expect(outcome).not.toBeNull();
+    expect(outcome?.others[0]).toBe(enemy);
+  });
+
+  it('still steals from an enemy that only TOUCHES the capture box', () => {
+    // Boxes flush against each other at x = 12 are NOT separated, so the op
+    // runs — and here it must, because the loop's chord slices into the
+    // enemy: [10..14]×[4..8] loses x∈[10,12], y∈[5,8].
+    const enemy: Territory = [[squareRing(12, 6, 2)]];
+    const trail: Point[] = [
+      [7, 5],
+      [12, 5],
+      [12, 10],
+      [7, 10],
+      [7, 7],
+    ];
+    const outcome = closeLoop(ownSquare(), trail, [enemy]);
+    expect(territoryArea(outcome?.others[0] ?? [])).toBeCloseTo(10, 6);
   });
 
   it('captures pockets enclosed between loop and territory (hole-filling)', () => {
@@ -156,6 +204,39 @@ describe('closeLoop', () => {
     expect(outcome).not.toBeNull();
     // The notch interior is now owned.
     expect(pointInTerritory(6, 5, outcome?.territory ?? [])).toBe(true);
+  });
+
+  it('steals foreign land out of a POCKET the loop merely encloses', () => {
+    // The capture region is not just the loop: bridging the mouth of a
+    // C-shaped territory turns the whole notch into owned land (spec §2.2),
+    // and an enemy sitting in that notch loses it — even though the loop
+    // itself never touches them.
+    const c: Territory = [
+      [
+        [
+          [0, 0],
+          [10, 0],
+          [10, 2],
+          [2, 2],
+          [2, 8],
+          [10, 8],
+          [10, 10],
+          [0, 10],
+        ],
+      ],
+    ];
+    const enemyInNotch: Territory = [[squareRing(6, 5, 1)]];
+    const trail: Point[] = [
+      [9, 1],
+      [12, 1],
+      [12, 9],
+      [9, 9],
+    ];
+    const outcome = closeLoop(c, trail, [enemyInNotch]);
+    expect(outcome).not.toBeNull();
+    expect(pointInTerritory(6, 5, outcome?.territory ?? [])).toBe(true);
+    // Enclosed, so it changes hands entirely — the total-loss verdict.
+    expect(outcome?.others[0]).toEqual([]);
   });
 
   it('resolves a heavily self-overlapping spiral to its outer hull', () => {
@@ -223,6 +304,48 @@ describe('closeLoop', () => {
     );
   });
 
+  it('property: carving with the gained region equals carving with the whole capture', () => {
+    // The identity `gainedRegion` rests on, checked differentially against the
+    // definition it replaced: whatever the filler ends up owning, every enemy
+    // must come out exactly as `difference(other, captured)` would have left
+    // them. The golden replay cannot guard this — it contains one fill and no
+    // steal at all — so this property is the regression test for it.
+    const coord = fc.double({ min: 9, max: 30, noNaN: true });
+    // Enemy centres far enough out that a half-2 block clears the own (2..8)²
+    // square: the identity needs enemy ∩ own OLD land = ∅, and a generator
+    // that breaks the precondition tests nothing (verified — it fails, which
+    // is the caveat `gainedRegion` documents, not a defect).
+    const enemyCoord = fc.double({ min: 10.5, max: 30, noNaN: true });
+    fc.assert(
+      fc.property(
+        fc.array(fc.tuple(coord, coord), { minLength: 1, maxLength: 12 }),
+        fc.array(fc.tuple(enemyCoord, enemyCoord), { minLength: 1, maxLength: 3 }),
+        (rawTrail, enemySpots) => {
+          const enemies = enemySpots.map((spot): Territory => [[squareRing(spot[0], spot[1], 2)]]);
+          const trail: Point[] = [[7, 5], ...rawTrail.map(([x, y]): Point => [x, y]), [5, 5]];
+          const outcome = closeLoop(ownSquare(), trail, enemies);
+          if (!outcome) return;
+          enemies.forEach((enemy, i) => {
+            const viaGained = outcome.others[i] ?? [];
+            // The definition this replaced, computed straight from the result.
+            const viaCaptured = difference(enemy, outcome.territory) as Territory;
+            const lostViaGained = territoryArea(enemy) - territoryArea(viaGained);
+            const lostViaCaptured = territoryArea(enemy) - territoryArea(viaCaptured);
+            expect(Math.abs(lostViaGained - lostViaCaptured)).toBeLessThan(LATTICE_NOISE_WU2);
+            // Same land, not merely the same amount of it.
+            expect(
+              Math.abs(
+                territoryArea(intersection(viaGained, viaCaptured) as Territory) -
+                  territoryArea(viaGained),
+              ),
+            ).toBeLessThan(LATTICE_NOISE_WU2);
+          });
+        },
+      ),
+      { numRuns: 200 },
+    );
+  });
+
   it('property: stealing conserves land — the enemy loses exactly the overlap, stays disjoint', () => {
     const coord = fc.double({ min: 0, max: 30, noNaN: true });
     const enemy: Territory = [[squareRing(20, 20, 4)]];
@@ -235,10 +358,16 @@ describe('closeLoop', () => {
           // Never grows, never negative.
           const lost = 64 - territoryArea(after);
           expect(lost).toBeGreaterThanOrEqual(-1e-6);
-          // Filler and shrunken enemy stay pairwise disjoint …
+          // Filler and shrunken enemy stay pairwise disjoint — to lattice
+          // scale. This used to be exactly 0: the loser was carved with the
+          // very polygon the winner stores. Since ticket 22 the two are
+          // compacted from different polygons, so they may overlap by
+          // LATTICE_NOISE_WU2 (measured worst case 5,3e-7). The bound is
+          // named rather than nudged, so a real disjointness break — which
+          // would be orders larger — still fails here.
           expect(
             territoryArea(intersection(outcome.territory, after) as Territory),
-          ).toBeLessThanOrEqual(1e-6);
+          ).toBeLessThanOrEqual(LATTICE_NOISE_WU2);
           // … and the enemy lost exactly what the filler now holds of it.
           const overlap = territoryArea(intersection(outcome.territory, enemy));
           expect(lost).toBeCloseTo(overlap, 6);

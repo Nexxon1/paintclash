@@ -3,6 +3,7 @@ import fc from 'fast-check';
 import { intersection } from 'polyclip-ts';
 import { describe, expect, it } from 'vitest';
 
+import { LATTICE_NOISE_WU2 } from './fixtures/tolerances.js';
 import { pointInTerritory, squareRing, territoryArea } from './geometry.js';
 import { seedRng } from './rng.js';
 import { createSimState, type PlayerSim, type SimState } from './state.js';
@@ -355,14 +356,20 @@ describe('area invariants under random play (spec §9.2, fast-check)', () => {
               total += area;
             }
             // All players + neutral = the whole arena, neutral never negative.
-            expect(total).toBeLessThanOrEqual(arena * arena + 1e-6);
+            // Tolerance is the lattice sliver two territories may share since
+            // ticket 22 (see LATTICE_NOISE_WU2) — double-counted ground is
+            // exactly what would inflate this sum.
+            expect(total).toBeLessThanOrEqual(arena * arena + LATTICE_NOISE_WU2);
           }
-          // Pairwise disjoint at the end: no overlap ever created.
+          // Pairwise disjoint at the end: no overlap ever created, beyond
+          // the lattice sliver of LATTICE_NOISE_WU2.
           for (let i = 0; i < state.players.length; i++) {
             for (let j = i + 1; j < state.players.length; j++) {
               const a = state.players[i]?.territory ?? [];
               const b = state.players[j]?.territory ?? [];
-              expect(territoryArea(intersection(a, b) as Territory)).toBeLessThanOrEqual(1e-6);
+              expect(territoryArea(intersection(a, b) as Territory)).toBeLessThanOrEqual(
+                LATTICE_NOISE_WU2,
+              );
             }
           }
         },

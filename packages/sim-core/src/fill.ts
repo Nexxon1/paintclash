@@ -16,6 +16,17 @@
  *                                         reduced to nothing is the step's
  *                                         total-loss verdict
  *
+ * Step 3 is where a tick's cost lives (ticket 22): one clipper op per foreign
+ * player per fill, each sweeping both territories entirely, so it grew with
+ * the map's saturation until single ticks blew the 20 Hz budget — and since
+ * an overrun pauses the world for everyone, that read as a freeze rather than
+ * a stutter. Two bounds keep it in budget, both exact rather than
+ * approximations: `skipsCarve` drops the pairs that provably cannot meet, and
+ * the op that survives carves with the region this fill GAINED instead of the
+ * player's whole accumulated land (see `skipsCarve`'s preamble for why those
+ * are the same result). Measured over 8 bots × 5 min: max 189 → 36–43 ms per
+ * tick. What remains grows with the territories' vertex count — ticket 23.
+ *
  * The whole capture is atomic: if any boolean op fails or returns corrupt
  * topology, the entire fill — steal included — is forfeited deterministically
  * instead of crashing the tick or leaving half-applied land. Stored
@@ -29,7 +40,16 @@
 import { BALANCE, type Point, type Ring, type Territory } from '@paintclash/shared';
 import { difference, union } from 'polyclip-ts';
 
-import { ringArea, snapWU, squareRing, territoryArea, validPolyTopology } from './geometry.js';
+import {
+  boundsSeparated,
+  ringArea,
+  snapWU,
+  squareRing,
+  territoryArea,
+  territoryBounds,
+  validPolyTopology,
+  type Bounds,
+} from './geometry.js';
 
 /** Rings below this area are float debris from the clipper, not land. */
 const DEBRIS_AREA_WU2 = 1e-9;
@@ -74,20 +94,32 @@ export function closeLoop(
   try {
     const merged = union(territory, loop);
     // Fill every hole: everything enclosed is captured — neutral pockets and
-    // foreign land alike (spec §2.2: überfärbt/gestohlen).
+    // foreign land alike (spec §2.2: überfärbt/gestohlen). The holes are kept
+    // as well: they are the part of the capture the loop itself does not
+    // cover, and the carve below needs them (see `gained`).
     const filled: Territory = [];
+    const rawPockets: Territory = [];
     for (const poly of merged) {
       const outer = poly[0];
       if (outer !== undefined) filled.push([outer]);
+      for (const hole of poly.slice(1)) rawPockets.push([hole]);
     }
     captured = cleanClipperOutput(filled);
     if (captured === null) return null;
+    // Compacted, not vetted: each pocket becomes a single-ring polygon, and
+    // the topology check only has something to say about holes.
+    const pockets = compactTerritory(rawPockets);
+    const gained = gainedRegion(loop, pockets);
+    const gainedBounds = territoryBounds(gained);
     for (const other of others) {
-      if (other.length === 0) {
+      // Nothing to carve, or provably nothing in reach: keep the input
+      // reference — exactly what the area check below would conclude, minus
+      // the sweep. See `skipsCarve`.
+      if (other.length === 0 || skipsCarve(gainedBounds, other)) {
         updatedOthers.push(other);
         continue;
       }
-      const carvedOther = cleanClipperOutput(difference(other, captured));
+      const carvedOther = cleanClipperOutput(difference(other, gained));
       if (carvedOther === null) return null;
       // Same area ⇒ same land (the difference only ever removes): keep the
       // input reference so untouched territories stay bit-identical.
@@ -105,14 +137,94 @@ export function closeLoop(
 }
 
 /**
+ * The land this fill ADDED: the loop plus the pockets it enclosed. Carving
+ * foreign territory with THIS instead of the whole capture is an identity,
+ * not an approximation (ticket 22):
+ *
+ *     captured         = territory ∪ loop ∪ pockets     (that IS the hole-fill)
+ *     other − captured = (other − territory) − (loop ∪ pockets)
+ *                      = other − (loop ∪ pockets)       ⟸ other ∩ territory = ∅
+ *
+ * The last step is the pairwise-disjointness invariant (spec §9.2): a foreign
+ * territory never overlaps the filler's OLD land, so subtracting that land
+ * again removes nothing. What remains — loop plus enclosed pockets — is a
+ * handful of vertices, while `captured` carries every vertex the player ever
+ * accumulated. That is the difference between a carve that scales with the
+ * winner's history and one that scales with the move they just made; it is
+ * pinned by the differential property test in `fill.test.ts`, since the
+ * golden replay never steals and so cannot see a carve change.
+ *
+ * Both operands come free: the loop is already built, and the pockets are the
+ * union's hole rings, which the hole-fill discards anyway.
+ *
+ * The identity is exact in LAND, but not bit-exact in stored coordinates, and
+ * that has one measurable consequence. `captured` is the lattice-compacted
+ * union output, so where snapping nudged a union-computed intersection point
+ * outward (≤ 7e-8 WU, half a lattice cell), the winner's boundary steps a
+ * hair past the raw loop edge the loser was carved against. Carving with
+ * `captured` left the two provably flush; carving with the gained region
+ * leaves a sliver both hold. Measured over 3 000 randomized loops: worst
+ * overlap **5,3e-7 WU²**, against exactly **0** before.
+ *
+ * That is accepted deliberately. It is smaller than one lattice cell's worth
+ * of area — below the resolution at which ADR-0007 claims to represent
+ * geometry at all — and seven orders of magnitude below the 0,01 % the
+ * leaderboard resolves a share to (≈ 4 WU² in the public arena). The
+ * disjointness property test in `fill.test.ts` carries the bound explicitly
+ * rather than silently absorbing it.
+ *
+ * Should the invariant ever be BROKEN, this stops being an identity and the
+ * two disagree by the overlapping area — unbounded in principle. The one path
+ * that can break it is `spawnTerritory`: if the clipper throws OR returns
+ * corrupt topology while carving a start block, it keeps the raw block ("a
+ * live spawn beats a perfect invariant"), which may overlap foreign land.
+ * Carving with `captured` used to scrub such an overlap on the next fill that
+ * happened to cover it; carving with the gained region leaves it until
+ * someone paints over it. No known trigger on lattice inputs — but this is
+ * the reason to keep it that way.
+ */
+function gainedRegion(loop: Territory, pockets: Territory): Territory {
+  return [...loop, ...pockets];
+}
+
+/**
+ * May the carve be skipped outright? Only when the two bounding boxes are
+ * separated: then no part of the gained region lies in `other`, the
+ * difference IS `other`, and the area check above would keep the input
+ * reference anyway. The prefilter just declines to pay a Martinez sweep over
+ * both vertex sets to learn that.
+ *
+ * This is where the tick budget was going (ticket 22, measured over 8 bots ×
+ * 60 s, seed 20260730): at 200 WU **97,5 %** of all carve ops were of this
+ * kind and they burned **93,3 %** of the time spent carving; at 50 WU it was
+ * 75,6 % of ops and 53,3 % of the time. The carve loop is unconditional and
+ * quadratic in the population, while territories are local — most pairs never
+ * touch, and every pair that doesn't used to cost a full sweep.
+ *
+ * One behavioural difference, deliberately accepted: a clipper throw or a
+ * corrupt result on such a pair used to forfeit the entire fill. It cannot
+ * any more, because the op no longer runs. Forfeiting a capture over garbage
+ * derived from land on the other side of the map was never the intent — the
+ * forfeit guards geometry the fill actually touches.
+ */
+function skipsCarve(gainedBounds: Bounds, other: Territory): boolean {
+  return boundsSeparated(gainedBounds, territoryBounds(other));
+}
+
+/**
  * Compact raw clipper output and vet its topology. `null` means the output
  * was corrupt and must not be stored — corrupt "holes" outside their outer
  * ring would turn even-odd containment inside out (verified pre-lattice
  * failure mode; no lattice-snapped input is known to still trigger it).
  */
 function cleanClipperOutput(raw: Territory): Territory | null {
-  const cleaned = raw.map(compactPoly).filter((poly) => poly.length > 0);
+  const cleaned = compactTerritory(raw);
   return cleaned.every(validPolyTopology) ? cleaned : null;
+}
+
+/** Snap raw clipper output back onto the lattice and drop debris rings. */
+function compactTerritory(raw: Territory): Territory {
+  return raw.map(compactPoly).filter((poly) => poly.length > 0);
 }
 
 /**

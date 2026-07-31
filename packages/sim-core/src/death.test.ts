@@ -3,6 +3,7 @@ import fc from 'fast-check';
 import { intersection } from 'polyclip-ts';
 import { describe, expect, it } from 'vitest';
 
+import { LATTICE_NOISE_WU2 } from './fixtures/tolerances.js';
 import { pointInTerritory, squareRing, territoryArea } from './geometry.js';
 import { seedRng } from './rng.js';
 import { createSimState, type PlayerSim, type SimState } from './state.js';
@@ -265,14 +266,16 @@ describe('death consequences (property: Tod ⇒ Gebiet komplett neutral)', () =>
             // Owned + neutral = 100 % stays intact through deaths.
             let total = 0;
             for (const p of state.players) total += territoryArea(p.territory);
-            expect(total).toBeLessThanOrEqual(arena * arena + 1e-6);
+            expect(total).toBeLessThanOrEqual(arena * arena + LATTICE_NOISE_WU2);
           }
           // Pairwise disjoint at the end — respawns never overlap owned land.
           for (let i = 0; i < state.players.length; i++) {
             for (let j = i + 1; j < state.players.length; j++) {
               const a = state.players[i]?.territory ?? [];
               const b = state.players[j]?.territory ?? [];
-              expect(territoryArea(intersection(a, b) as Territory)).toBeLessThanOrEqual(1e-6);
+              expect(territoryArea(intersection(a, b) as Territory)).toBeLessThanOrEqual(
+                LATTICE_NOISE_WU2,
+              );
             }
           }
         },
