@@ -8,6 +8,7 @@ import {
   mapSizeAfterLimitChange,
   roomCloseMessage,
   roomCodeWish,
+  roomFormConfig,
 } from './room.js';
 
 import type { LobbyState } from '@paintclash/protocol';
@@ -100,6 +101,47 @@ describe('lobbyView', () => {
   it('carries the settings through untouched, so the form shows the truth', () => {
     const config = { mapSizeWU: 120, playerLimit: 4, botTarget: 2, lateJoin: false };
     expect(lobbyView(lobby({ config }), HERE).config).toEqual(config);
+  });
+});
+
+describe('roomFormConfig (what the host typed, made legal)', () => {
+  const room = { mapSizeWU: 140, playerLimit: 4, botTarget: 2, lateJoin: true };
+
+  it('takes the typed numbers', () => {
+    expect(
+      roomFormConfig({ playerLimit: '6', mapSizeWU: '180', botTarget: '3', lateJoin: false }, room),
+    ).toEqual({ playerLimit: 6, mapSizeWU: 180, botTarget: 3, lateJoin: false });
+  });
+
+  it('treats a CLEARED field as "unchanged", not as zero', () => {
+    // `Number('')` is 0, and the policy would dutifully clamp that up to the
+    // legal minimum — so an empty player field would read as "a room for two"
+    // and an empty map field as the smallest arena there is. A host who cleared
+    // a field to retype it said nothing yet.
+    expect(
+      roomFormConfig({ playerLimit: '', mapSizeWU: '', botTarget: '', lateJoin: true }, room),
+    ).toEqual(room);
+    // Blanks are per field: the one that WAS typed still counts.
+    expect(
+      roomFormConfig({ playerLimit: '8', mapSizeWU: '', botTarget: '', lateJoin: true }, room)
+        .mapSizeWU,
+    ).toBe(140);
+  });
+
+  it('still clamps whatever was typed into the room the server will build', () => {
+    // The card must not promise a room the arena would refuse to be: the same
+    // policy runs here and on the server (`sanitizeRoomConfig`), so the echo the
+    // host sees back is the number they already saw.
+    const asked = roomFormConfig(
+      { playerLimit: '99', mapSizeWU: '99999', botTarget: '99', lateJoin: false },
+      room,
+    );
+    expect(asked).toEqual({ playerLimit: 16, mapSizeWU: 400, botTarget: 16, lateJoin: false });
+    // A bot count above the room's own limit cannot survive (spec §10.4).
+    expect(
+      roomFormConfig({ playerLimit: '4', mapSizeWU: '140', botTarget: '12', lateJoin: true }, room)
+        .botTarget,
+    ).toBe(4);
   });
 });
 

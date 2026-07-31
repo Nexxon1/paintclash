@@ -7,9 +7,14 @@
  * Playwright E2E drives this card in a real browser.
  */
 
-import { BALANCE, sanitizeRoomConfig, type RoomConfig } from '@paintclash/shared';
+import { BALANCE, defaultRoomConfig, type RoomConfig } from '@paintclash/shared';
 
-import { mapSizeAfterLimitChange, type LobbyViewModel } from '../game/room.js';
+import {
+  mapSizeAfterLimitChange,
+  roomFormConfig,
+  typedNumber,
+  type LobbyViewModel,
+} from '../game/room.js';
 
 /** What the card reports upward — the two things a host can do. */
 export interface RoomHudHandlers {
@@ -122,11 +127,15 @@ export class RoomHud {
     // The player limit drags the map size along while the size is still the
     // ladder's (spec §10.4) — see `mapSizeAfterLimitChange`.
     this.players.addEventListener('change', () => {
-      const previous = this.config?.playerLimit ?? BALANCE.room.playerLimitDefault;
-      const next = Number(this.players.value);
+      const current = this.config ?? defaultRoomConfig();
+      const next = typedNumber(this.players.value, current.playerLimit);
       if (Number.isFinite(next)) {
         this.mapSize.value = String(
-          mapSizeAfterLimitChange(Number(this.mapSize.value), previous, next),
+          mapSizeAfterLimitChange(
+            typedNumber(this.mapSize.value, current.mapSizeWU),
+            current.playerLimit,
+            next,
+          ),
         );
       }
       handlers.onSettings(this.formConfig());
@@ -228,19 +237,16 @@ export class RoomHud {
       : 'Warten auf den Host …';
   }
 
-  /**
-   * The form as a legal config. Sanitized HERE and not only on the server,
-   * because a `RoomConfig` is sanitized by construction — and a cleared number
-   * field reads as `Number('') === 0`, which the wire's single bytes would
-   * happily carry as a room for nobody. The server applies the same policy to
-   * whatever arrives, so this only makes the card honest, never authoritative.
-   */
+  /** The form as a legal config — the rule itself lives in `game/room.ts`. */
   private formConfig(): RoomConfig {
-    return sanitizeRoomConfig({
-      playerLimit: Number(this.players.value),
-      mapSizeWU: Number(this.mapSize.value),
-      botTarget: Number(this.bots.value),
-      lateJoin: this.lateJoin.checked,
-    });
+    return roomFormConfig(
+      {
+        playerLimit: this.players.value,
+        mapSizeWU: this.mapSize.value,
+        botTarget: this.bots.value,
+        lateJoin: this.lateJoin.checked,
+      },
+      this.config ?? defaultRoomConfig(),
+    );
   }
 }

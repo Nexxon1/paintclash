@@ -11,6 +11,7 @@ import {
   defaultMapSizeWU,
   normalizeRoomCode,
   roomShareLink,
+  sanitizeRoomConfig,
   type RoomConfig,
 } from '@paintclash/shared';
 
@@ -100,6 +101,38 @@ export function lobbyView(lobby: LobbyState, origin: string): LobbyViewModel {
       isHost: member.host,
     })),
   };
+}
+
+/** What the four settings controls currently read, before anything judges them. */
+export interface RoomFormFields {
+  playerLimit: string;
+  mapSizeWU: string;
+  botTarget: string;
+  lateJoin: boolean;
+}
+
+/**
+ * A number field's value, or `fallback` when the field is **blank**. A cleared
+ * field means "I did not answer", not "the smallest legal number" — and
+ * `Number('')` is 0, which `sanitizeRoomConfig` would dutifully clamp up to the
+ * minimum. Clearing the player count would then read as "a room for two".
+ */
+export function typedNumber(raw: string, fallback: number): number {
+  return raw.trim() === '' ? fallback : Number(raw);
+}
+
+/**
+ * The settings form as typed, made legal against the room it is editing. The
+ * server applies the very same policy to whatever arrives (and has the last
+ * word), so this only makes the card honest about what it is asking for.
+ */
+export function roomFormConfig(typed: RoomFormFields, current: RoomConfig): RoomConfig {
+  return sanitizeRoomConfig({
+    playerLimit: typedNumber(typed.playerLimit, current.playerLimit),
+    mapSizeWU: typedNumber(typed.mapSizeWU, current.mapSizeWU),
+    botTarget: typedNumber(typed.botTarget, current.botTarget),
+    lateJoin: typed.lateJoin,
+  });
 }
 
 /**
