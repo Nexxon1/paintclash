@@ -19,6 +19,11 @@ einfror, hing im **Polygon-Clipper**, und dessen Arithmetik ist in Node dieselbe
 (CPU-Profil des deployten Builds, Ticket 25). Der Mesh-Rebuild wird nur **gezählt**
 (`rebuilds`), nicht gemessen.
 
+Das ist gemessen und nicht bloss behauptet: ein Wegwerf-Spike hat `THREE.ExtrudeGeometry`
+über dieselben echten Plateaus laufen lassen — 8 116 Rebuilds in 5 min, **Ø 1,11 ms**,
+schlimmster einzelner 11,47 ms, **0 Frames über 16,7 ms**. Die Triangulierung ist echte
+Last, aber kein Freeze-Kandidat; darum bleibt sie draussen und der Zähler genügt.
+
 ## Stand nach Ticket 25
 
 Der Befund war kein Skalierungsproblem: `polygon-clipping` **mahlte 0,7–2,6 s** an einem

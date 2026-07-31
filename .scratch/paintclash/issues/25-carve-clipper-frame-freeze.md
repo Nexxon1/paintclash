@@ -109,10 +109,18 @@ richtig, ihr fehlte nur das Gitter.
    30-s-Fenster und landet bei 10–14 ms von 16,7 ms. Das ist jetzt echte Arbeit statt eines
    Ausreissers, aber es ist kein Sicherheitsabstand — auf einem langsamen Telefon ist es
    keiner mehr. Der Bench misst es; ein eigenes Ticket dafür gibt es noch nicht.
-2. **Der Mesh-Rebuild ist nicht gemessen.** `ArenaScene` baut die Plateau-Geometrie neu,
-   sobald der Carve-Output die Referenz wechselt — im gesättigten Zustand ~43 ×/s über alle
-   Plateaus. Der Bench **zählt** das (`rebuilds`), three.js läuft dort nicht mit. Im
-   Produktions-Profil ist die Triangulierung sichtbar, aber weit unter dem Clipper.
+2. **Der Mesh-Rebuild ist gemessen und unauffällig** (Wegwerf-Spike `[DEBUG-9a71]`, nach
+   dem Deploy, weil ein Rest-Freeze gemeldet blieb). `THREE.ExtrudeGeometry` über echte
+   gesättigte Plateaus, 8 116 Rebuilds in 5 min: **Ø 1,11 ms**, schlimmster **einzelner**
+   11,47 ms (761 Vertices), pro Frame max 14,64 ms, **0 Frames über 16,7 ms**. Kein
+   Sekundenblock — der Bench darf three.js weiterhin weglassen, das ist jetzt belegt statt
+   angenommen.
+
+   Mitgeprüft, weil es die unangenehme Möglichkeit war: **macht das Carve-Gitter earcut
+   langsamer?** Es erzeugt exakt berührende Vertices, und die sind earcuts klassischer
+   schlechter Fall. 40 späte Plateaus, einmal auf dem Gitter und einmal um 1e-9 WU davon
+   weggestupst: **52,7 ms vs. 52,3 ms — Faktor 1,01**. Das Gitter kostet die Triangulierung
+   nichts.
 3. **Nicht deployt.** Die Messung oben ist lokal; die Produktions-Bestätigung braucht einen
    Deploy, und der ist eine menschliche Entscheidung.
 
