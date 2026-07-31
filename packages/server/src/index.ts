@@ -6,6 +6,7 @@
  */
 
 export { ArenaDO } from './arena-do.js';
+export { RoomGateDO } from './room-gate-do.js';
 export { handleFetch, healthPayload, type Env } from './router.js';
 
 import { handleFetch } from './router.js';

@@ -64,7 +64,7 @@ describe('join handshake', () => {
   });
 
   it('a custom arena size (dev override, private rooms) reaches the welcome', () => {
-    const arena = new ArenaCore(1, 50);
+    const arena = new ArenaCore(1, { sizeWU: 50 });
     const { socket } = joinedPlayer(arena);
     const welcome = socket.decoded().find((m) => m.type === 'welcome');
     if (welcome?.type !== 'welcome') throw new Error('no welcome');
@@ -445,6 +445,17 @@ describe('intent-only validation at the protocol boundary (spec §8.2/8.3)', () 
     }
     expect(arena.connect(new FakeSocket())).toBeNull();
     expect(arena.connectionCount).toBe(LIMITS.maxConnections);
+  });
+
+  it("holds a private room to the host's player limit (ticket 14, spec §2.6)", () => {
+    // The room DO refuses a socket before it gets here, so this is the arena's
+    // own backstop: the limit is a property of the ARENA, not of one code path,
+    // and a race between two joins on a full room cannot squeeze a third player
+    // into a two-player duel.
+    const arena = new ArenaCore(1, { maxPlayers: 2 });
+    expect(arena.connect(new FakeSocket())).not.toBeNull();
+    expect(arena.connect(new FakeSocket())).not.toBeNull();
+    expect(arena.connect(new FakeSocket())).toBeNull();
   });
 
   it('recycles player ids of departed players (u16 wire bound)', () => {
@@ -1034,7 +1045,7 @@ describe('bot population (ticket 12, spec §2.7: bots = clamp(target − humans,
 
   /** An arena configured like the public one: bots on, at the balanced target. */
   function populatedArena(): ArenaCore {
-    return new ArenaCore(1, undefined, targetPopulation);
+    return new ArenaCore(1, { botTarget: targetPopulation });
   }
 
   /** Everyone the sim holds, humans and bots alike (white-box, as above). */
@@ -1092,7 +1103,7 @@ describe('bot population (ticket 12, spec §2.7: bots = clamp(target − humans,
     // A target beyond the ceiling (a mis-set override, a future private room):
     // `clamp(…, 0, maxBots)` is the binding half of the rule.
     //
-    const arena = new ArenaCore(1, undefined, maxBots + 5);
+    const arena = new ArenaCore(1, { botTarget: maxBots + 5 });
     joinedPlayer(arena, 'Ada');
     runTicks(arena, 2);
     expect(simPlayers(arena).filter((p) => p.isBot)).toHaveLength(maxBots);

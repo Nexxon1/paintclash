@@ -9,14 +9,17 @@ import {
   decodeServerMessage,
   encodeInput,
   encodeJoin,
+  encodeRoomSettings,
+  encodeRoomStart,
   MAX_INPUT_BATCH,
   type InputItem,
   type LeaderboardRow,
+  type LobbyState,
   type ServerMessage,
   type SnapshotPlayer,
   type TerritoryReason,
 } from '@paintclash/protocol';
-import type { Point, Territory, TurnSignal } from '@paintclash/shared';
+import type { Point, RoomConfig, Territory, TurnSignal } from '@paintclash/shared';
 import { advancePlayer, territoryArea } from '@paintclash/sim-core';
 
 export interface Snapshot {
@@ -62,6 +65,14 @@ export class SimClient {
   score: ScoreUpdate | null = null;
   /** Every closed life seen, in arrival order — the score at each death. */
   readonly finishedLives: ScoreUpdate[] = [];
+  /**
+   * The private room's lobby as last received (ticket 14); null in the public
+   * arena and once the game has started. A client that has a lobby is waiting,
+   * not playing — `playerId` is still null.
+   */
+  lobby: LobbyState | null = null;
+  /** Test hook: called for every lobby frame. */
+  onLobby: ((lobby: LobbyState) => void) | null = null;
 
   private readonly send: (frame: Uint8Array) => void;
   private readonly name: string;
@@ -114,6 +125,14 @@ export class SimClient {
       this.leaderboard = message.rows;
       return;
     }
+    if (message.type === 'lobby') {
+      // A board-style replace: the room sends the whole lobby every time it
+      // changes (spec §2.6).
+      const { code, config, selfId, members } = message;
+      this.lobby = { code, config, selfId, members };
+      this.onLobby?.(this.lobby);
+      return;
+    }
     if (message.type === 'score') {
       // The own life's score ingredients (ticket 09). A `final` frame closes
       // a life; the render client turns these into the HUD number and its
@@ -148,6 +167,16 @@ export class SimClient {
   /** Total owned area of one player, from the latest territory sync. */
   territoryAreaOf(playerId: number): number {
     return territoryArea(this.territories.get(playerId) ?? []);
+  }
+
+  /** Ask the room for these settings — only the host is obeyed (spec §2.6). */
+  setRoomConfig(config: RoomConfig): void {
+    this.send(encodeRoomSettings(config));
+  }
+
+  /** Start the game — only the host is obeyed (spec §2.6: Host-Start). */
+  startRoom(): void {
+    this.send(encodeRoomStart());
   }
 
   /** Queue a steer intent for the next flush; seq numbers are monotonic. */

@@ -16,6 +16,12 @@
         "name": "ARENA",
         "class_name": "ArenaDO",
       },
+      {
+        // Per-IP room-creation budget (spec §8.3 point 6) — one object at a
+        // fixed name, see `room-gate-do.ts`.
+        "name": "ROOM_GATE",
+        "class_name": "RoomGateDO",
+      },
     ],
   },
   "migrations": [
@@ -23,6 +29,11 @@
       "tag": "v1",
       // SQLite-backed: the only DO flavor available on the Free plan (ADR-0001).
       "new_sqlite_classes": ["ArenaDO"],
+    },
+    {
+      // Private rooms (ticket 14): the room-creation rate limiter.
+      "tag": "v2",
+      "new_sqlite_classes": ["RoomGateDO"],
     },
   ],
   "vars": {

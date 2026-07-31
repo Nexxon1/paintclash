@@ -34,6 +34,10 @@ export default defineConfig({
         // (tests/scenario/), which run in workerd and don't count toward %
         // (spec §9.3: hibernation/transport justifiably exempt).
         'packages/server/src/arena-do.ts',
+        // Same: storage shell around `room-gate.ts`, whose rule IS unit-tested.
+        // The shell itself is driven end-to-end by the rate-limit choreography
+        // in `tests/scenario/room.test.ts`.
+        'packages/server/src/room-gate-do.ts',
         // Worker entry re-export (imports cloudflare:workers via the DO) —
         // wiring only, exercised by the scenario tests.
         'packages/server/src/index.ts',
@@ -45,8 +49,10 @@ export default defineConfig({
       ],
       reporter: ['text', 'json-summary', 'lcov'],
       thresholds: {
-        // Only the nickname policy remains after the exclusions above, and a
-        // pure string filter has no excuse for uncovered branches.
+        // What the exclusions above leave measured in `shared`: the nickname
+        // policy and the room policy (ticket 14). Both are pure decision logic
+        // that both ends of the wire depend on, and neither has an excuse for
+        // an uncovered branch.
         'packages/shared/src/**/*.ts': {
           branches: 95,
           functions: 95,

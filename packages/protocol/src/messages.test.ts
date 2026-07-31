@@ -1,4 +1,4 @@
-import type { Point, Territory, TurnSignal } from '@paintclash/shared';
+import type { Point, RoomConfig, Territory, TurnSignal } from '@paintclash/shared';
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 
@@ -9,6 +9,9 @@ import {
   encodeInput,
   encodeJoin,
   encodeLeaderboard,
+  encodeLobby,
+  encodeRoomSettings,
+  encodeRoomStart,
   encodeScore,
   encodeSnapshot,
   encodeTerritory,
@@ -17,11 +20,13 @@ import {
   MAX_CLIENT_FRAME_BYTES,
   MAX_INPUT_BATCH,
   MAX_LEADERBOARD_ROWS,
+  MAX_LOBBY_MEMBERS,
   MAX_NAME_BYTES,
   MAX_NAME_CHARS,
   MAX_TRAIL_POINTS,
   PROTOCOL_VERSION,
   type LeaderboardRow,
+  type LobbyMember,
   type SnapshotPlayer,
 } from './index.js';
 
@@ -687,5 +692,130 @@ describe('malformed frames are rejected, never thrown (spec §8.2)', () => {
       avgOtherHumans: 0,
       final: true,
     });
+  });
+});
+
+/**
+ * Private rooms (ticket 14, spec §2.6): the lobby frame and the two things a
+ * host may say. The *policy* inside them (which limits are legal, what an
+ * absent field defaults to) belongs to `shared/room.ts` and is pinned there —
+ * here it is only the wire: does the frame carry the config faithfully, and
+ * does a hand-crafted one get judged rather than trusted.
+ */
+describe('room frames (ticket 14)', () => {
+  const config: RoomConfig = { mapSizeWU: 140, playerLimit: 4, botTarget: 2, lateJoin: false };
+  const members: LobbyMember[] = [
+    { playerId: 1, name: 'Ada', host: true },
+    { playerId: 7, name: 'Grüße 🌍', host: false },
+  ];
+
+  it('round-trips a lobby', () => {
+    expect(
+      decodeServerMessage(encodeLobby({ code: 'PQ7K3M', config, selfId: 7, members })),
+    ).toEqual({ type: 'lobby', code: 'PQ7K3M', config, selfId: 7, members });
+  });
+
+  it('round-trips an empty lobby (the host has not announced a name yet)', () => {
+    const decoded = decodeServerMessage(
+      encodeLobby({ code: 'PQ7K3M', config, selfId: 0, members: [] }),
+    );
+    expect(decoded).toEqual({ type: 'lobby', code: 'PQ7K3M', config, selfId: 0, members: [] });
+  });
+
+  it('round-trips the host settings a lobby socket may send', () => {
+    expect(decodeClientMessage(encodeRoomSettings(config))).toEqual({
+      type: 'roomSettings',
+      config,
+    });
+  });
+
+  it('round-trips the start command', () => {
+    expect(decodeClientMessage(encodeRoomStart())).toEqual({ type: 'roomStart' });
+  });
+
+  it('pins the bytes of both client-side room frames', () => {
+    // Small, fixed frames — worth nailing down: they are the only two things a
+    // client may say that are not a steer intent (spec §8.2).
+    expect([...encodeRoomStart()]).toEqual([0x04]);
+    expect([...encodeRoomSettings(config)]).toEqual([
+      0x03,
+      0x00,
+      0x00,
+      0x0c,
+      0x43, // f32 140
+      0x04, // playerLimit
+      0x02, // botTarget
+      0x00, // lateJoin = false
+    ]);
+  });
+
+  it('stays well inside the client frame cap', () => {
+    // Both must survive the size gate `decodeClientMessage` applies before
+    // parsing anything (spec §8.3).
+    expect(encodeRoomSettings(config).length).toBeLessThanOrEqual(MAX_CLIENT_FRAME_BYTES);
+    expect(encodeRoomStart().length).toBeLessThanOrEqual(MAX_CLIENT_FRAME_BYTES);
+  });
+
+  it('SANITIZES a hostile settings frame instead of dropping it', () => {
+    // A structurally perfect frame with impossible numbers is not garbage — it
+    // is a wish, and the shared policy answers it (same treatment the score
+    // frame's counters get). The room a manipulated client asks for is
+    // therefore always a legal room.
+    const frame = encodeRoomSettings(config);
+    const view = new DataView(frame.buffer);
+    view.setFloat32(1, 99_999, true);
+    frame[5] = 200; // playerLimit
+    frame[6] = 200; // botTarget
+    const decoded = decodeClientMessage(frame);
+    expect(decoded).toEqual({
+      type: 'roomSettings',
+      config: { mapSizeWU: 400, playerLimit: 16, botTarget: 16, lateJoin: false },
+    });
+  });
+
+  it('rejects a settings frame of the wrong length or with a bogus flag', () => {
+    const ok = encodeRoomSettings(config);
+    expect(decodeClientMessage(ok.subarray(0, ok.length - 1))).toBeNull();
+    expect(decodeClientMessage(new Uint8Array([...ok, 0x00]))).toBeNull();
+    const bogusFlag = new Uint8Array(ok);
+    bogusFlag[7] = 2; // lateJoin is a boolean on the wire
+    expect(decodeClientMessage(bogusFlag)).toBeNull();
+    // A non-finite map size cannot be a wish — nothing legal encodes to it.
+    const notFinite = new Uint8Array(ok);
+    new DataView(notFinite.buffer).setFloat32(1, Number.NaN, true);
+    expect(decodeClientMessage(notFinite)).toBeNull();
+  });
+
+  it('rejects a start frame with a payload', () => {
+    expect(decodeClientMessage(new Uint8Array([0x04, 0x00]))).toBeNull();
+  });
+
+  it('rejects a truncated, over-long or over-populated lobby frame', () => {
+    const ok = encodeLobby({ code: 'PQ7K3M', config, selfId: 1, members });
+    for (let cut = 1; cut < ok.length; cut++) {
+      expect(decodeServerMessage(ok.subarray(0, cut)), `prefix of ${String(cut)} bytes`).toBeNull();
+    }
+    expect(decodeServerMessage(new Uint8Array([...ok, 0x00]))).toBeNull();
+    const tooMany = new Uint8Array(ok);
+    // Last header byte: op + codeLen + 6 code bytes + f32 map + 3 config bytes
+    // + u16 self id = 17, then the member count.
+    tooMany[17] = MAX_LOBBY_MEMBERS + 1;
+    expect(decodeServerMessage(tooMany)).toBeNull();
+  });
+
+  it('refuses to encode a lobby the wire cannot hold', () => {
+    // Both are server-side bugs (the room limit is 16 and the code is fixed),
+    // so they throw loudly rather than travel truncated.
+    const crowd = Array.from({ length: MAX_LOBBY_MEMBERS + 1 }, (_, i) => ({
+      playerId: i + 1,
+      name: 'x',
+      host: false,
+    }));
+    expect(() => encodeLobby({ code: 'PQ7K3M', config, selfId: 1, members: crowd })).toThrow(
+      RangeError,
+    );
+    expect(() => encodeLobby({ code: 'x'.repeat(256), config, selfId: 1, members })).toThrow(
+      RangeError,
+    );
   });
 });

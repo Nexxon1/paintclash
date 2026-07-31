@@ -9,10 +9,13 @@ import {
   decodeServerMessage,
   encodeInput,
   encodeJoin,
+  encodeRoomSettings,
+  encodeRoomStart,
   MAX_INPUT_BATCH,
   type DeathCause,
   type InputItem,
   type LeaderboardRow,
+  type LobbyState,
   type SnapshotPlayer,
 } from '@paintclash/protocol';
 import {
@@ -22,6 +25,7 @@ import {
   TICK_DT_SEC,
   type LifeCounters,
   type Point,
+  type RoomConfig,
   type Territory,
   type TurnSignal,
 } from '@paintclash/shared';
@@ -159,6 +163,17 @@ export interface LeaderboardView {
   rows: readonly LeaderboardRow[];
 }
 
+/**
+ * The private room's lobby as last received (ticket 14, spec §2.6), with a
+ * revision so the card rebuilds on change instead of every frame — the same
+ * contract the leaderboard has. Null in the public arena, and from the welcome
+ * on: a lobby is what a client has INSTEAD of a game.
+ */
+export interface LobbyView {
+  rev: number;
+  lobby: LobbyState;
+}
+
 export interface RenderState {
   self: RenderPose | null;
   /** Own player id, once welcomed — keys the own entries below. */
@@ -216,6 +231,8 @@ export class ClientSession {
   private pendingDeaths: DeathView[] = [];
   /** Latest global ranking; stands until the next board replaces it. */
   private leaderboard: LeaderboardView = { rev: 0, rows: [] };
+  /** The room's lobby while waiting for the host to start (ticket 14). */
+  private lobby: LobbyView | null = null;
   /**
    * Newest own-score ingredients from the server (ticket 09), plus the local
    * tick they arrived at: between frames only the survival term advances, so
@@ -294,6 +311,24 @@ export class ClientSession {
     return this.predictor?.current()?.heading ?? null;
   }
 
+  /**
+   * The room's lobby, or null when there is none to show (the public arena, or a
+   * game already running). Pulled once per frame by `main.ts`, like the board.
+   */
+  lobbyView(): LobbyView | null {
+    return this.lobby;
+  }
+
+  /** Ask the room for these settings — the server obeys only the host. */
+  sendRoomSettings(config: RoomConfig): void {
+    this.send(encodeRoomSettings(config));
+  }
+
+  /** Start the game (spec §2.6: Host-Start) — the server obeys only the host. */
+  sendRoomStart(): void {
+    this.send(encodeRoomStart());
+  }
+
   /** Feed one raw server frame; malformed frames are dropped. */
   receive(frame: Uint8Array | ArrayBuffer): void {
     const bytes = frame instanceof Uint8Array ? frame : new Uint8Array(frame);
@@ -303,6 +338,18 @@ export class ClientSession {
       this.playerId = message.playerId;
       this.arenaSizeWU = message.arenaSizeWU;
       this.predictor = new Predictor(message.arenaSizeWU);
+      // The game started (or this was the public arena all along): the lobby is
+      // over, and the ids in it were lobby-local — the welcome's id is the real
+      // one from here on.
+      this.lobby = null;
+      return;
+    }
+    if (message.type === 'lobby') {
+      const { code, config, selfId, members } = message;
+      this.lobby = {
+        rev: (this.lobby?.rev ?? 0) + 1,
+        lobby: { code, config, selfId, members },
+      };
       return;
     }
     if (message.type === 'territory') {

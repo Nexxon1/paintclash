@@ -12,6 +12,11 @@
         "name": "ARENA",
         "class_name": "ArenaDO",
       },
+      {
+        // Private rooms (ticket 14): the per-IP room-creation budget.
+        "name": "ROOM_GATE",
+        "class_name": "RoomGateDO",
+      },
     ],
   },
   "migrations": [
@@ -19,6 +24,10 @@
       "tag": "v1",
       // SQLite-backed: the only DO flavor available on the Free plan (ADR-0001).
       "new_sqlite_classes": ["ArenaDO"],
+    },
+    {
+      "tag": "v2",
+      "new_sqlite_classes": ["RoomGateDO"],
     },
   ],
   // Top level = the arena as production runs it, bots included (spec §2.7) —
@@ -50,6 +59,10 @@
           {
             "name": "ARENA",
             "class_name": "ArenaDO",
+          },
+          {
+            "name": "ROOM_GATE",
+            "class_name": "RoomGateDO",
           },
         ],
       },

@@ -179,6 +179,164 @@
         font-size: 0.8rem;
         color: #5b6672;
       }
+      /* Private rooms (spec §2.6). Below the public join, separated by a rule:
+         the public arena is the default way in, a room is the deliberate one. */
+      #rooms {
+        margin-top: 1.1rem;
+        padding-top: 0.9rem;
+        border-top: 1px solid #e3e8ee;
+        display: grid;
+        gap: 0.5rem;
+        justify-items: center;
+      }
+      #rooms button {
+        font-size: 0.9rem;
+        padding: 0.45rem 1rem;
+        /* Slate rather than the primary blue: the public "Spielen" above stays
+           the one obvious action on the card. */
+        background: #56626f;
+      }
+      #rooms .room-join {
+        display: flex;
+        gap: 0.4rem;
+      }
+      #rooms input {
+        margin: 0;
+        width: 8.5rem;
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+        font-size: 0.95rem;
+      }
+      /* Arrived through a shared link: the room row is what the player came for,
+         so it leads instead of trailing the public button. */
+      #join-card.linked #rooms {
+        order: -1;
+      }
+      #join-card.linked #rooms .room-join input {
+        border-color: #2f7fe8;
+      }
+      /* The lobby card (spec §2.6) — the join card's other face. */
+      #lobby[hidden] {
+        display: none;
+      }
+      #lobby {
+        display: grid;
+        gap: 0.6rem;
+        justify-items: center;
+        min-width: 19rem;
+      }
+      #lobby h2 {
+        margin: 0;
+        font-size: 0.75rem;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: #6b7684;
+      }
+      #lobby .room-code {
+        margin: 0;
+        font-size: 2rem;
+        font-weight: 700;
+        letter-spacing: 0.22em;
+        font-variant-numeric: tabular-nums;
+        color: #2b3540;
+      }
+      #lobby .room-share {
+        display: flex;
+        gap: 0.4rem;
+        width: 100%;
+      }
+      #lobby .room-link {
+        flex: 1;
+        margin: 0;
+        font-size: 0.8rem;
+        color: #5b6672;
+      }
+      #lobby .room-copy {
+        font-size: 0.8rem;
+        padding: 0.4rem 0.7rem;
+        background: #6b7684;
+      }
+      #lobby .room-count {
+        margin: 0;
+        font-size: 0.8rem;
+        color: #6b7684;
+      }
+      #lobby .room-members {
+        margin: 0;
+        padding: 0;
+        list-style: none;
+        display: grid;
+        gap: 0.2rem;
+        width: 100%;
+      }
+      #lobby .member {
+        display: grid;
+        grid-template-columns: 0.75rem 1fr auto;
+        align-items: center;
+        gap: 0.45rem;
+        padding: 0.2rem 0.35rem;
+        border-radius: 6px;
+        font-size: 0.9rem;
+        text-align: left;
+      }
+      #lobby .member.self {
+        background: rgba(47, 127, 232, 0.16);
+        font-weight: 600;
+      }
+      #lobby .member .swatch {
+        width: 0.75rem;
+        height: 0.75rem;
+        border-radius: 3px;
+        box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.15);
+      }
+      #lobby .member .host {
+        font-size: 0.7rem;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: #6b7684;
+      }
+      #lobby .room-settings {
+        display: grid;
+        gap: 0.35rem;
+        width: 100%;
+        padding-top: 0.5rem;
+        border-top: 1px solid #e3e8ee;
+      }
+      #lobby .room-field {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        align-items: center;
+        gap: 0.5rem;
+        font-size: 0.85rem;
+        color: #2b3540;
+        text-align: left;
+      }
+      #lobby .room-field input[type='number'] {
+        margin: 0;
+        width: 5rem;
+        font-size: 0.9rem;
+        padding: 0.3rem 0.4rem;
+      }
+      #lobby .room-field input:disabled {
+        background: #f3f5f8;
+        color: #6b7684;
+      }
+      #lobby .room-actions {
+        display: flex;
+        gap: 0.5rem;
+        padding-top: 0.3rem;
+      }
+      #lobby .room-leave {
+        background: #6b7684;
+      }
+      #lobby .room-start[hidden] {
+        display: none;
+      }
+      #lobby .room-hint {
+        margin: 0;
+        font-size: 0.8rem;
+        color: #6b7684;
+      }
       /* Control modes (spec §3) — switchable at runtime, so the picker stays
          reachable during the game AND on top of the join card (hence the
          z-index: the overlay would otherwise swallow every click). It sits at
@@ -291,24 +449,46 @@
     <div id="overlay">
       <div class="card">
         <h1>paintclash</h1>
-        <form id="join-form">
-          <!-- `maxlength` counts UTF-16 units, not the code points the policy
+        <!-- The join form and the lobby are the two faces of the same card: a
+             client in a private room's lobby is waiting, not playing (spec
+             §2.6), so main.ts swaps one for the other. -->
+        <div id="join-card">
+          <form id="join-form">
+            <!-- `maxlength` counts UTF-16 units, not the code points the policy
                caps at, so it is a coarse guard: exact for the ASCII names
                nearly everyone types, conservative for emoji (an astral
                character costs two). It can only ever stop a name SHORT, never
                let an illegal one through, and the hint below previews whatever
                the policy does change. -->
-          <input id="name" maxlength="16" placeholder="Dein Name" autocomplete="off" />
-          <!-- Enabled by main.ts once the module is wired — a click before
+            <input id="name" maxlength="16" placeholder="Dein Name" autocomplete="off" />
+            <!-- Enabled by main.ts once the module is wired — a click before
                that would fire a native submit and reload the page. -->
-          <button type="submit" disabled>Spielen</button>
-        </form>
-        <!-- Nickname pre-check (spec §2.8, ticket 13). UX only: the server
+            <button type="submit" disabled>Spielen</button>
+          </form>
+          <!-- Nickname pre-check (spec §2.8, ticket 13). UX only: the server
              runs the same rule and enforces it whatever this says. -->
-        <p id="name-hint"></p>
-        <p id="status"></p>
-        <!-- Local records (spec §2.5) — filled by main.ts from localStorage. -->
-        <p id="records"></p>
+          <p id="name-hint"></p>
+          <p id="status"></p>
+          <!-- Local records (spec §2.5) — filled by main.ts from localStorage. -->
+          <p id="records"></p>
+          <!-- Private rooms (spec §2.6): create one and share the link, or enter a
+             code someone shared. Never a public list — the code IS the access. -->
+          <div id="rooms">
+            <button id="create-room" type="button">Privaten Raum erstellen</button>
+            <div class="room-join">
+              <input
+                id="room-code"
+                maxlength="8"
+                placeholder="Raum-Code"
+                autocomplete="off"
+                spellcheck="false"
+              />
+              <button id="join-room" type="button">Beitreten</button>
+            </div>
+          </div>
+        </div>
+        <!-- The lobby (spec §2.6) — built by render/room-hud.ts. -->
+        <div id="lobby" hidden></div>
       </div>
     </div>
     <script type="module" src="/src/main.ts"></script>

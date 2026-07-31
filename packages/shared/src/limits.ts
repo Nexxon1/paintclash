@@ -98,4 +98,18 @@ export const LIMITS = Object.freeze({
    * claim a deep window it has no latency for.
    */
   rewindInterpAllowanceTicks: 4,
+  /**
+   * Private rooms one IP may create per `roomCreateWindowMs` (spec §8.3 point
+   * 6: "Raum-Erstellung pro IP raten-begrenzt", ticket 14). Every room is a
+   * fresh Durable Object plus a SQLite write, so this is the one room operation
+   * that costs something before anyone has played a tick — and it is also the
+   * brake on brute-forcing the code space by creating rather than guessing.
+   *
+   * Generous on purpose, like every per-IP cap in §8.3 ("im Zweifel
+   * durchlassen"): five rooms a minute is far past what a group of friends
+   * behind one CGNAT address ever needs, while a script gets a hard ceiling of
+   * 300 DOs an hour per address instead of thousands.
+   */
+  roomCreatePerIp: 5,
+  roomCreateWindowMs: 60_000,
 });

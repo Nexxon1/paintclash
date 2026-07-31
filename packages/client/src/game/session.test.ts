@@ -1,13 +1,15 @@
-import { BALANCE, type Territory } from '@paintclash/shared';
+import { BALANCE, type RoomConfig, type Territory } from '@paintclash/shared';
 import {
   decodeClientMessage,
   encodeDeath,
   encodeLeaderboard,
+  encodeLobby,
   encodeScore,
   encodeSnapshot,
   encodeTerritory,
   encodeTrail,
   encodeWelcome,
+  type LobbyState,
   type SnapshotPlayer,
 } from '@paintclash/protocol';
 import { describe, expect, it } from 'vitest';
@@ -654,5 +656,56 @@ describe('sim cadence servos to the server tick rate', () => {
     // A clock break far beyond jitter (hidden tab, arena reset): adopt it.
     session.receive(encodeSnapshot(40, 0, [selfPlayer()]));
     expect(session.simIntervalMs()).toBeCloseTo(50, 5);
+  });
+});
+
+describe('private-room lobby (ticket 14)', () => {
+  const config: RoomConfig = { mapSizeWU: 140, playerLimit: 4, botTarget: 0, lateJoin: true };
+  const lobby: LobbyState = {
+    code: 'PQ7K3M',
+    config,
+    selfId: 2,
+    members: [
+      { playerId: 1, name: 'Ada', host: true },
+      { playerId: 2, name: 'Grace', host: false },
+    ],
+  };
+
+  it('has no lobby until a room sends one', () => {
+    const { session } = harness();
+    expect(session.lobbyView()).toBeNull();
+  });
+
+  it('keeps the newest lobby and bumps its revision', () => {
+    // The card rebuilds on the revision, like the leaderboard — a room that
+    // resends an identical lobby still counts as a change (the server only
+    // sends one when something moved).
+    const { session } = harness();
+    session.receive(encodeLobby(lobby));
+    expect(session.lobbyView()).toEqual({ rev: 1, lobby });
+    session.receive(encodeLobby({ ...lobby, members: [] }));
+    expect(session.lobbyView()?.rev).toBe(2);
+    expect(session.lobbyView()?.lobby.members).toEqual([]);
+  });
+
+  it('drops the lobby the moment the game starts', () => {
+    // The welcome IS the start (spec §2.6: Host-Start), and the ids in a lobby
+    // are lobby-local — keeping it would leave the card up over a live game and
+    // its rows keyed by numbers that no longer mean anything.
+    const { session } = harness();
+    session.receive(encodeLobby(lobby));
+    session.receive(encodeWelcome(7, config.mapSizeWU));
+    expect(session.lobbyView()).toBeNull();
+    expect(session.playerId).toBe(7);
+  });
+
+  it('sends the host commands the room understands', () => {
+    const { session, sent } = harness();
+    session.sendRoomSettings(config);
+    session.sendRoomStart();
+    expect(sent.map((frame) => decodeClientMessage(frame))).toEqual([
+      { type: 'roomSettings', config },
+      { type: 'roomStart' },
+    ]);
   });
 });

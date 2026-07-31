@@ -1,18 +1,29 @@
 /**
  * Router-Worker (spec §5.2, ADR-0004): stateless entry — serves the static
- * client via Workers Static Assets, answers the health probe, and routes
- * WebSocket connections to the one public Arena-DO. Seam for the later
- * matchmaker / private rooms (ticket 14). Kept free of `cloudflare:workers`
- * imports so it stays unit-testable in plain node.
+ * client via Workers Static Assets, answers the health probe, creates private
+ * rooms and routes WebSocket connections to the right Arena-DO (public → the one
+ * fixed address, private → the room code). Seam for the later matchmaker. Kept
+ * free of `cloudflare:workers` imports so it stays unit-testable in plain node.
  */
 
-import { BALANCE } from '@paintclash/shared';
+import {
+  BALANCE,
+  normalizeRoomCode,
+  roomCodeFrom,
+  roomShareLink,
+  sanitizeRoomConfig,
+} from '@paintclash/shared';
 
 /** Bindings declared in `wrangler.jsonc`. */
 export interface Env {
   readonly ASSETS: { fetch(request: Request): Promise<Response> };
   readonly COMMIT_SHA: string;
   readonly ARENA: DurableObjectNamespace;
+  /**
+   * The per-IP room-creation budget (spec §8.3 point 6) — one object at a fixed
+   * address, see `room-gate-do.ts`.
+   */
+  readonly ROOM_GATE: DurableObjectNamespace;
   /**
    * Dev-only arena-size override in WU (`wrangler dev --var ARENA_SIZE_WU:50`)
    * — a small field makes death/fill mechanics testable in seconds. Never set
@@ -103,16 +114,140 @@ export function healthPayload(commit: string): {
   return { status: 'ok', service: 'paintclash', phase: 'walking-skeleton', commit };
 }
 
-/** Route health → JSON, /ws → public Arena-DO, everything else → assets. */
-export function handleFetch(request: Request, env: Env): Promise<Response> {
+/**
+ * Durable Object name of the one public arena (ADR-0004). Lowercase, so it can
+ * never collide with a room code: those are uppercase by construction
+ * (`ROOM_CODE.alphabet`), which is what lets a code be a DO name verbatim.
+ */
+const PUBLIC_ARENA = 'public';
+
+/**
+ * Fresh codes tried before giving up. A collision means the drawn code already
+ * names a live room — at ~10⁹ combinations and a handful of live rooms that is
+ * astronomically unlikely, but it is checked rather than assumed: a collision
+ * would drop a player into strangers' room, so "unlikely" is not good enough.
+ */
+export const ROOM_CODE_ATTEMPTS = 5;
+
+/**
+ * Bytes drawn per code attempt. Generous on purpose: `roomCodeFrom` skips the
+ * biased tail of the byte range (~3 % of draws), so plenty of spare bytes make
+ * the "ran out of entropy" path a formality rather than a retry loop.
+ */
+const CODE_DRAW_BYTES = 64;
+
+/** Random bytes from the runtime's CSPRNG — the only impure thing in here. */
+function cryptoBytes(size: number): Uint8Array {
+  return crypto.getRandomValues(new Uint8Array(size));
+}
+
+/**
+ * A fresh room code. `draw` is injectable so the unbiased fold and its
+ * out-of-entropy guard can be tested without stubbing `crypto`.
+ */
+export function freshRoomCode(draw: (size: number) => Uint8Array = cryptoBytes): string {
+  const code = roomCodeFrom(draw(CODE_DRAW_BYTES));
+  if (code === null) {
+    // Unreachable with a working CSPRNG (it would need ~59 of 64 bytes to land
+    // in the 3 % rejected tail). Loud rather than silent: a broken source of
+    // randomness must not degrade into predictable room codes.
+    throw new Error('room code generator ran out of entropy');
+  }
+  return code;
+}
+
+/**
+ * The host's secret for one room (ticket 14). It answers exactly one question —
+ * "may this socket change the settings and press start?" — and nothing else: it
+ * is not an identity, carries no player data, and a room it belongs to is gone
+ * within `graceSeconds` of the last player leaving. 128 bits from the CSPRNG,
+ * because the alternative (first socket wins) hands the room to whoever the
+ * network favours when a link is shared.
+ */
+export function freshHostToken(draw: (size: number) => Uint8Array = cryptoBytes): string {
+  return [...draw(16)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+/**
+ * Route health → JSON, `POST /api/rooms` → a fresh private room, `/ws` → the
+ * public Arena-DO or the room named by `?room=`, everything else → assets.
+ */
+export async function handleFetch(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
   if (url.pathname === '/api/health') {
-    return Promise.resolve(Response.json(healthPayload(env.COMMIT_SHA)));
+    return Response.json(healthPayload(env.COMMIT_SHA));
+  }
+  if (url.pathname === '/api/rooms') {
+    if (request.method !== 'POST') return new Response(null, { status: 405 });
+    return createRoom(request, env);
   }
   if (url.pathname === '/ws') {
-    // Phase 1: exactly one public arena at a fixed address (ADR-0004).
-    const stub = env.ARENA.get(env.ARENA.idFromName('public'));
-    return stub.fetch(request);
+    const wish = url.searchParams.get('room');
+    if (wish === null) {
+      // Phase 1: exactly one public arena at a fixed address (ADR-0004).
+      return env.ARENA.get(env.ARENA.idFromName(PUBLIC_ARENA)).fetch(request);
+    }
+    // One normalizer for routing and for validation (`shared/room.ts`): a second
+    // one would eventually address a room by a string the first would not.
+    const code = normalizeRoomCode(wish);
+    // Nothing legitimate gets here — the client checks the same rule before it
+    // opens a socket — so the plain 4xx is for hand-typed URLs, not a UX path.
+    if (code === null) return new Response('invalid room code', { status: 400 });
+    // The code IS the DO name (ADR-0004: `idFromName(code)`). The room reads its
+    // own canonical code out of storage, so nothing downstream re-normalizes.
+    return env.ARENA.get(env.ARENA.idFromName(code)).fetch(request);
   }
   return env.ASSETS.fetch(request);
+}
+
+/**
+ * Create a private room (spec §2.6): charge the caller's address, draw a code
+ * nobody is using, and hand back the code, the host secret and the link to
+ * share. The room itself is the Durable Object the code names — this endpoint
+ * only writes its config there (ADR-0004: registry in the room's own SQLite).
+ */
+async function createRoom(request: Request, env: Env): Promise<Response> {
+  // Spec §8.3 point 3: the per-IP hebel is `CF-Connecting-IP` at this Worker.
+  // A request without one is not a reason to skip the budget — everything
+  // anonymous then shares one bucket, which is the safe direction.
+  const ip = request.headers.get('CF-Connecting-IP') ?? 'unknown';
+  const gate = env.ROOM_GATE.get(env.ROOM_GATE.idFromName('rooms'));
+  const charged = await gate.fetch(`https://gate/create?ip=${encodeURIComponent(ip)}`);
+  if (charged.status === 429) {
+    const retryAfter = charged.headers.get('Retry-After') ?? '60';
+    return new Response('too many rooms from this address', {
+      status: 429,
+      headers: { 'Retry-After': retryAfter },
+    });
+  }
+  // The host may pre-set the room; anything unusable falls back to the spec's
+  // defaults, and the lobby is where the settings are really made anyway.
+  const config = sanitizeRoomConfig(await readJson(request));
+  const hostToken = freshHostToken();
+  for (let attempt = 0; attempt < ROOM_CODE_ATTEMPTS; attempt++) {
+    const code = freshRoomCode();
+    const room = env.ARENA.get(env.ARENA.idFromName(code));
+    const created = await room.fetch('https://room/room', {
+      method: 'POST',
+      body: JSON.stringify({ code, config, hostToken }),
+    });
+    // 409 = that code already names a live room. Draw again.
+    if (created.status === 409) continue;
+    if (!created.ok) return new Response('could not create the room', { status: 502 });
+    return Response.json({
+      code,
+      hostToken,
+      url: roomShareLink(new URL(request.url).origin, code),
+    });
+  }
+  return new Response('no free room code', { status: 503 });
+}
+
+/** The request body as JSON, or `null` — a bad body is a wish, not an error. */
+async function readJson(request: Request): Promise<unknown> {
+  try {
+    return await request.json();
+  } catch {
+    return null;
+  }
 }

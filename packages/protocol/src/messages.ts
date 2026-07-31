@@ -17,10 +17,12 @@ import {
   BALANCE,
   MAP_SHARE_PERCENT_SCALE,
   NICKNAME,
+  sanitizeRoomConfig,
   type DeathCause,
   type LifeCounters,
   type Point,
   type Ring,
+  type RoomConfig,
   type Territory,
   type TurnSignal,
 } from '@paintclash/shared';
@@ -29,10 +31,16 @@ export type { DeathCause };
 
 /**
  * Bumped on every INCOMPATIBLE wire change; joins carry it. Purely additive
- * server→client opcodes (the leaderboard in ticket 08, the score in ticket 09)
- * do NOT bump it: an older client drops unknown opcodes by contract and keeps
- * playing without the new panel, whereas a bump would reject its join and kick
- * every open tab for a feature it does not need.
+ * opcodes (the leaderboard in ticket 08, the score in ticket 09, the room
+ * frames in ticket 14) do NOT bump it: an older client drops unknown opcodes by
+ * contract and keeps playing without the new panel, whereas a bump would reject
+ * its join and kick every open tab for a feature it does not need.
+ *
+ * The room frames are additive in both directions, which is why they qualify:
+ * the join frame is unchanged (a private room is addressed by the socket's URL,
+ * not by anything inside a frame), so an old client can still join the public
+ * arena, and a new client only ever sends a room frame to a socket that already
+ * answered with a lobby.
  */
 export const PROTOCOL_VERSION = 5;
 
@@ -63,8 +71,16 @@ export const MAX_TRAIL_POINTS = 0xffff;
  */
 export const MAX_LEADERBOARD_ROWS = BALANCE.leaderboard.topN + 1;
 
+/**
+ * Members one lobby frame may carry — the room's own player limit (spec §2.6),
+ * so a frame can always describe a full room and never more.
+ */
+export const MAX_LOBBY_MEMBERS = BALANCE.room.playerLimitMax;
+
 const OP_JOIN = 0x01;
 const OP_INPUT = 0x02;
+const OP_ROOM_SETTINGS = 0x03;
+const OP_ROOM_START = 0x04;
 const OP_WELCOME = 0x10;
 const OP_SNAPSHOT = 0x11;
 const OP_TERRITORY = 0x12;
@@ -72,6 +88,17 @@ const OP_TRAIL = 0x13;
 const OP_DEATH = 0x14;
 const OP_LEADERBOARD = 0x15;
 const OP_SCORE = 0x16;
+const OP_LOBBY = 0x17;
+
+/** op + f32 map size + u8 player limit + u8 bot target + u8 late join. */
+const ROOM_SETTINGS_FRAME_BYTES = 8;
+/**
+ * Everything before the member list, code bytes excluded: op + u8 code length
+ * + f32 map size + 3×u8 config + u16 self id + u8 member count.
+ */
+const LOBBY_HEADER_BYTES = 12;
+/** u16 id + u8 host flag + u8 name length. */
+const LOBBY_MEMBER_BYTES = 4;
 
 const DEATH_FRAME_BYTES = 6; // op + u16 victim + u16 killer + u8 cause
 
@@ -129,8 +156,46 @@ export interface LeaderboardRow {
   name: string;
 }
 
+/**
+ * One person in a private room's lobby (ticket 14, spec §2.6). The id is
+ * lobby-local: it keys and colors the row until the game starts, at which point
+ * the `welcome` hands out the arena's own player id.
+ */
+export interface LobbyMember {
+  playerId: number;
+  name: string;
+  /** May change the settings and start the game. Exactly one, once someone is in. */
+  host: boolean;
+}
+
+/**
+ * A private room as its lobby sees it. Sent per recipient (like the
+ * leaderboard) because `selfId` is what marks "you" — names are not unique, so
+ * nothing else in the frame could.
+ *
+ * The `code` rides along even though the client typed or created it: the copy
+ * here is the canonical one the router addressed the room by, so a share link
+ * built from it cannot carry a player's typo.
+ */
+export interface LobbyState {
+  code: string;
+  config: RoomConfig;
+  /** The recipient's own lobby id; 0 before it has announced a name. */
+  selfId: number;
+  members: LobbyMember[];
+}
+
 export type ClientMessage =
   | { type: 'join'; version: number; name: string }
+  /**
+   * A host's wish for the room (spec §2.6). The config is **sanitized on
+   * decode** by the shared policy, so what reaches the arena is always a legal
+   * room and a manipulated client gains nothing but a clamp. The server still
+   * checks *who* sent it — only the host may change a room.
+   */
+  | { type: 'roomSettings'; config: RoomConfig }
+  /** The host pressed start — the lobby becomes a running arena. */
+  | { type: 'roomStart' }
   | {
       type: 'input';
       /**
@@ -162,7 +227,14 @@ export type ServerMessage =
   | { type: 'territory'; playerId: number; reason: TerritoryReason; territory: Territory }
   | { type: 'trail'; playerId: number; points: Point[] }
   | { type: 'death'; victimId: number; killerId: number; cause: DeathCause }
-  | { type: 'leaderboard'; rows: LeaderboardRow[] };
+  | { type: 'leaderboard'; rows: LeaderboardRow[] }
+  /**
+   * The private room's lobby (ticket 14). Takes the place of the `welcome` for
+   * as long as the room has not started: a client sends its join and is told
+   * either "here is your player id, play" or "here is the lobby you are waiting
+   * in" — it never has to ask which kind of socket it opened.
+   */
+  | ({ type: 'lobby' } & LobbyState);
 
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder('utf-8', { fatal: false, ignoreBOM: false });
@@ -219,6 +291,65 @@ export function encodeInput(inputs: readonly InputItem[], viewTick: number): Uin
     const offset = INPUT_HEADER_BYTES + i * INPUT_ITEM_BYTES;
     view.setUint32(offset, input.seq, true);
     view.setInt8(offset + 4, input.turn);
+  });
+  return frame;
+}
+
+/**
+ * A host's room settings (spec §2.6). Only meaningful on a lobby socket; the
+ * server decides whether the sender is the host.
+ */
+export function encodeRoomSettings(config: RoomConfig): Uint8Array {
+  const frame = new Uint8Array(ROOM_SETTINGS_FRAME_BYTES);
+  const view = new DataView(frame.buffer);
+  frame[0] = OP_ROOM_SETTINGS;
+  view.setFloat32(1, config.mapSizeWU, true);
+  frame[5] = config.playerLimit;
+  frame[6] = config.botTarget;
+  frame[7] = config.lateJoin ? 1 : 0;
+  return frame;
+}
+
+/** "Start the game" — a bare opcode; the room already knows its settings. */
+export function encodeRoomStart(): Uint8Array {
+  return new Uint8Array([OP_ROOM_START]);
+}
+
+/**
+ * One recipient's view of a private room's lobby (ticket 14). Throws on
+ * geometry the wire cannot hold — a code longer than a byte can count or more
+ * members than the room limit allows are server-side bugs, not conditions to
+ * degrade through.
+ */
+export function encodeLobby(state: LobbyState): Uint8Array {
+  if (state.members.length > MAX_LOBBY_MEMBERS) {
+    throw new RangeError('lobby member count exceeds the room limit');
+  }
+  const code = textEncoder.encode(state.code);
+  if (code.length > 0xff) throw new RangeError('room code length exceeds u8');
+  const names = state.members.map((member) => textEncoder.encode(capName(member.name)));
+  let size = LOBBY_HEADER_BYTES + code.length;
+  for (const name of names) size += LOBBY_MEMBER_BYTES + name.length;
+  const frame = new Uint8Array(size);
+  const view = new DataView(frame.buffer);
+  frame[0] = OP_LOBBY;
+  frame[1] = code.length;
+  frame.set(code, 2);
+  let offset = 2 + code.length;
+  view.setFloat32(offset, state.config.mapSizeWU, true);
+  frame[offset + 4] = state.config.playerLimit;
+  frame[offset + 5] = state.config.botTarget;
+  frame[offset + 6] = state.config.lateJoin ? 1 : 0;
+  view.setUint16(offset + 7, state.selfId, true);
+  frame[offset + 9] = state.members.length;
+  offset += 10;
+  state.members.forEach((member, i) => {
+    const name = names[i] ?? new Uint8Array();
+    view.setUint16(offset, member.playerId, true);
+    frame[offset + 2] = member.host ? 1 : 0;
+    frame[offset + 3] = name.length;
+    frame.set(name, offset + LOBBY_MEMBER_BYTES);
+    offset += LOBBY_MEMBER_BYTES + name.length;
   });
   return frame;
 }
@@ -422,6 +553,31 @@ export function decodeClientMessage(frame: Uint8Array): ClientMessage | null {
       }
       return { type: 'input', viewTick, inputs };
     }
+    case OP_ROOM_SETTINGS: {
+      if (frame.length !== ROOM_SETTINGS_FRAME_BYTES) return null;
+      const mapSizeWU = view.getFloat32(1, true);
+      // NaN/Infinity cannot be a wish — nothing legal encodes to them, so this
+      // is a malformed frame rather than an out-of-range one.
+      if (!Number.isFinite(mapSizeWU)) return null;
+      const lateJoin = view.getUint8(7);
+      if (lateJoin > 1) return null;
+      return {
+        type: 'roomSettings',
+        // Judged by the shared policy, not trusted: a hand-crafted frame asking
+        // for 200 players gets a 16-player room (spec §2.6), never a rejection —
+        // the host would otherwise lose a setting to a rounding artifact.
+        config: sanitizeRoomConfig({
+          mapSizeWU,
+          playerLimit: view.getUint8(5),
+          botTarget: view.getUint8(6),
+          lateJoin: lateJoin === 1,
+        }),
+      };
+    }
+    case OP_ROOM_START: {
+      if (frame.length !== 1) return null;
+      return { type: 'roomStart' };
+    }
     default:
       return null;
   }
@@ -554,6 +710,42 @@ export function decodeServerMessage(frame: Uint8Array): ServerMessage | null {
         avgOtherHumans: view.getUint16(7, true) / HUMANS_SCALE,
         final: finalByte === 1,
       };
+    }
+    case OP_LOBBY: {
+      if (frame.length < LOBBY_HEADER_BYTES) return null;
+      const codeLength = view.getUint8(1);
+      if (LOBBY_HEADER_BYTES + codeLength > frame.length) return null;
+      const code = textDecoder.decode(frame.subarray(2, 2 + codeLength));
+      let offset = 2 + codeLength;
+      const mapSizeWU = view.getFloat32(offset, true);
+      if (!Number.isFinite(mapSizeWU)) return null;
+      const lateJoin = view.getUint8(offset + 6);
+      if (lateJoin > 1) return null;
+      const memberCount = view.getUint8(offset + 9);
+      if (memberCount > MAX_LOBBY_MEMBERS) return null;
+      const config = sanitizeRoomConfig({
+        mapSizeWU,
+        playerLimit: view.getUint8(offset + 4),
+        botTarget: view.getUint8(offset + 5),
+        lateJoin: lateJoin === 1,
+      });
+      const selfId = view.getUint16(offset + 7, true);
+      offset += 10;
+      const members: LobbyMember[] = [];
+      for (let i = 0; i < memberCount; i++) {
+        if (offset + LOBBY_MEMBER_BYTES > frame.length) return null;
+        const host = view.getUint8(offset + 2);
+        if (host > 1) return null;
+        const nameLength = view.getUint8(offset + 3);
+        const nameStart = offset + LOBBY_MEMBER_BYTES;
+        if (nameLength > MAX_NAME_BYTES || nameStart + nameLength > frame.length) return null;
+        const name = textDecoder.decode(frame.subarray(nameStart, nameStart + nameLength));
+        if (Array.from(name).length > MAX_NAME_CHARS) return null;
+        members.push({ playerId: view.getUint16(offset, true), name, host: host === 1 });
+        offset = nameStart + nameLength;
+      }
+      if (offset !== frame.length) return null;
+      return { type: 'lobby', code, config, selfId, members };
     }
     case OP_DEATH: {
       if (frame.length !== DEATH_FRAME_BYTES) return null;

@@ -25,6 +25,9 @@ Die Suite unter [`../../tests/scenario/`](../../tests/scenario/) war über mehre
    - `wrangler.jsonc` **Top-Level** = Arena wie in Produktion, Bots an. Nur `bots.test.ts` läuft dort, über `vitest.bots.config.ts`.
    - `wrangler.jsonc` **`env.hermetic`** (`ARENA_BOTS: "0"`) = alle anderen Dateien, über `vitest.config.ts`. Eine neue Szenario-Datei landet automatisch hier.
    - Playwright läuft ebenfalls bot-frei (`e2e:server` → `--var ARENA_BOTS:0`); mit voller Arena fällt z. B. die zweite Browser-Zeile aus den Top 5 und der Leaderboard-Test wird zu Recht rot.
+   - **Ausnahme seit Ticket 14:** `room.test.ts` schaltet Bots in *seinem eigenen* Raum-DO an, um den Host-Toggle zu prüfen. Das ist kein Bruch der Regel — ein privater Raum ist ein anderes DO, die Bots dort können in keine andere Choreografie malen, und der Test zählt nur Entitäten.
+6. **Jede Raum-Erstellung kommt von ihrer eigenen Adresse** (seit Ticket 14). `POST /api/rooms` ist pro IP raten-begrenzt (spec §8.3 Punkt 6), und `room.test.ts` erstellt weit mehr Räume als eine Adresse darf. Teilten sie sich eine, würde der sechste Test mit `429` fallen — aus einem Grund, der nichts mit dem zu tun hat, was er prüft. Die Ausnahme ist der Rate-Limit-Test selbst: der pinnt seine Adresse absichtlich und weist am Ende nach, dass eine *andere* Adresse unberührt bleibt.
+7. **Die 90-s-Gnadenfrist wird gefeuert, nicht abgewartet** (seit Ticket 14). `runDurableObjectAlarm` treibt den Alarm des Raum-DO direkt; der Test prüft damit die Regel statt die Geduld des Runners. Ist kein Alarm armiert, benennt sich der Fehlschlag selbst („ein geleerter Raum würde nie schliessen").
 
 Vor jedem Commit lokal fahren: `pnpm test:scenario` (~160 s, **zwei** Durchläufe: hermetisch + Bots) **und** `pnpm test:e2e` (~45 s, `wrangler dev` läuft unter WSL2 einwandfrei — die alte „stallt"-Notiz gilt nicht mehr).
 

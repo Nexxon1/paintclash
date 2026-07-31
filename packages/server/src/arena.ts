@@ -56,6 +56,31 @@ export interface ArenaSocket {
 }
 
 /**
+ * Everything about an arena that is not a rule: what the DO shell decides for
+ * the public arena, and what a private room's host decides for theirs (ticket
+ * 14). All optional, and every default is "as if nobody asked" — a bare
+ * `new ArenaCore(seed)` is the empty, bot-free, BALANCE-sized arena the unit
+ * tests want.
+ */
+export interface ArenaOptions {
+  /** Edge length in WU; defaults to the BALANCE arena size. */
+  sizeWU?: number;
+  /**
+   * Entities the arena is kept populated to (spec §2.7) — **off unless asked
+   * for**: the public arena passes its area-sized target (`arena-do.ts`), a
+   * private room passes the host's number (spec §10.4 defaults it to 0), and
+   * the tests get an arena holding nobody they did not put there.
+   */
+  botTarget?: number;
+  /**
+   * Concurrent connections admitted before `connect` refuses (spec §8.3:
+   * clean rejection, no queue). A private room passes its own player limit;
+   * the public arena gets the population ceiling `LIMITS.maxConnections`.
+   */
+  maxPlayers?: number;
+}
+
+/**
  * Neutral start of the smoothed arrival margin: mid-band, so the servo
  * neither slackens nor tightens before real samples arrive.
  */
@@ -80,8 +105,14 @@ function guestName(playerId: number): string {
  * zero-width-padded blank reaches exactly this line and is answered with a
  * guest name. A rejection is silent on purpose: the name is cosmetic, and
  * refusing the join over one would cost a player their game for nothing.
+ *
+ * Exported for the room lobby (ticket 14), which has to resolve a name one
+ * phase EARLIER than the arena does — a lobby list cannot show a blank row. It
+ * is safe to apply twice because the policy is idempotent (`sanitizeNickname`)
+ * and a guest name passes it unchanged, so the name a lobby displays is exactly
+ * the name the arena will hand the leaderboard.
  */
-function displayName(requested: string, playerId: number): string {
+export function displayName(requested: string, playerId: number): string {
   const verdict = checkNickname(requested);
   return verdict.ok ? verdict.name : guestName(playerId);
 }
@@ -141,21 +172,14 @@ export class ArenaCore {
   private readonly bots = new Map<number, BotPilot>();
   private pendingBotJoins: number[] = [];
 
-  /**
-   * `arenaSizeWU` overrides the BALANCE default (dev/testing, private rooms).
-   *
-   * `botTarget` is the population bots keep the arena at (spec §2.7). It is
-   * **off unless asked for**, like the arena size and seed the DO shell decides:
-   * the public arena passes `BALANCE.bots.targetPopulation`
-   * (`arena-do.ts`), private rooms default to bots off per spec §10.4, and the
-   * unit/scenario tests get an arena holding nobody they did not put there.
-   */
-  constructor(
-    seed: number,
-    arenaSizeWU?: number,
-    private readonly botTarget = 0,
-  ) {
-    this.state = createSimState(seed, arenaSizeWU);
+  private readonly botTarget: number;
+  private readonly maxPlayers: number;
+
+  /** See `ArenaOptions` — everything the arena is told rather than ruled by. */
+  constructor(seed: number, options: ArenaOptions = {}) {
+    this.state = createSimState(seed, options.sizeWU);
+    this.botTarget = options.botTarget ?? 0;
+    this.maxPlayers = options.maxPlayers ?? LIMITS.maxConnections;
   }
 
   get connectionCount(): number {
@@ -167,9 +191,13 @@ export class ArenaCore {
    * Returns null when the arena is full (spec §8.3: clean rejection, no
    * queue) — also the guard that keeps the u8 snapshot player count and the
    * u16 wire ids safely in range.
+   *
+   * A private room passes its own, lower limit (`ArenaOptions.maxPlayers`); the
+   * room DO refuses a socket before it ever gets here, so this is the backstop
+   * that makes the limit a property of the ARENA rather than of one code path.
    */
   connect(socket: ArenaSocket): number | null {
-    if (this.connections.size >= LIMITS.maxConnections) return null;
+    if (this.connections.size >= this.maxPlayers) return null;
     const id = this.allocatePlayerId();
     this.connections.set(id, {
       socket,
@@ -258,6 +286,11 @@ export class ArenaCore {
       }
       return;
     }
+    // The room frames (ticket 14) belong to a private room's LOBBY socket, and a
+    // lobby socket is not a connection here — the DO shell answers those and only
+    // hands a socket over once it is a player. Reaching this line means a client
+    // sent one to a running arena, where it means nothing.
+    if (message.type !== 'input') return;
     if (!connection.joined) return;
     const fresh: InputItem[] = [];
     for (const input of message.inputs) {

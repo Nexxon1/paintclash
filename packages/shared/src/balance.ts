@@ -159,6 +159,54 @@ export const BALANCE = Object.freeze({
     maxTrailWU: 120,
   }),
   /**
+   * Private rooms (spec §2.6/§10.4, ADR-0004) — the numbers a host picks
+   * between, and what they get when they pick nothing. The *format* of a room
+   * code is not here but in `room.ts` (`ROOM_CODE`), for the same reason the
+   * nickname caps live with the nickname policy: it is a wire invariant, not a
+   * knob to tune.
+   */
+  room: Object.freeze({
+    /** Player limit range and default (spec §2.6: 2–16, default 8). */
+    playerLimitMin: 2,
+    playerLimitMax: 16,
+    playerLimitDefault: 8,
+    /**
+     * Arena area one player is sized for, in WU² — the spec's own room-sizing
+     * rule (§10.4: `Kante = √(Spieler × 5000)`). The very same number the
+     * public arena's bot density is derived from
+     * (`BALANCE.bots.areaPerEntityWU2`); one source, so the two ladders cannot
+     * drift into disagreeing about how much room a player needs.
+     */
+    areaPerPlayerWU2: 5000,
+    /**
+     * Band a freely chosen map size is clamped into (spec §2.6: "frei
+     * wählbar" — free, not unbounded).
+     *
+     * The floor is what the 16-player limit needs to mean anything: 16 start
+     * blocks of 6 WU plus the spawn distance do not fit into much less, and
+     * below it a room is a scrum rather than a game. The ceiling is 400 WU =
+     * 160 000 WU², i.e. room for 32 players by the rule above — twice the
+     * highest limit, so a host can build a deliberately empty field without
+     * being able to ask for an arena nobody could cross.
+     */
+    mapSizeMinWU: 60,
+    mapSizeMaxWU: 400,
+    /**
+     * Bot target a fresh room starts with. 0 = off, per spec §10.4 ("Bots
+     * default aus") — a private room is for the people invited to it.
+     */
+    botTargetDefault: 0,
+    /** Drop-in per link while the game runs, default on (spec §2.6). */
+    lateJoinDefault: true,
+    /**
+     * Seconds an emptied room is held before it closes and its code is free
+     * again (spec §2.6: "deckt kurze Disconnects"). Long enough for a browser
+     * reload or a tunnel hiccup, short enough that abandoned codes do not pile
+     * up in a key space this scheme sizes by obscurity.
+     */
+    graceSeconds: 90,
+  }),
+  /**
    * Score (spec §10.5) — the personal performance number
    * `round(peakPct × √survivalSec × (1 + humanBonus × ØotherHumans) × scale)`.
    * The sublinear time term is the formula's own shape, not a parameter.

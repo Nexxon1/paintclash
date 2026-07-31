@@ -4,17 +4,32 @@
  * rendering in `render/`. Exercised by the Playwright E2E.
  */
 
-import { TICK_DT_MS, sanitizeNickname } from '@paintclash/shared';
+import {
+  ROOM_CODE,
+  TICK_DT_MS,
+  normalizeRoomCode,
+  roomPath,
+  sanitizeNickname,
+} from '@paintclash/shared';
 
 import { Steering, type PointerSample } from './game/input.js';
 import { nicknameHint } from './game/nickname-hint.js';
 import { LocalRecords } from './game/records.js';
+import {
+  HostTokens,
+  lobbyView,
+  roomCloseMessage,
+  roomCodeWish,
+  type RoomEntry,
+} from './game/room.js';
 import { recordsText } from './game/score.js';
 import { ClientSession } from './game/session.js';
 import { Settings } from './game/settings.js';
 import { SfxCues } from './game/sfx-cues.js';
 import { SfxEngine } from './game/sfx.js';
+import { browserStore } from './game/storage.js';
 import { ControlsHud, JoystickHud, LeaderboardHud, ScoreHud, SoundHud } from './render/hud.js';
+import { RoomHud } from './render/room-hud.js';
 import { ArenaScene } from './render/scene.js';
 
 import type { RenderState } from './game/session.js';
@@ -49,6 +64,10 @@ const leaderboard = new LeaderboardHud(query('#leaderboard', HTMLDivElement));
 const scoreHud = new ScoreHud(query('#score', HTMLDivElement));
 const recordsLine = query('#records', HTMLParagraphElement);
 const joystickHud = new JoystickHud(query('#joystick', HTMLDivElement));
+const joinCard = query('#join-card', HTMLDivElement);
+const createRoomButton = query('#create-room', HTMLButtonElement);
+const roomCodeInput = query('#room-code', HTMLInputElement);
+const joinRoomButton = query('#join-room', HTMLButtonElement);
 
 /**
  * Local records (spec §2.5, ADR-0006 seam 4) — read once at startup, so the
@@ -138,6 +157,34 @@ for (const type of ['pointerup', 'pointercancel'] as const) {
   });
 }
 
+/**
+ * Private rooms (spec §2.6, ticket 14). The host secrets live in localStorage so
+ * a host who reloads comes back as the host; `joining` is the room the current
+ * (or next) socket is for, null for the public arena.
+ */
+const hostTokens = new HostTokens(browserStore());
+let joining: RoomEntry | null = null;
+
+/**
+ * The session the lobby card talks to. The card lives for the whole page (like
+ * the steering and the sound), while a session lasts one game — so the two
+ * handlers below reach for whatever session is current instead of capturing one.
+ */
+let currentSession: ClientSession | null = null;
+const roomHud = new RoomHud(query('#lobby', HTMLDivElement), {
+  onSettings: (config) => {
+    currentSession?.sendRoomSettings(config);
+  },
+  onStart: () => {
+    currentSession?.sendRoomStart();
+  },
+  onLeave: () => {
+    // Dropping the socket empties the room for this player; the room itself
+    // stands for its grace period, so leaving by accident is recoverable.
+    stopCurrentGame?.();
+  },
+});
+
 /** Tears down the previous game (loop, timer, socket, listeners). */
 let stopCurrentGame: (() => void) | null = null;
 
@@ -147,12 +194,22 @@ function start(name: string): void {
   // dead session still consuming keys and clobbering the debug hook.
   stopCurrentGame?.();
 
-  const wsUrl = `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws`;
+  // `?room=` is what tells the router to address a room DO instead of the one
+  // public arena (ADR-0004); `?host=` is the creator's secret, and only they have
+  // one. Both are query parameters because a WebSocket upgrade has no body.
+  const params = new URLSearchParams();
+  if (joining) {
+    params.set('room', joining.code);
+    if (joining.hostToken !== null) params.set('host', joining.hostToken);
+  }
+  const search = params.size > 0 ? `?${params.toString()}` : '';
+  const wsUrl = `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws${search}`;
   const ws = new WebSocket(wsUrl);
   ws.binaryType = 'arraybuffer';
   const session = new ClientSession((frame) => {
     ws.send(frame);
   }, name);
+  currentSession = session;
   window.__paintclash = { session, sfx };
   let stopped = false;
   // The cue rules are per GAME (the join cue, the own rank, the pending
@@ -166,9 +223,13 @@ function start(name: string): void {
   ws.addEventListener('message', (event: MessageEvent<ArrayBuffer | string>) => {
     if (typeof event.data !== 'string') session.receive(event.data);
   });
-  ws.addEventListener('close', () => {
+  ws.addEventListener('close', (event) => {
     stopCurrentGame?.();
-    status.textContent = 'Verbindung getrennt — erneut auf Spielen klicken.';
+    // A room that refused says why (`ROOM_CLOSE`): "wrong code", "full" and
+    // "already running" ask the player for three different things, and 1006
+    // would tell them none of it.
+    status.textContent =
+      roomCloseMessage(event.code) ?? 'Verbindung getrennt — erneut auf Spielen klicken.';
     // A life that ends by disconnect never gets a `final` frame, but it was
     // still played: commit it, or a long survival would only ever count if it
     // ended in a death (spec §2.5 lists max-% and survival as records).
@@ -229,6 +290,8 @@ function start(name: string): void {
     // Same for the "eat" loop: the frame loop that would fade it out is gone,
     // so a player who died mid-bite would hear it chew over the join card.
     sfx.silence();
+    // The lobby belonged to the session that is dying with this game.
+    roomHud.update(null, -1);
     scene.dispose();
     if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) ws.close();
   };
@@ -242,6 +305,12 @@ function start(name: string): void {
     // Decay yesterday's correction offsets BEFORE folding new ones in.
     session.frame(frameDtMs);
     simStep(); // freshest possible tick right before rendering
+    // A lobby is what a client has INSTEAD of a game (spec §2.6): the overlay
+    // stays up, showing the room's card in place of the join form, until the
+    // host starts and the welcome arrives.
+    const lobby = session.lobbyView();
+    roomHud.update(lobby ? lobbyView(lobby.lobby, location.origin) : null, lobby?.rev ?? -1);
+    joinCard.hidden = lobby !== null;
     if (session.ready() && !hidden) {
       hidden = true;
       overlay.style.display = 'none';
@@ -279,22 +348,111 @@ function showNameHint(): void {
 }
 nameInput.addEventListener('input', showNameHint);
 
+/**
+ * The name to join with. Sanitized, not judged: filtering saves the wire from
+ * cutting a name by code point (which could split a character), while a name the
+ * blocklist refuses is sent as-is and REPLACED BY THE SERVER — the hint above
+ * already said so. Refusing the join here instead would make the client the
+ * authority on a rule it only pre-checks (ticket 13: "Server erzwingt"), and
+ * would cost a player their game over a cosmetic string. An empty name stays
+ * empty: only the server can number the guest (`Gast-####`).
+ */
+function joinName(): string {
+  return sanitizeNickname(nameInput.value);
+}
+
+/**
+ * Everything that must happen inside the click that starts a game: the autoplay
+ * policy only lets an `AudioContext` start in a user gesture (spec §4.4 — no
+ * separate "enable sound" prompt), and it has to happen before a slow connect
+ * can cost us the activation.
+ */
+function beginConnecting(message: string): void {
+  status.textContent = message;
+  sfx.unlock();
+}
+
 form.addEventListener('submit', (event) => {
   event.preventDefault();
-  status.textContent = 'Verbinde …';
-  // Inside the gesture that started the game: the autoplay policy only lets a
-  // context start here (spec §4.4 — no separate "enable sound" prompt). Before
-  // the socket, so a slow connect cannot cost us the activation.
-  sfx.unlock();
-  // Sanitized, not judged: filtering saves the wire from cutting a name by code
-  // point (which could split a character), while a name the blocklist refuses
-  // is sent as-is and REPLACED BY THE SERVER — the hint above already said so.
-  // Refusing the join here instead would make the client the authority on a
-  // rule it only pre-checks (ticket 13: "Server erzwingt"), and would cost a
-  // player their game over a cosmetic string. An empty name stays empty: only
-  // the server can number the guest (`Gast-####`).
-  start(sanitizeNickname(nameInput.value));
+  beginConnecting('Verbinde …');
+  joining = null; // the public arena
+  start(joinName());
 });
+
+/**
+ * Create a private room (spec §2.6): the server draws the code, mints the host
+ * secret and hands back the link. The secret is remembered locally, so a reload
+ * comes back as the host rather than as a guest in one's own room.
+ */
+createRoomButton.addEventListener('click', () => {
+  beginConnecting('Raum wird erstellt …');
+  createRoomButton.disabled = true;
+  void (async () => {
+    try {
+      const response = await fetch('/api/rooms', { method: 'POST' });
+      if (!response.ok) {
+        // 429 is the per-IP creation budget (spec §8.3 point 6) — the only
+        // refusal a player can do something about (wait).
+        status.textContent =
+          response.status === 429
+            ? 'Zu viele Räume von dieser Verbindung — kurz warten.'
+            : 'Raum konnte nicht erstellt werden.';
+        return;
+      }
+      const room = (await response.json()) as { code: string; hostToken: string };
+      hostTokens.remember(room.code, room.hostToken);
+      roomCodeInput.value = room.code;
+      showRoomInUrl(room.code);
+      joining = { code: room.code, hostToken: room.hostToken };
+      start(joinName());
+    } catch {
+      status.textContent = 'Raum konnte nicht erstellt werden.';
+    } finally {
+      createRoomButton.disabled = false;
+    }
+  })();
+});
+
+/** Join a room by code or shared link (spec §2.6: not publicly listed). */
+joinRoomButton.addEventListener('click', () => {
+  const code = normalizeRoomCode(roomCodeInput.value);
+  if (code === null) {
+    // The same rule the router applies, so this never sends a socket the router
+    // would answer with a 400.
+    status.textContent = `Raum-Code besteht aus ${String(ROOM_CODE.length)} Zeichen.`;
+    return;
+  }
+  beginConnecting('Raum wird betreten …');
+  showRoomInUrl(code);
+  // Only the creator of this room has a secret for it; everyone else joins as a
+  // member and the room decides whether a host is still present.
+  joining = { code, hostToken: hostTokens.of(code) };
+  start(joinName());
+});
+
+/**
+ * Put the room in the address bar. Two things follow from it: the URL a player
+ * copies out of the bar is the invitation, and a RELOAD comes back to the same
+ * room — with the host secret still in localStorage, the host comes back as the
+ * host rather than as a guest in their own room (spec §2.6's grace period is
+ * what keeps the room standing meanwhile).
+ */
+function showRoomInUrl(code: string): void {
+  history.replaceState(null, '', roomPath(code));
+}
+
+/**
+ * A shared link (`?room=CODE`) lands here: the code is prefilled and the room
+ * button is what the card now offers. The player still picks a name first —
+ * joining is a click, never automatic, because the click is also what unlocks
+ * the audio context.
+ */
+const linkedRoom = roomCodeWish(location.search);
+if (linkedRoom !== null) {
+  roomCodeInput.value = linkedRoom;
+  joinCard.classList.add('linked');
+  status.textContent = `Einladung zu Raum ${linkedRoom}.`;
+}
 
 // Only now is a click safe (no native submit/reload) — see index.html.
 query('#join-form button', HTMLButtonElement).disabled = false;

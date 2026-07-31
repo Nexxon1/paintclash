@@ -21,6 +21,18 @@ export {
   sanitizeNickname,
   type NicknameVerdict,
 } from './nickname.js';
+export {
+  ROOM_CLOSE,
+  ROOM_CODE,
+  defaultMapSizeWU,
+  defaultRoomConfig,
+  normalizeRoomCode,
+  roomCodeFrom,
+  roomPath,
+  roomShareLink,
+  sanitizeRoomConfig,
+  type RoomConfig,
+} from './room.js';
 export type {
   DeathCause,
   LifeCounters,
