@@ -59,6 +59,7 @@ jobs:
       # empty arena, and nobody would find out until the manual run.
       - run: pnpm --filter @paintclash/bench-do-cpu test
       - run: pnpm --filter @paintclash/bench-fill-budget test
+      - run: pnpm --filter @paintclash/bench-carve-budget test
 
   build:
     runs-on: ubuntu-latest

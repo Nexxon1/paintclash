@@ -20,6 +20,7 @@ import { playerHue, PLAYER_LIGHTNESS, PLAYER_SATURATION, SELF_COLOR_CSS } from '
 import type { RenderState } from '../game/session.js';
 import {
   boundsOverlap,
+  CARVE_THROTTLE_MS,
   CARVE_WIDTH_WU,
   PlateauCarver,
   pointsBounds,
@@ -37,14 +38,6 @@ const TRAIL_Y = 0.03;
 const TRAIL_WIDTH = BALANCE.trail.widthWU;
 /** Fill wave duration (§4.2: the territory "grows" as a height wave). */
 const FILL_WAVE_MS = 450;
-/**
- * Minimum time between carve updates of one plateau (§4.1 carve-through:
- * crossing trails cut a ground-level groove into the plateau geometry).
- * Each update clips only the trail growth since the last one (PlateauCarver)
- * plus a mesh rebuild — tick cadence is plenty; between updates the groove
- * front trails the head by < 0.5 WU, visually hidden under the head cone.
- */
-const CARVE_THROTTLE_MS = 50;
 
 /**
  * Meshes and HUD swatches share one color mapping (game/colors.ts) — and

@@ -3,6 +3,9 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
+  "exports": {
+    "./render/carve": "./src/render/carve.ts"
+  },
   "scripts": {
     "build": "vite build",
     "typecheck": "tsc -p tsconfig.json --noEmit"

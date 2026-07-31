@@ -156,3 +156,55 @@ Entscheidung:
 
 _Referenz: spec §2.2, §6.2, §9.2; ADR-0003 (Determinismus), ADR-0007 (Boolean-Engine).
 Aufgedeckt bei Ticket 22._
+
+## Comments
+
+### 2026-07-31 — Zwei Messungen aus Ticket 25, ohne die Engine anzufassen
+
+Ticket 25 ging einem User-Bericht nach („nach ~2 min Freeze, danach laggier") und
+maß dabei zweierlei, das hierher gehört. **Das Gate ist unangetastet: nichts davon
+hat den Sim-Clipper geändert.**
+
+**1. Der Dauerzustand ist in Produktion sichtbar — früher als lokal.** Ein
+Playwright-Probe-Lauf über 210 s gegen `paintclash.secure-data.workers.dev` (frische
+Arena, 8 Bots, ein echter Browser-Spieler) zeigt Snapshot-Lücken von **120–250 ms**,
+ab t ≈ 147 s zunehmend dicht — **26 der 36 Lücken liegen in der letzten Minute**.
+Gleichzeitige Long-Tasks im Browser gibt es dort **keine**, es ist also der Tick, nicht
+der Client. Das ist genau die Kurve dieses Tickets, nur ~2,5× früher als die lokale
+Messung (t = 355 s) — passend zum 4×-Hardware-Faktor. Die Vermutung von T22/T23, dass
+lokal-grün keine Produktions-Reserve ist, ist damit **belegt statt angenommen**.
+
+Der Freeze im selben Bericht ist **nicht** dieses Ticket (Client-Carve, Ticket 25).
+Das Laggen ist es.
+
+**2. Ansatz 1, gemessen — der Spike, den das Ticket verlangt.** 98 echte
+`union(territory, loop)` und 57 echte `difference(other, gained)` wurden aus einer
+gesättigten Arena (200 WU, 8 Bots, t = 400–420 s, Seed 20260730) abgegriffen und
+**identisch** durch beide Engines gespielt:
+
+| Op | polyclip-ts | polygon-clipping | Faktor |
+|---|---|---|---|
+| `union` (n=98, Ø 764 Subjekt-Vertices) | 9,12 ms/op | **1,05 ms/op** | **8,7×** |
+| `difference` (n=57) | 9,63 ms/op | **0,94 ms/op** | **10,2×** |
+
+Null Fehlschläge auf beiden Seiten, **gleiche Vertex-Zahl** im Ergebnis, grösste
+Flächenabweichung **3,6e-12 WU²** (Float-Rauschen). Die Schätzung „~10×" aus
+`carve.ts` stimmt also für echte Sim-Geometrie.
+
+**Was damit NICHT erledigt ist.** Der Haken bei Auftrag 1 bleibt bewusst offen: gefahren
+ist der **Spike** („als Spike messen, nicht direkt einbauen"), nicht der Tausch. Und die
+**1 800-s-Variante von `bench/fill-budget` fehlt weiterhin** — das Ticket nennt sie
+ausdrücklich als Bedingung („ohne sie ist das Ergebnis nicht beurteilbar"), sie ist Teil
+desselben Auftrags und gehört zum Öffnen des Gates dazu. Die 8,7×/10,2× oben sind also ein
+**halbes** Entscheidungspaket: die Faktoren ohne die Dauerzustands-Basislinie, gegen die
+sie zu rechnen wären.
+
+**Der Haken, den Ticket 25 dazu geliefert hat — und der vor der Entscheidung gehört:**
+genau diese Engine hat im Client sekundenlang gemahlen und dann geworfen, an
+drei-Vertex-Geometrie, weil ihre Eingaben **nicht** gerastert waren. Im `sim-core`
+liegen sie auf dem 1e-7-Gitter, und in den 155 Ops oben ist nichts passiert — aber
+„0 von 155" ist kein Beweis, und im autoritativen Tick wäre der Preis eines solchen
+Falls eine für alle stehende Arena plus ein still verwirkter Fill. Bemerkenswert dazu
+aus derselben Messreihe: von allen probierten Gittern war ausgerechnet **1e-7 das
+langsamste** (ein Fall 11 ms statt 1 ms) — falls getauscht wird, ist die Gitterweite
+mit zu messen und nicht aus ADR-0007 zu übernehmen.

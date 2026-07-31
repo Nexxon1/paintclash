@@ -20,3 +20,24 @@ Der Fill ist **polygonbasiert** (Spec §2.2, kein Zell-Flood-Fill). Loop-Schluss
 - Gitter-Rundung bewegt Grenzen um ≤ 5e-8 WU — visuell und spielerisch bedeutungslos, aber sie hält alle Folge-Operationen auf dem Gitter (Gebiete sind frühere Clipper-Ausgaben).
 - Verwaiste Löcher (Besitzer weg) bleiben neutral, bis irgendein späterer Fill desselben Spielers sie konsolidiert — bewusst schlicht; Ticket 06 (Stehlen) präzisiert die Semantik.
 - Wire-Deckel: Polygon-/Ring-Zahlen als u8, Punkte je Ring als u16 (`protocol`); organisch praktisch unerreichbar, Encoder wirft laut bei Überschreitung.
+
+## Nachtrag (2026-07-31, Ticket 25) — das Gitter gilt für **jeden** Clipper, nicht nur den der Sim
+
+Diese ADR entschied für den `sim-core`. Der Client fährt seit Ticket 06 eine **zweite**
+Boolean-Engine für den Trail-Carve (`polygon-clipping`, float statt arbitrary precision,
+~10× schneller — Kosmetik braucht keine exakten Prädikate) — und die lief **ohne Gitter**.
+Das war der Fehler: Fast-Koinzidenzen liessen ihren Sweep **0,7–2,6 s** mahlen und danach
+werfen, an Geometrie von drei Vertices. Seit Ticket 25 rastert auch der Client, auf ein
+eigenes **Carve-Gitter** von **1e-4 WU** (`CARVE_LATTICE_INV_WU`).
+
+Zwei Präzisierungen, die aus dieser Messung folgen:
+
+- **Die Gitterweite ist kein universeller Wert.** Von allen probierten Weiten war für
+  `polygon-clipping` ausgerechnet **1e-7 die langsamste** (ein Fall 11 ms statt 1 ms);
+  1e-4 war am schnellsten. Wer eine Engine tauscht (offen in Ticket 23), misst die Weite
+  neu, statt die 1e-7 von hier zu übernehmen.
+- **„Ein- *und* Ausgaben" gilt weiterhin für die Sim, im Client nur für Eingaben.**
+  `fill.ts` rastert seine Ausgabe zurück, weil sie **gespeichert** wird und jede
+  Folgeoperation darauf aufbaut. Der Carve speichert nichts Autoritatives; sein Ergebnis
+  betritt den Clipper nur über `snappedDifference` wieder, und das rastert es dort. Der
+  Effekt ist derselbe, die Stelle eine andere.

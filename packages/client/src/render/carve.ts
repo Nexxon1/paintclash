@@ -16,6 +16,12 @@
  * so each update clips ONLY the segments added since the last one, against
  * ONLY the carved pieces they touch — a decimated full recarve runs just
  * when the base plateau or a crossing trail is replaced.
+ *
+ * Float speed is bought with float robustness, and that bill came due in
+ * ticket 25: unsnapped inputs made the sweep grind for SECONDS on geometry
+ * of a handful of vertices. Everything entering the clipper is therefore on
+ * a snap lattice now — see `CARVE_LATTICE_INV_WU`. Budget under a saturating
+ * arena: [`bench/carve-budget`](../../../../bench/carve-budget/).
  */
 
 import { BALANCE, type Point, type Ring, type Territory } from '@paintclash/shared';
@@ -34,10 +40,70 @@ const clipperInterop = polygonClipping as unknown as Clipper & { default?: Clipp
 const { difference } = clipperInterop.default ?? clipperInterop;
 
 /**
+ * Snap lattice for everything entering the clipper, in inverse WU — the same
+ * medicine ADR-0007 prescribes for the sim's clipper, for the same reason:
+ * near-coincident vertices collapse to EXACTLY coincident ones, which a
+ * Martinez sweep handles robustly, while a hair's-width miss sends it hunting
+ * for intersections that float arithmetic then refuses to confirm.
+ *
+ * Without it, `polygon-clipping` does not merely lose precision here — it
+ * grinds. Measured against the deployed build (ticket 25): a ~500-vertex
+ * plateau minus two groove quads spent **0,7–2,6 s** in the sweep and then
+ * threw `unable to complete output ring`; six such carves in five minutes of
+ * a saturating arena, the worst 4,4 s. Every one of them completes in **~1 ms**
+ * on the lattice. The failures were never about size — the inputs are tiny —
+ * they were about vertices that miss each other by 1e-12 WU.
+ *
+ * 1e-4 WU (a ten-thousandth of a trail's width) rather than the sim's 1e-7:
+ * this is cosmetics, so a coarser lattice is strictly better — it collapses
+ * MORE near-coincidences, and the movement it costs is four orders of
+ * magnitude below one screen pixel at any playable zoom.
+ */
+const CARVE_LATTICE_INV_WU = 1e4;
+
+/** Put one clipper operand on the carve lattice (see `CARVE_LATTICE_INV_WU`). */
+function snapOperand(operand: Territory): Territory {
+  return operand.map((poly) =>
+    poly.map((ring) =>
+      ring.map(([x, y]): Point => [
+        Math.round(x * CARVE_LATTICE_INV_WU) / CARVE_LATTICE_INV_WU,
+        Math.round(y * CARVE_LATTICE_INV_WU) / CARVE_LATTICE_INV_WU,
+      ]),
+    ),
+  );
+}
+
+/**
+ * `difference`, with every operand on the carve lattice — the ONE place this
+ * module talks to the clipper, so no path can skip the snap.
+ *
+ * Inputs only, unlike the sim (ADR-0007 snaps its OUTPUT back too). The sim
+ * has to: it stores the result, and every later op builds on it. Nothing
+ * here is stored as truth — a carve result only ever re-enters the clipper
+ * through this very function, which snaps it then.
+ */
+function snappedDifference(subject: Territory, clips: readonly Territory[]): Territory {
+  return difference(snapOperand(subject), ...clips.map(snapOperand));
+}
+
+/**
  * Groove width: a shade wider than the ribbon, so the ribbon's edges never
  * touch (and z-fight) the trench walls.
  */
 export const CARVE_WIDTH_WU = BALANCE.trail.widthWU + 0.2;
+
+/**
+ * Minimum time between carve updates of one plateau (§4.1 carve-through:
+ * crossing trails cut a ground-level groove into the plateau geometry).
+ * Each update clips only the trail growth since the last one (PlateauCarver)
+ * plus a mesh rebuild — tick cadence is plenty; between updates the groove
+ * front trails the head by < 0.5 WU, visually hidden under the head cone.
+ *
+ * Lives here rather than in the scene that applies it because it is half of
+ * what the carve costs per second, and `bench/carve-budget` has to pace
+ * itself by the same number to measure the frame the client actually draws.
+ */
+export const CARVE_THROTTLE_MS = 50;
 
 export interface Bounds {
   minX: number;
@@ -198,7 +264,7 @@ export function carveTerritory(territory: Territory, trails: readonly Point[][])
   }
   if (quads.length === 0) return territory;
   try {
-    return difference(territory, ...quads);
+    return snappedDifference(territory, quads);
   } catch {
     return territory;
   }
@@ -332,7 +398,7 @@ export class PlateauCarver {
     }
     if (touched.length === 0) return;
     try {
-      this.carved = [...difference(touched, ...quads), ...untouched];
+      this.carved = [...snappedDifference(touched, quads), ...untouched];
     } catch {
       // Clipper failure on degenerate input: keep the last good shape —
       // cosmetics must never take the frame down.

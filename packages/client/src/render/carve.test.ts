@@ -80,6 +80,43 @@ describe('carveTerritory (spec §4.1: trail carve-through groove)', () => {
     // Nothing but (at most) the stationary dot's stamp changes.
     expect(territoryArea(carved)).toBeGreaterThan(90);
   });
+
+  /**
+   * The freeze of ticket 25, shrunk to its bones. Captured off a saturating
+   * arena and then minimized: a three-vertex sliver of plateau and a trail
+   * whose groove touches one of its corners EXACTLY. Fed to the clipper as
+   * they come off the sim's floats, these numbers make the Martinez sweep
+   * grind for **3,1 seconds** and then throw `unable to complete output ring`
+   * — a frozen tab, and a groove that silently never appears (the throw is
+   * caught, the uncarved shape kept). Six of these in five minutes of the
+   * deployed build, the worst 4,4 s.
+   *
+   * Nothing here is big. That is the whole point: the trigger is a vertex
+   * pair that misses by ~1e-12 WU, which is why the fix is the snap lattice
+   * and not a smaller input.
+   */
+  it('carves geometry that makes the raw clipper grind and throw', () => {
+    const sliver: Territory = [
+      [
+        [
+          [112.91755193923235, 95.913400478644],
+          [112.33826580758219, 95.76550453934293],
+          [118.672796, 89.614237],
+        ],
+      ],
+    ];
+    const trail: Point[] = [
+      [111.75176199366763, 96.23501173905039],
+      [112.18777620877125, 96.34632932179258],
+      [112.57621668847199, 96.57351645551688],
+    ];
+    const before = territoryArea(sliver);
+    const carved = carveTerritory(sliver, [trail]);
+    // The groove really was cut. Before the lattice this came back as the
+    // untouched input — the clipper threw, and `carveTerritory` fell back.
+    expect(territoryArea(carved)).toBeLessThan(before);
+    expect(territoryArea(carved)).toBeGreaterThan(0);
+  });
 });
 
 describe('simplifyPolyline', () => {
