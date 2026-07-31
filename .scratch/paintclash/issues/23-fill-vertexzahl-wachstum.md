@@ -116,8 +116,9 @@ Konzeptwechsel (Ticket 24) hinten.
       schwierig, und das ist der Grund, das nicht als Erstes zu versuchen.
 - [ ] **3. Raster statt Polygon** — der strukturelle Ausweg, eigenes Ticket **24**. Nur
       wenn 1 (+2) den Dauerzustand nicht hält. Dort steht auch der eine Posten, den kein
-      Engine-Tausch heilt: die **Bandbreite** (~0,9 GB/h je Arena, weil jeder Fill das
-      komplette Gebiet an jeden Client schickt).
+      Engine-Tausch heilt: die **Bandbreite** (~31 KB/s je Client, weil jeder Fill das
+      komplette Gebiet an jeden Client schickt) — Datenvolumen und Client-CPU, **nicht**
+      Cloudflare-Kosten (Workers/DO berechnen keinen Egress, s. T13-Recherche).
 - [ ] **Nicht** Ansatz 3 aus T22 (Toleranz-Simplifikation) — gemessen widerlegt, s. oben.
 - [ ] Akzeptanz: `bench/fill-budget` auf **1 800 s** verlängert (5 min sehen den
       Dauerzustand nicht) hält beide Arenen unter Budget — d. h. **0** Ticks über 50 ms,

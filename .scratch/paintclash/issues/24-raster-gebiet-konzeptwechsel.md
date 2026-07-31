@@ -53,10 +53,23 @@ Fill das **komplette** Gebiet eines Spielers an **jeden** Client, 8 Byte je Vert
 | | **≈ 0,9 GB pro Stunde und Arena** |
 
 Das skaliert mit derselben Vertex-Zahl wie die CPU — ein schnellerer Clipper ändert daran
-**nichts**. Für einen Free-Tier-Worker (T13/T15: Kostendeckel als Sicherheitsthema) ist
-0,9 GB/h je Arena relevant. Ein Raster verschickt stattdessen Zell-Deltas des bemalten
-Bereichs: ein paar hundert Byte RLE statt 6,3 KB. **Das ist das stärkste eigenständige
-Argument für dieses Ticket** — und es steht unabhängig vom CPU-Ergebnis aus T23.
+**nichts**. Ein Raster verschickt stattdessen Zell-Deltas des bemalten Bereichs: ein paar
+hundert Byte RLE statt 6,3 KB.
+
+**Wem das weh tut — und wem nicht.** *Nicht* der Cloudflare-Rechnung: die eigene Recherche
+zu T13 hält fest, dass Workers/DO **keine Egress-/Bandbreitenkosten** berechnen, und das
+Duration-Budget (13 000 GB-s/Tag auf Free) läuft über Wanduhr, nicht über Bytes. Die
+frühere Einordnung „Free-Tier-Kostenrisiko" in diesem Ticket war falsch. Es trifft
+stattdessen:
+
+- **das Datenvolumen der Spieler** — 31 KB/s sind ~110 MB pro Stunde und Client, für ein
+  2D-Browserspiel auf Mobilfunk viel;
+- **die Client-CPU** — jeder 6,3-KB-Frame ersetzt ein ganzes Gebiet, also Neu-Tesselierung
+  des Plateaus plus Carve-Neuberechnung (`carve.ts` drosselt die schon heute), ~5× pro
+  Sekunde.
+
+Damit bleibt es ein eigenständiges Argument, aber ein **Qualitäts-**, kein Sicherheits-
+oder Kostenargument.
 
 (Zwischenlösung, falls nur die Bandbreite stört und die CPU nach T23 passt: Gebiets-Deltas
 statt Vollbild senden, oder Gebiete für den Versand dezimieren. Beides deutlich kleiner
