@@ -9,7 +9,10 @@ laufen: die Kosten hängen an der **bemalten Fläche**, nie an der Historie.
 **Blocked by:** 23 — und zwar echt, nicht formal. T23 misst, ob ein blosser Engine-Tausch
 reicht. Reicht er, ist dieses Ticket **wontfix**; siehe „Warum das warten muss".
 
-**Status:** needs-triage
+**Status:** needs-triage — und bleibt es. Dieses Ticket wird **nie** ohne ausdrückliche
+menschliche Entscheidung gebaut: es kippt eine begründet gelockte Spec-Entscheidung (§2.2),
+ersetzt ADR-0007, ändert Wire-Format und Look, und Punkt 2 der Nachteile ist eine
+Regeländerung. Der wahrscheinlichste Ausgang ist `wontfix` — s. „Empfehlung".
 
 ## Warum das warten muss (das Argument hat sich umgedreht)
 

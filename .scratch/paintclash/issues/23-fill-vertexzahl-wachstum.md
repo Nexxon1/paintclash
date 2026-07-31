@@ -86,16 +86,28 @@ Zwei Befunde:
 Ansatz 3 ist damit **nicht** der Hebel, für den T22 ihn hielt. Wer die Kurve flach will,
 braucht etwas anderes.
 
-## Ansätze, in empfohlener Reihenfolge
+## Umfang dieses Tickets: NUR Ansatz 1
 
 Weil die Kurve **sättigt** (s. o.), ist ein ausreichend grosser konstanter Faktor hier
 eine *dauerhafte* Lösung und kein Aufschub — gegen ein festes Plateau von ~6 500 Vertices
-erschlägt ein 10× die 1,2 % Überläufe für immer. Darum steht der Engine-Tausch vorn und der
-Konzeptwechsel (Ticket 24) hinten.
+erschlägt ein 10× die 1,2 % Überläufe für immer. Darum ist der Engine-Tausch der ganze
+Auftrag, und alles Weitere ausdrücklich **nicht**.
 
-- [ ] **1. Schnellere Boolean-Engine — zuerst, weil billig und folgenlos.** ~70 % der
-      Fill-Zeit ist `union(territory, loop)`, eine einzige Op, deren Kosten allein an der
-      Vertex-Zahl hängen. **Der wahrscheinlichste Kandidat liegt schon im Repo:**
+> **Entscheidungs-Gate — hier wird angehalten.** Nach der Messung aus Ansatz 1 endet die
+> Arbeit an diesem Ticket, unabhängig vom Ergebnis. Reicht der Faktor: Ticket auflösen und
+> Ticket 24 auf `wontfix`. Reicht er nicht: Ergebnis **berichten und den nächsten Schritt
+> mit dem Menschen entscheiden** — nicht selbständig zu Ansatz 2 oder Ticket 24
+> weitergehen. Beide berühren Architektur-Entscheidungen (ADR-0007, spec §2.2), und die
+> gehören nicht in einen AFK-Lauf.
+>
+> Deshalb steht oben auch `Status: needs-triage` und nicht `ready-for-agent`: das Ticket
+> ist bewusst noch nicht für `/implement` freigegeben.
+
+### Der Auftrag
+
+- [ ] **Schnellere Boolean-Engine.** ~70 % der Fill-Zeit ist `union(territory, loop)`,
+      eine einzige Op, deren Kosten allein an der Vertex-Zahl hängen.
+      **Der wahrscheinlichste Kandidat liegt schon im Repo:**
       `client/render/carve.ts` hatte dasselbe Problem und löste es mit
       `polygon-clipping` — „same Martinez sweep, float + robust predicates, **~10×
       faster**" als `polyclip-ts`, das arbitrary-precision rechnet. Der Client fährt das
@@ -108,22 +120,39 @@ Konzeptwechsel (Ticket 24) hinten.
       **Ganzzahlen**, was zum 1e-7-Gitter passt wie angegossen — das Gitter *ist* schon
       ein Integer-Raster). **Als Spike messen**, nicht direkt einbauen; rotiert den
       Replay-Hash.
-- [ ] **2. Union nur gegen das berührte Stück** (kleiner Zusatz-Faktor, falls 1 knapp
-      reicht). Ein Gebiet ist ein Multipolygon; der Loop berührt meist genau ein Stück.
-      Die übrigen sind bbox-getrennt und könnten unverändert durchgereicht werden
-      (dieselbe Beweisführung wie `skipsCarve`). Achtung: die Loch-Füllung darf keine
-      Pocket verlieren, die zwei Stücke *gemeinsam* einschliessen — dort wird der Beweis
-      schwierig, und das ist der Grund, das nicht als Erstes zu versuchen.
-- [ ] **3. Raster statt Polygon** — der strukturelle Ausweg, eigenes Ticket **24**. Nur
-      wenn 1 (+2) den Dauerzustand nicht hält. Dort steht auch der eine Posten, den kein
-      Engine-Tausch heilt: die **Bandbreite** (~31 KB/s je Client, weil jeder Fill das
-      komplette Gebiet an jeden Client schickt) — Datenvolumen und Client-CPU, **nicht**
-      Cloudflare-Kosten (Workers/DO berechnen keinen Egress, s. T13-Recherche).
-- [ ] **Nicht** Ansatz 3 aus T22 (Toleranz-Simplifikation) — gemessen widerlegt, s. oben.
-- [ ] Akzeptanz: `bench/fill-budget` auf **1 800 s** verlängert (5 min sehen den
-      Dauerzustand nicht) hält beide Arenen unter Budget — d. h. **0** Ticks über 50 ms,
-      nicht 420.
-- [ ] Property-Tests §9.2 bleiben grün (Summe + neutral = 100 %, Disjunktheit, kein Loch).
+- [ ] `bench/fill-budget` bekommt eine **1 800-s**-Variante — 5 min sehen den Dauerzustand
+      nicht, und ohne sie ist das Ergebnis nicht beurteilbar. Vor **und** nach dem Tausch
+      messen, beide Zahlen in die Answer.
+- [ ] Property-Tests §9.2 bleiben grün (Summe + neutral = 100 %, Disjunktheit, kein Loch);
+      Golden-Replay **rotiert** (andere Engine ⇒ andere Vertex-Koordinaten) — bewusst und
+      in der Answer benannt.
+- [ ] Akzeptanz **dieses** Tickets ist die **Messung plus Entscheidung**, nicht „Budget
+      gehalten". Hält der Dauerzustand danach 0 Ticks über 50 ms, ist der Fund geschlossen.
+      Hält er nicht, ist das Ticket trotzdem korrekt abgearbeitet — dann entscheidet der
+      Mensch über Ansatz 2 / Ticket 24. Dieses Kriterium ist absichtlich so formuliert:
+      „so lange weitermachen, bis das Budget hält" würde einen AFK-Agenten genau in die
+      Architektur-Änderungen treiben, die hier nicht allein getroffen werden sollen.
+
+## Ausdrücklich NICHT Teil dieses Tickets
+
+Hier nur zum Nachschlagen — jeder dieser Punkte braucht vorher eine menschliche
+Entscheidung:
+
+- **Union nur gegen das berührte Stück.** Ein Gebiet ist ein Multipolygon; der Loop
+  berührt meist genau ein Stück, die übrigen sind bbox-getrennt und könnten unverändert
+  durchgereicht werden (dieselbe Beweisführung wie `skipsCarve`). Kleiner Zusatz-Faktor,
+  falls Ansatz 1 knapp reicht. **Haken:** die Loch-Füllung darf keine Pocket verlieren,
+  die zwei Stücke *gemeinsam* einschliessen — genau dort wird der Beweis schwierig, und
+  das ist der Grund, es nicht nebenbei mitzunehmen.
+- **Raster statt Polygon** → eigenes **Ticket 24**, mit ausformulierter Abbruchbedingung.
+  Dort steht auch der eine Posten, den kein Engine-Tausch heilt: die **Bandbreite**
+  (~31 KB/s je Client, weil jeder Fill das komplette Gebiet an jeden Client schickt) —
+  Datenvolumen und Client-CPU, **nicht** Cloudflare-Kosten (Workers/DO berechnen keinen
+  Egress, s. T13-Recherche).
+- **Gebiets-Deltas statt Vollbild** senden — die billige Antwort auf genau diese
+  Bandbreiten-Zeile, unabhängig von CPU und von Ticket 24. Bisher kein eigenes Ticket.
+- **Toleranz-Simplifikation** (Ansatz 3 aus T22) — gemessen widerlegt, s. oben. Nicht
+  erneut versuchen, ohne die Tabelle zu widerlegen.
 
 _Referenz: spec §2.2, §6.2, §9.2; ADR-0003 (Determinismus), ADR-0007 (Boolean-Engine).
 Aufgedeckt bei Ticket 22._
