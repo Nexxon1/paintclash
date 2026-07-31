@@ -208,3 +208,8 @@ Falls eine für alle stehende Arena plus ein still verwirkter Fill. Bemerkenswer
 aus derselben Messreihe: von allen probierten Gittern war ausgerechnet **1e-7 das
 langsamste** (ein Fall 11 ms statt 1 ms) — falls getauscht wird, ist die Gitterweite
 mit zu messen und nicht aus ADR-0007 zu übernehmen.
+
+**Entscheidung am Gate (2026-07-31, Mensch): vorerst liegen lassen.** Zuerst soll sich
+Produktion **ohne** den Freeze aus Ticket 25 zeigen — gut möglich, dass das Restlaggen
+weniger stört, als es neben einem 4-Sekunden-Standbild aussah. `Status` bleibt darum
+`needs-triage`, und die nächste Runde beginnt mit der fehlenden 1 800-s-Basislinie.
