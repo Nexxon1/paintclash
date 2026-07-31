@@ -88,37 +88,36 @@ braucht etwas anderes.
 
 ## Ansätze, in empfohlener Reihenfolge
 
+Weil die Kurve **sättigt** (s. o.), ist ein ausreichend grosser konstanter Faktor hier
+eine *dauerhafte* Lösung und kein Aufschub — gegen ein festes Plateau von ~6 500 Vertices
+erschlägt ein 10× die 1,2 % Überläufe für immer. Darum steht der Engine-Tausch vorn und der
+Konzeptwechsel (Ticket 24) hinten.
+
 - [ ] **1. Schnellere Boolean-Engine — zuerst, weil billig und folgenlos.** ~70 % der
       Fill-Zeit ist `union(territory, loop)`, eine einzige Op, deren Kosten allein an der
-      Vertex-Zahl hängen. `polyclip-ts` (ADR-0007) ist reines JS-Martinez; ~5 ms für ~500
-      Vertices ist für diese Grösse viel. Clipper2 als WASM ist typischerweise 10–50×
-      schneller — und rechnet **auf Ganzzahlen**, was zum vorhandenen 1e-7-Snap-Gitter
-      passt wie angegossen (das Gitter *ist* schon ein Integer-Raster). Reiner Faktor:
-      gleiche Semantik, gleiche Geometrie, gleiche Sichtbarkeit, gleiches Wire-Format;
-      nur ADR-0007 ändert sich. Reicht ein 10×, ist das Thema für die Polygon-Bauart
-      erledigt. **Zuerst als Spike messen**, nicht direkt einbauen.
-- [ ] **2. Raster statt Polygon — der strukturelle Ausweg, falls 1 nicht reicht.** Das ist
-      das, was paper.io/splix tun, und der Grund, warum die ewig laufen: Gebiet = festes
-      Zellgitter (`ownerId` je Zelle), Fill = Scanline-Flood-Fill der eingeschlossenen
-      Region. Kosten hängen an der **bemalten Fläche**, nie an der Historie — konstant,
-      egal ob die Arena 5 Minuten oder 5 Tage läuft. Nebengewinne, die leicht übersehen
-      werden: Disjunktheit wird **strukturell unmöglich** zu verletzen (eine Zelle hat
-      genau einen Besitzer — eine ganze Klasse Invarianten und Clipper-Wächter entfällt),
-      `pointInTerritory` wird von O(Vertices)-Raycast zu **O(1)**-Array-Zugriff (das läuft
-      pro Spieler pro Tick!), und die Fläche fürs Scoring wird ein Integer-Zähler.
-      200 WU bei 0,5 WU/Zelle = 400×400 = 160 kB `Uint8Array` im DO.
-      **Wichtig:** paper.io hat *gitterbasierte Bewegung*; das ist hier nicht nötig. Kopf,
-      Trail und Kollision bleiben kontinuierlich (der Rewind aus T07 und die Kill-Fairness
-      hängen daran) — **nur das Gebiet** wird gerastert. Kosten: gequantelte Ränder
-      (Rendering via Marching Squares oder direkt Zellen), Wire-Format wird Zell-Deltas
-      statt Polygone, rotiert den Replay-Hash, berührt spec §2.2 + ADR-0007. Braucht eine
-      eigene ADR.
-- [ ] **3. Union nur gegen das berührte Stück** (kleiner Zusatz-Faktor, falls 1 knapp
+      Vertex-Zahl hängen. **Der wahrscheinlichste Kandidat liegt schon im Repo:**
+      `client/render/carve.ts` hatte dasselbe Problem und löste es mit
+      `polygon-clipping` — „same Martinez sweep, float + robust predicates, **~10×
+      faster**" als `polyclip-ts`, das arbitrary-precision rechnet. Der Client fährt das
+      seit T06 produktiv. Der Grund für polyclip-ts im `sim-core` war **Robustheit**, nicht
+      Determinismus (float-Martinez ist im Sinne von ADR-0003 genauso deterministisch), und
+      das Snap-Gitter existiert genau dafür, float-Robustheit zu tragen.
+      Zu prüfen: die Korruptions-Tests (`fill-corrupt`, `fill-forfeit`) und der
+      Bowtie-/Spiral-Fall gegen die andere Engine; `polygon-clipping` ist unmaintained und
+      liefert laut carve.ts „mismatched builds". Fallback: Clipper2 als WASM (rechnet auf
+      **Ganzzahlen**, was zum 1e-7-Gitter passt wie angegossen — das Gitter *ist* schon
+      ein Integer-Raster). **Als Spike messen**, nicht direkt einbauen; rotiert den
+      Replay-Hash.
+- [ ] **2. Union nur gegen das berührte Stück** (kleiner Zusatz-Faktor, falls 1 knapp
       reicht). Ein Gebiet ist ein Multipolygon; der Loop berührt meist genau ein Stück.
       Die übrigen sind bbox-getrennt und könnten unverändert durchgereicht werden
       (dieselbe Beweisführung wie `skipsCarve`). Achtung: die Loch-Füllung darf keine
       Pocket verlieren, die zwei Stücke *gemeinsam* einschliessen — dort wird der Beweis
       schwierig, und das ist der Grund, das nicht als Erstes zu versuchen.
+- [ ] **3. Raster statt Polygon** — der strukturelle Ausweg, eigenes Ticket **24**. Nur
+      wenn 1 (+2) den Dauerzustand nicht hält. Dort steht auch der eine Posten, den kein
+      Engine-Tausch heilt: die **Bandbreite** (~0,9 GB/h je Arena, weil jeder Fill das
+      komplette Gebiet an jeden Client schickt).
 - [ ] **Nicht** Ansatz 3 aus T22 (Toleranz-Simplifikation) — gemessen widerlegt, s. oben.
 - [ ] Akzeptanz: `bench/fill-budget` auf **1 800 s** verlängert (5 min sehen den
       Dauerzustand nicht) hält beide Arenen unter Budget — d. h. **0** Ticks über 50 ms,
