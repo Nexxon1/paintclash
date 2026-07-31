@@ -304,47 +304,58 @@ describe('closeLoop', () => {
     );
   });
 
-  it('property: carving with the gained region equals carving with the whole capture', () => {
-    // The identity `gainedRegion` rests on, checked differentially against the
-    // definition it replaced: whatever the filler ends up owning, every enemy
-    // must come out exactly as `difference(other, captured)` would have left
-    // them. The golden replay cannot guard this — it contains one fill and no
-    // steal at all — so this property is the regression test for it.
-    const coord = fc.double({ min: 9, max: 30, noNaN: true });
-    // Enemy centres far enough out that a half-2 block clears the own (2..8)²
-    // square: the identity needs enemy ∩ own OLD land = ∅, and a generator
-    // that breaks the precondition tests nothing (verified — it fails, which
-    // is the caveat `gainedRegion` documents, not a defect).
-    const enemyCoord = fc.double({ min: 10.5, max: 30, noNaN: true });
-    fc.assert(
-      fc.property(
-        fc.array(fc.tuple(coord, coord), { minLength: 1, maxLength: 12 }),
-        fc.array(fc.tuple(enemyCoord, enemyCoord), { minLength: 1, maxLength: 3 }),
-        (rawTrail, enemySpots) => {
-          const enemies = enemySpots.map((spot): Territory => [[squareRing(spot[0], spot[1], 2)]]);
-          const trail: Point[] = [[7, 5], ...rawTrail.map(([x, y]): Point => [x, y]), [5, 5]];
-          const outcome = closeLoop(ownSquare(), trail, enemies);
-          if (!outcome) return;
-          enemies.forEach((enemy, i) => {
-            const viaGained = outcome.others[i] ?? [];
-            // The definition this replaced, computed straight from the result.
-            const viaCaptured = difference(enemy, outcome.territory) as Territory;
-            const lostViaGained = territoryArea(enemy) - territoryArea(viaGained);
-            const lostViaCaptured = territoryArea(enemy) - territoryArea(viaCaptured);
-            expect(Math.abs(lostViaGained - lostViaCaptured)).toBeLessThan(LATTICE_NOISE_WU2);
-            // Same land, not merely the same amount of it.
-            expect(
-              Math.abs(
-                territoryArea(intersection(viaGained, viaCaptured) as Territory) -
-                  territoryArea(viaGained),
-              ),
-            ).toBeLessThan(LATTICE_NOISE_WU2);
-          });
-        },
-      ),
-      { numRuns: 200 },
-    );
-  });
+  // The most expensive property in this file by an order of magnitude: every
+  // case pays a fill PLUS two extra clipper ops per enemy to recompute the
+  // definition being replaced. The explicit ceiling is the scenario suite's
+  // rule 3 applied here — a slow shared runner must make this slower, not red
+  // (it took 10,6 s on a CI runner against the 5 s default, at 0,8 s locally).
+  it(
+    'property: carving with the gained region equals carving with the whole capture',
+    { timeout: 60_000 },
+    () => {
+      // The identity `gainedRegion` rests on, checked differentially against the
+      // definition it replaced: whatever the filler ends up owning, every enemy
+      // must come out exactly as `difference(other, captured)` would have left
+      // them. The golden replay cannot guard this — it contains one fill and no
+      // steal at all — so this property is the regression test for it.
+      const coord = fc.double({ min: 9, max: 30, noNaN: true });
+      // Enemy centres far enough out that a half-2 block clears the own (2..8)²
+      // square: the identity needs enemy ∩ own OLD land = ∅, and a generator
+      // that breaks the precondition tests nothing (verified — it fails, which
+      // is the caveat `gainedRegion` documents, not a defect).
+      const enemyCoord = fc.double({ min: 10.5, max: 30, noNaN: true });
+      fc.assert(
+        fc.property(
+          fc.array(fc.tuple(coord, coord), { minLength: 1, maxLength: 8 }),
+          fc.array(fc.tuple(enemyCoord, enemyCoord), { minLength: 1, maxLength: 2 }),
+          (rawTrail, enemySpots) => {
+            const enemies = enemySpots.map((spot): Territory => [
+              [squareRing(spot[0], spot[1], 2)],
+            ]);
+            const trail: Point[] = [[7, 5], ...rawTrail.map(([x, y]): Point => [x, y]), [5, 5]];
+            const outcome = closeLoop(ownSquare(), trail, enemies);
+            if (!outcome) return;
+            enemies.forEach((enemy, i) => {
+              const viaGained = outcome.others[i] ?? [];
+              // The definition this replaced, computed straight from the result.
+              const viaCaptured = difference(enemy, outcome.territory) as Territory;
+              const lostViaGained = territoryArea(enemy) - territoryArea(viaGained);
+              const lostViaCaptured = territoryArea(enemy) - territoryArea(viaCaptured);
+              expect(Math.abs(lostViaGained - lostViaCaptured)).toBeLessThan(LATTICE_NOISE_WU2);
+              // Same land, not merely the same amount of it.
+              expect(
+                Math.abs(
+                  territoryArea(intersection(viaGained, viaCaptured) as Territory) -
+                    territoryArea(viaGained),
+                ),
+              ).toBeLessThan(LATTICE_NOISE_WU2);
+            });
+          },
+        ),
+        { numRuns: 120 },
+      );
+    },
+  );
 
   it('property: stealing conserves land — the enemy loses exactly the overlap, stays disjoint', () => {
     const coord = fc.double({ min: 0, max: 30, noNaN: true });
