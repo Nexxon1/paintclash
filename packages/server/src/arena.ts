@@ -75,7 +75,7 @@ export interface ArenaOptions {
   /**
    * Concurrent connections admitted before `connect` refuses (spec §8.3:
    * clean rejection, no queue). A private room passes its own player limit;
-   * the public arena gets the population ceiling `LIMITS.maxConnections`.
+   * the public arena gets the population limit `LIMITS.maxPlayers`.
    */
   maxPlayers?: number;
 }
@@ -150,6 +150,12 @@ interface Connection {
   garbage: number;
   /** Ticks since the last valid frame — dead-socket detection. */
   idleTicks: number;
+  /**
+   * Ticks since this socket was registered — the join deadline (spec §8.3).
+   * Deliberately NOT reset by traffic, unlike `idleTicks`: what it bounds is
+   * how long a slot may be held by someone who has not entered the game.
+   */
+  waitingTicks: number;
   /** Last leaderboard frame sent — resent only when it actually differs. */
   lastLeaderboard: Uint8Array | null;
 }
@@ -179,7 +185,7 @@ export class ArenaCore {
   constructor(seed: number, options: ArenaOptions = {}) {
     this.state = createSimState(seed, options.sizeWU);
     this.botTarget = options.botTarget ?? 0;
-    this.maxPlayers = options.maxPlayers ?? LIMITS.maxConnections;
+    this.maxPlayers = options.maxPlayers ?? LIMITS.maxPlayers;
   }
 
   get connectionCount(): number {
@@ -188,9 +194,10 @@ export class ArenaCore {
 
   /**
    * Register a fresh socket; the returned id is bound to it (spec §8.2).
-   * Returns null when the arena is full (spec §8.3: clean rejection, no
-   * queue) — also the guard that keeps the u8 snapshot player count and the
-   * u16 wire ids safely in range.
+   * Returns null when the arena is full (spec §8.3 point 4: clean rejection,
+   * no queue) — the Arena-Populationsgrenze, and with it the guard that keeps
+   * the u8 snapshot player count and the u16 wire ids safely in range
+   * (`LIMITS.maxConnections` is the ceiling the limit may never pass).
    *
    * A private room passes its own, lower limit (`ArenaOptions.maxPlayers`); the
    * room DO refuses a socket before it ever gets here, so this is the backstop
@@ -213,6 +220,7 @@ export class ArenaCore {
       resyncStreak: 0,
       garbage: 0,
       idleTicks: 0,
+      waitingTicks: 0,
       lastLeaderboard: null,
     });
     return id;
@@ -394,11 +402,11 @@ export class ArenaCore {
    * `bots = clamp(target − humans, 0, maxBots)`, and 0 humans → 0 bots so an
    * empty arena drains and the DO can hibernate at zero cost.
    *
-   * Humans always come first — bots are counted against the target, never
-   * against `LIMITS.maxConnections`, so a bot can neither occupy a connection
-   * slot nor stand between a human and one. A human who joins this tick already
-   * counts here, so a bot retires the moment they arrive rather than a tick
-   * later.
+   * Humans always come first (spec §8.3 point 4) — bots are counted against the
+   * target, never against the arena's population limit, so a bot can neither
+   * occupy a connection slot nor stand between a human and one. A human who
+   * joins this tick already counts here, so a bot retires the moment they arrive
+   * rather than a tick later.
    */
   private manageBots(): void {
     const humans = this.humanCount();
@@ -451,6 +459,16 @@ export class ArenaCore {
       connection.idleTicks += 1;
       if (connection.idleTicks > LIMITS.idleTimeoutTicks) {
         connection.socket.close(1001, 'idle timeout');
+        this.disconnect(id);
+        continue;
+      }
+      // Join deadline (spec §8.3 point 4): an upgraded socket holds a slot of
+      // the population limit, so it has to enter the game to keep it. Steering
+      // without joining does not count as entering — it resets `idleTicks`, and
+      // a squatter would otherwise renew its slot with one frame every 10 s.
+      connection.waitingTicks += 1;
+      if (!connection.joined && connection.waitingTicks > LIMITS.joinDeadlineTicks) {
+        connection.socket.close(1001, 'join timeout');
         this.disconnect(id);
         continue;
       }

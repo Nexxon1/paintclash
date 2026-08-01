@@ -4,9 +4,15 @@
  * card that paints this lives in `render/room-hud.ts`, and the rules the server
  * enforces live in `shared/room.ts`, which this module reads rather than
  * restates.
+ *
+ * `refusalMessage` outgrew the room with ticket 15 — it now also puts the
+ * arena's own refusals ("Arena voll") into words. It stays here because the
+ * refusals share one close-code table (`shared/close.ts`) and one place that
+ * turns a code into a sentence is what keeps them from drifting apart.
  */
 
 import {
+  ARENA_CLOSE,
   ROOM_CLOSE,
   defaultMapSizeWU,
   normalizeRoomCode,
@@ -63,12 +69,16 @@ export function roomCodeWish(search: string): string | null {
 }
 
 /**
- * Why a room closed the socket, in words — or null when the close was not a
- * room refusal (an ordinary disconnect, the arena's own codes). Each of the
- * three asks the player for something different, which is the whole reason the
- * codes are distinct (`ROOM_CLOSE`).
+ * Why the server refused this socket, in words — or null when the close was not a
+ * refusal but an ordinary disconnect. Every code asks the player for something
+ * different, which is the whole reason they are distinct (`shared/close.ts`): a
+ * wrong code wants a correction, a full arena wants patience, and 1006 would tell
+ * them none of it.
+ *
+ * A kick for broken protocol (1008) deliberately has no message of its own: no
+ * player can act on it, and the generic "reconnect" line is the honest answer.
  */
-export function roomCloseMessage(code: number): string | null {
+export function refusalMessage(code: number): string | null {
   switch (code) {
     case ROOM_CLOSE.unknown:
       return 'Diesen Raum gibt es nicht (mehr) — Code prüfen.';
@@ -76,6 +86,12 @@ export function roomCloseMessage(code: number): string | null {
       return 'Der Raum ist voll.';
     case ROOM_CLOSE.running:
       return 'Das Spiel läuft schon und lässt niemanden mehr nachrücken.';
+    case ARENA_CLOSE.full:
+      // Spec §8.3 point 4: no queue and no second arena, so the honest advice is
+      // to come back — not "waiting for a slot", which nothing here does.
+      return 'Die Arena ist voll — gleich nochmal versuchen.';
+    case ARENA_CLOSE.tooManyConnections:
+      return 'Zu viele Verbindungen von dieser Adresse — ein anderes Fenster schliessen.';
     default:
       return null;
   }

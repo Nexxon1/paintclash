@@ -1,4 +1,4 @@
-import { BALANCE, ROOM_CLOSE, defaultRoomConfig } from '@paintclash/shared';
+import { ARENA_CLOSE, BALANCE, ROOM_CLOSE, defaultRoomConfig } from '@paintclash/shared';
 import { describe, expect, it } from 'vitest';
 
 import { SELF_COLOR_CSS } from './colors.js';
@@ -6,7 +6,7 @@ import {
   HostTokens,
   lobbyView,
   mapSizeAfterLimitChange,
-  roomCloseMessage,
+  refusalMessage,
   roomCodeWish,
   roomFormConfig,
 } from './room.js';
@@ -49,21 +49,35 @@ describe('roomCodeWish (the code in a shared link)', () => {
   });
 });
 
-describe('roomCloseMessage', () => {
+describe('refusalMessage', () => {
   it('names each refusal a room can answer with', () => {
     // The player has to know what to do next, and these three call for three
     // different things: check the code, wait for a seat, wait for the round.
-    expect(roomCloseMessage(ROOM_CLOSE.unknown)).toMatch(/Raum/);
-    expect(roomCloseMessage(ROOM_CLOSE.full)).toMatch(/voll/);
-    expect(roomCloseMessage(ROOM_CLOSE.running)).toMatch(/läuft/);
-    expect(new Set([ROOM_CLOSE.unknown, ROOM_CLOSE.full, ROOM_CLOSE.running]).size).toBe(3);
+    expect(refusalMessage(ROOM_CLOSE.unknown)).toMatch(/Raum/);
+    expect(refusalMessage(ROOM_CLOSE.full)).toMatch(/voll/);
+    expect(refusalMessage(ROOM_CLOSE.running)).toMatch(/läuft/);
   });
 
-  it('has nothing to say about an ordinary close', () => {
-    // 1000/1006 and the arena's own codes are not room refusals — the generic
-    // "disconnected" line covers them.
-    for (const code of [1000, 1006, 1012, 1013]) {
-      expect(roomCloseMessage(code)).toBeNull();
+  it('names each refusal the arena itself can answer with (ticket 15)', () => {
+    // "Arena voll" is the population limit (spec §8.3 point 4) and asks for
+    // patience; the per-address cap asks the player to close a window. Without
+    // words, both arrive as the same blank 1006 that a crashed server produces.
+    expect(refusalMessage(ARENA_CLOSE.full)).toMatch(/Arena/);
+    expect(refusalMessage(ARENA_CLOSE.tooManyConnections)).toMatch(/Verbindungen/);
+  });
+
+  it('says something different for every refusal', () => {
+    const messages = [...Object.values(ROOM_CLOSE), ...Object.values(ARENA_CLOSE)].map((code) =>
+      refusalMessage(code),
+    );
+    expect(new Set(messages).size).toBe(messages.length);
+  });
+
+  it('has nothing to say about an ordinary close or a protocol kick', () => {
+    // 1000/1006/1012 are disconnects and 1008 is a client that broke the wire
+    // format — nothing a player can act on, so the generic line covers them.
+    for (const code of [1000, 1006, 1008, 1012, 1013]) {
+      expect(refusalMessage(code)).toBeNull();
     }
   });
 });

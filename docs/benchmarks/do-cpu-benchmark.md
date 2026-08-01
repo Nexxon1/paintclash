@@ -242,6 +242,26 @@ Das 25-ms-p95-Kriterium hält damit lokal, mit dem 4×-Faktor aber nur **knapp**
 Vertex-Zahl. **T16 misst das gegen echte Infrastruktur**; der offene Rest ist Ticket 23.
 Dauerhafte Messung: [`bench/fill-budget`](../../bench/fill-budget/).
 
+## Nachtrag (2026-07-31, Bau-Ticket 15: die Grenze ist gesetzt)
+
+Ticket 15 hat die Empfehlung dieses Dokuments übernommen und die Arena-Populationsgrenze
+**auf 16 gesetzt** (`LIMITS.maxPlayers`), mit **64 als Decke** (`LIMITS.maxConnections`), über
+die der Wert nie steigen darf — die u8-Spielerzahl im Snapshot ist die harte, nicht
+verhandelbare Hälfte dieser Zahl, das 25-ms-Kriterium die verhandelbare.
+
+Zwei Punkte für **Ticket 16**, das die Grenze gegen echte Infrastruktur messen soll:
+
+- Die Empfehlung „kann nach Playtests ohne CPU-Bedenken bis 64 angehoben werden" ist nach den
+  Nachträgen von T12/T22 **überholt**. Der Fill dominiert den Tick und skaliert mit der
+  Vertex-Zahl der Gebiete; schon 8 malende Entities liegen bei p95 ≈ 12,4 ms lokal (× 4 ≈ das
+  ganze Budget). 16 Menschen sind damit *nicht* automatisch tragbar, nur weil 64 einst
+  tragbar aussahen. T16 misst; T23/T24 halten die Fill-Kosten offen.
+- Der Pro-IP-Socket-Deckel (`maxConnectionsPerIp`, ebenfalls 16) **fällt derzeit mit der
+  Populationsgrenze zusammen**: eine Adresse kann die Arena also allein füllen. Das ist
+  bewusst so (spec §8.3 Punkt 3 ist ausdrücklich CGNAT-tolerant, „im Zweifel durchlassen"),
+  aber es heisst auch: der Pro-IP-Deckel beisst erst, wenn die Populationsgrenze *über* ihn
+  steigt. Wer die Grenze anhebt, sollte diesen Zusammenhang mitentscheiden.
+
 ## Anhang — vollständige Kurve (Lauf 1, ms/Tick)
 
 | Variante | N | ms/Tick avg | ms/Tick p95 | ms/Tick max | SegChecks/Tick | Fills/s |

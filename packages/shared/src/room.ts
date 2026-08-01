@@ -42,23 +42,8 @@ export const ROOM_CODE = Object.freeze({
 /** Everything a player may type between a code's characters and still mean it. */
 const CODE_SEPARATORS = /[\s\-_]/g;
 
-/**
- * WebSocket close codes a private room refuses with (ticket 14). Shared, because
- * the reason has to survive the trip: a browser only learns *why* a socket
- * closed from the code and reason it was closed with, and "Raum nicht gefunden"
- * and "Spiel läuft schon" are different things for the player to do next.
- *
- * 4000–4999 is the range reserved for applications, so none of these can ever
- * be confused with a transport-level close (1006 and friends).
- */
-export const ROOM_CLOSE = Object.freeze({
-  /** No room lives under this code — never created, or already closed. */
-  unknown: 4001,
-  /** The room is at its player limit (spec §2.6). */
-  full: 4002,
-  /** The game is in progress and the host switched late join off. */
-  running: 4003,
-});
+// The close codes a room refuses with live in `close.ts`, beside the arena's —
+// they share the 4000–4999 range, so one file owns all of them.
 
 /**
  * The host's settings for one private room (spec §2.6). Sanitized by

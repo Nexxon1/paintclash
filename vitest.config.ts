@@ -30,9 +30,14 @@ export default defineConfig({
         'packages/shared/src/limits.ts',
         'packages/shared/src/types.ts',
         'packages/shared/src/index.ts',
-        // Transport/DO shell without logic — exercised by the scenario tests
-        // (tests/scenario/), which run in workerd and don't count toward %
-        // (spec §9.3: hibernation/transport justifiably exempt).
+        // Transport/DO shell — exercised by the scenario tests (tests/scenario/),
+        // which run in workerd and don't count toward % (spec §9.3:
+        // hibernation/transport justifiably exempt). Every rule it applies lives
+        // elsewhere and IS measured: the game in `arena.ts`, the frame budget in
+        // `flood.ts`, the room policy in `shared/room.ts`. The one decision it
+        // makes itself is counting a live socket per address (ticket 15) —
+        // unavoidable here, because only the shell can see the sockets, and
+        // driven end-to-end by `tests/scenario/abuse.test.ts`.
         'packages/server/src/arena-do.ts',
         // Same: storage shell around `room-gate.ts`, whose rule IS unit-tested.
         // The shell itself is driven end-to-end by the rate-limit choreography

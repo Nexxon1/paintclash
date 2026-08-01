@@ -14,14 +14,16 @@ import {
   sanitizeRoomConfig,
 } from '@paintclash/shared';
 
+import type { GateBucket } from './room-gate.js';
+
 /** Bindings declared in `wrangler.jsonc`. */
 export interface Env {
   readonly ASSETS: { fetch(request: Request): Promise<Response> };
   readonly COMMIT_SHA: string;
   readonly ARENA: DurableObjectNamespace;
   /**
-   * The per-IP room-creation budget (spec §8.3 point 6) — one object at a fixed
-   * address, see `room-gate-do.ts`.
+   * The per-IP budgets (spec §8.3 point 3 + 6): room creations and socket opens
+   * — one object at a fixed address, see `room-gate-do.ts`.
    */
   readonly ROOM_GATE: DurableObjectNamespace;
   /**
@@ -169,6 +171,70 @@ export function freshHostToken(draw: (size: number) => Uint8Array = cryptoBytes)
 }
 
 /**
+ * Header the router stamps the caller's address into before it forwards a socket
+ * to an arena (spec §8.3 point 3, ticket 15).
+ *
+ * `CF-Connecting-IP` is the lever, and it is trustworthy in exactly one place:
+ * here, on a request that came through Cloudflare's edge, which overwrites it.
+ * The arena still has to know the address — a cap on concurrent sockets per
+ * address can only be counted where the live sockets are (`arena-do.ts`) — so the
+ * router restamps the value it vouches for, unconditionally: a client that sends
+ * this header itself has it replaced, which is the whole reason for `set` rather
+ * than `append` and for a header of our own rather than passing `CF-Connecting-IP`
+ * along as if the DO could tell the two apart.
+ */
+export const CLIENT_IP_HEADER = 'X-Paintclash-IP';
+
+/**
+ * The address everything without one counts as. Exported because all three
+ * places that read an address have to agree on it — the router here, the gate DO
+ * and the arena DO: were they to drift apart, an anonymous caller would hold a
+ * different bucket in each and quietly walk past every per-IP cap.
+ */
+export const UNKNOWN_ADDRESS = 'unknown';
+
+/**
+ * The caller's address, or `UNKNOWN_ADDRESS`. A request without the header is not
+ * a reason to skip a budget — everything anonymous then shares one bucket, which
+ * is the safe direction (the alternative makes a missing header the way around
+ * every per-IP cap).
+ */
+function callerIp(request: Request): string {
+  return request.headers.get('CF-Connecting-IP') ?? UNKNOWN_ADDRESS;
+}
+
+/**
+ * Charge one action to an address (spec §8.3 point 3 + 6). Returns the refusal to
+ * answer with, or `null` when the caller may proceed.
+ *
+ * **Fails open.** If the gate itself cannot answer — the object is being
+ * restarted, a deploy invalidated it, the platform is shedding load — the caller
+ * is let through rather than refused. Spec §8.1 puts availability first, and a
+ * rate limiter that turns its own bad minute into "nobody may play" is a worse
+ * outage than the abuse it exists to slow down.
+ *
+ * The cost is honest: a flood heavy enough to knock this one object over is also
+ * the flood that would then go uncounted. That trade is acceptable because the
+ * caps which protect the arena ITSELF — population, per-address sockets, the
+ * frame budget — live in the arena and do not depend on this object at all. This
+ * one only slows down how fast someone may knock.
+ */
+async function refusedByGate(env: Env, bucket: GateBucket, ip: string): Promise<Response | null> {
+  const gate = env.ROOM_GATE.get(env.ROOM_GATE.idFromName('rooms'));
+  let charged: Response;
+  try {
+    charged = await gate.fetch(`https://gate/charge?bucket=${bucket}&ip=${encodeURIComponent(ip)}`);
+  } catch {
+    return null;
+  }
+  if (charged.status !== 429) return null;
+  return new Response('too many requests from this address', {
+    status: 429,
+    headers: { 'Retry-After': charged.headers.get('Retry-After') ?? '60' },
+  });
+}
+
+/**
  * Route health → JSON, `POST /api/rooms` → a fresh private room, `/ws` → the
  * public Arena-DO or the room named by `?room=`, everything else → assets.
  */
@@ -181,23 +247,65 @@ export async function handleFetch(request: Request, env: Env): Promise<Response>
     if (request.method !== 'POST') return new Response(null, { status: 405 });
     return createRoom(request, env);
   }
-  if (url.pathname === '/ws') {
-    const wish = url.searchParams.get('room');
-    if (wish === null) {
-      // Phase 1: exactly one public arena at a fixed address (ADR-0004).
-      return env.ARENA.get(env.ARENA.idFromName(PUBLIC_ARENA)).fetch(request);
-    }
-    // One normalizer for routing and for validation (`shared/room.ts`): a second
-    // one would eventually address a room by a string the first would not.
-    const code = normalizeRoomCode(wish);
-    // Nothing legitimate gets here — the client checks the same rule before it
-    // opens a socket — so the plain 4xx is for hand-typed URLs, not a UX path.
-    if (code === null) return new Response('invalid room code', { status: 400 });
-    // The code IS the DO name (ADR-0004: `idFromName(code)`). The room reads its
-    // own canonical code out of storage, so nothing downstream re-normalizes.
-    return env.ARENA.get(env.ARENA.idFromName(code)).fetch(request);
-  }
+  if (url.pathname === '/ws') return openSocket(request, env, url);
   return env.ASSETS.fetch(request);
+}
+
+/**
+ * Route one socket to its arena: the public one, or the room its code names.
+ * Charged against the caller's join budget first (spec §8.3 point 3) — a refused
+ * open must not reach a Durable Object, which is the whole point of counting
+ * reconnect spam and code guessing in front of them.
+ */
+async function openSocket(request: Request, env: Env, url: URL): Promise<Response> {
+  const wish = url.searchParams.get('room');
+  // One normalizer for routing and for validation (`shared/room.ts`): a second
+  // one would eventually address a room by a string the first would not.
+  // Checked BEFORE the budget, so a hand-typed URL costs nothing at all; a code
+  // guesser sends well-formed codes and is charged like everyone else.
+  const code = wish === null ? null : normalizeRoomCode(wish);
+  // Nothing legitimate gets here — the client checks the same rule before it
+  // opens a socket — so the plain 4xx is for hand-typed URLs, not a UX path.
+  if (wish !== null && code === null) return new Response('invalid room code', { status: 400 });
+  const ip = callerIp(request);
+  const refused = await refusedByGate(env, 'join', ip);
+  // A WebSocket upgrade answered with a status is all a browser gets to see
+  // here: no socket is opened, so there is no close code to carry a reason. The
+  // audience for a refusal at this rate is a script, and a player who trips it
+  // behind a shared address sees the client's generic "reconnect" message.
+  if (refused) return refused;
+  // Phase 1: exactly one public arena at a fixed address (ADR-0004). For a
+  // private room the code IS the DO name (`idFromName(code)`); the room reads its
+  // own canonical code out of storage, so nothing downstream re-normalizes.
+  const arena = env.ARENA.get(env.ARENA.idFromName(code ?? PUBLIC_ARENA));
+  try {
+    return await arena.fetch(withCallerIp(request, ip));
+  } catch {
+    // A Durable Object whose code was replaced rejects the first request that
+    // reaches it and asks to be retried ("… changed, invalidating this Durable
+    // Object"); the object is rebuilt from the new code for the second. That
+    // happens on every deploy and on every reload under `wrangler dev`, and
+    // without this the first player to arrive after one would be told the game
+    // is broken. Safe by construction: an upgrade that threw established no
+    // socket, so a retry cannot connect anyone twice. One attempt only — a
+    // second failure is a real fault and belongs in the response. The stub is
+    // taken again rather than reused: the old one refers to the object that was
+    // just replaced.
+    return env.ARENA.get(env.ARENA.idFromName(code ?? PUBLIC_ARENA)).fetch(
+      withCallerIp(request, ip),
+    );
+  }
+}
+
+/**
+ * The same request with the caller's address stamped on (see
+ * `CLIENT_IP_HEADER`). Rebuilt rather than mutated because an incoming request's
+ * headers are immutable; the upgrade rides along in the copied headers.
+ */
+function withCallerIp(request: Request, ip: string): Request {
+  const headers = new Headers(request.headers);
+  headers.set(CLIENT_IP_HEADER, ip);
+  return new Request(request, { headers });
 }
 
 /**
@@ -207,19 +315,10 @@ export async function handleFetch(request: Request, env: Env): Promise<Response>
  * only writes its config there (ADR-0004: registry in the room's own SQLite).
  */
 async function createRoom(request: Request, env: Env): Promise<Response> {
-  // Spec §8.3 point 3: the per-IP hebel is `CF-Connecting-IP` at this Worker.
-  // A request without one is not a reason to skip the budget — everything
-  // anonymous then shares one bucket, which is the safe direction.
-  const ip = request.headers.get('CF-Connecting-IP') ?? 'unknown';
-  const gate = env.ROOM_GATE.get(env.ROOM_GATE.idFromName('rooms'));
-  const charged = await gate.fetch(`https://gate/create?ip=${encodeURIComponent(ip)}`);
-  if (charged.status === 429) {
-    const retryAfter = charged.headers.get('Retry-After') ?? '60';
-    return new Response('too many rooms from this address', {
-      status: 429,
-      headers: { 'Retry-After': retryAfter },
-    });
-  }
+  // Spec §8.3 point 6: every room is a DO plus a SQLite write, charged to the
+  // address `CF-Connecting-IP` names.
+  const refused = await refusedByGate(env, 'create', callerIp(request));
+  if (refused) return refused;
   // The host may pre-set the room; anything unusable falls back to the spec's
   // defaults, and the lobby is where the settings are really made anyway.
   const config = sanitizeRoomConfig(await readJson(request));

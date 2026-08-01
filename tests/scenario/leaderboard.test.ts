@@ -18,6 +18,18 @@ import { describe, expect, it } from 'vitest';
  * client was told about, not merely with itself.
  */
 
+/**
+ * A fresh caller address per socket (README rule 6, ticket 15). Socket opens are
+ * rate-limited per address and one address may hold only so many at once
+ * (spec §8.3 point 3) — sharing one across a suite that opens dozens would make
+ * a choreography fail for a reason that has nothing to do with what it tests.
+ */
+let nextCaller = 0;
+function freshCaller(): string {
+  nextCaller += 1;
+  return `192.0.2.${String(nextCaller)}`;
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -38,7 +50,7 @@ async function until<T>(
 
 async function connect(name: string): Promise<{ client: SimClient; ws: WebSocket }> {
   const response = await SELF.fetch('https://arena/ws', {
-    headers: { Upgrade: 'websocket' },
+    headers: { Upgrade: 'websocket', 'CF-Connecting-IP': freshCaller() },
   });
   const ws = response.webSocket;
   if (!ws) throw new Error('server did not upgrade the connection');

@@ -5,6 +5,7 @@ import {
   arenaSeedOverride,
   arenaSizeOverride,
   botTargetOverride,
+  CLIENT_IP_HEADER,
   defaultBotTarget,
   freshHostToken,
   freshRoomCode,
@@ -25,8 +26,8 @@ interface FakeEnv extends Env {
   forwarded: { name: string; request: Request }[];
   /** `POST /room` calls, i.e. room creations that reached a DO. */
   created: FakeRoom[];
-  /** Addresses the gate was asked about. */
-  charged: string[];
+  /** Addresses the gate was asked about, with the bucket they were charged in. */
+  charged: { bucket: string; ip: string }[];
 }
 
 interface FakeOptions {
@@ -34,12 +35,16 @@ interface FakeOptions {
   createStatus?: number[];
   /** Seconds the gate refuses with; undefined = it allows. */
   refuseFor?: number;
+  /** The gate cannot answer at all (restart, deploy, shed load). */
+  gateBroken?: boolean;
+  /** Arena-DO fetches that throw before one succeeds (a replaced DO class). */
+  arenaThrows?: number;
 }
 
 function fakeEnv(options: FakeOptions = {}, overrides: Partial<Env> = {}): FakeEnv {
   const forwarded: { name: string; request: Request }[] = [];
   const created: FakeRoom[] = [];
-  const charged: string[] = [];
+  const charged: { bucket: string; ip: string }[] = [];
   const arena = {
     idFromName: (name: string) => name,
     get: (name: unknown) => ({
@@ -53,6 +58,9 @@ function fakeEnv(options: FakeOptions = {}, overrides: Partial<Env> = {}): FakeE
         }
         // Node cannot build a real 101 Response — the marker body suffices.
         forwarded.push({ name: String(name), request });
+        if (forwarded.length <= (options.arenaThrows ?? 0)) {
+          return Promise.reject(new Error('changed, invalidating this Durable Object'));
+        }
         return Promise.resolve(new Response('upgraded'));
       },
     }),
@@ -61,7 +69,9 @@ function fakeEnv(options: FakeOptions = {}, overrides: Partial<Env> = {}): FakeE
     idFromName: (name: string) => name,
     get: () => ({
       fetch: (url: string) => {
-        charged.push(new URL(url).searchParams.get('ip') ?? '');
+        const params = new URL(url).searchParams;
+        charged.push({ bucket: params.get('bucket') ?? '', ip: params.get('ip') ?? '' });
+        if (options.gateBroken === true) return Promise.reject(new Error('gate unavailable'));
         return Promise.resolve(
           options.refuseFor === undefined
             ? new Response(null, { status: 200 })
@@ -85,8 +95,8 @@ function fakeEnv(options: FakeOptions = {}, overrides: Partial<Env> = {}): FakeE
   };
 }
 
-function upgrade(url: string): Request {
-  return new Request(url, { headers: { Upgrade: 'websocket' } });
+function upgrade(url: string, ip = '198.51.100.4'): Request {
+  return new Request(url, { headers: { Upgrade: 'websocket', 'CF-Connecting-IP': ip } });
 }
 
 function createRequest(body?: unknown): Request {
@@ -109,6 +119,22 @@ describe('router worker (ADR-0004: stateless, routes WS to the arena DO)', () =>
     const response = await handleFetch(upgrade('https://x/ws'), env);
     expect(await response.text()).toBe('upgraded');
     expect(env.forwarded.map((entry) => entry.name)).toEqual(['public']);
+  });
+
+  it('retries once when the arena DO was replaced under it', async () => {
+    // A deploy (or a reload under `wrangler dev`) makes the object reject the
+    // first request that reaches it and ask to be retried. Without this, the
+    // first player to arrive after every deploy is told the game is broken.
+    const env = fakeEnv({ arenaThrows: 1 });
+    const response = await handleFetch(upgrade('https://x/ws'), env);
+    expect(await response.text()).toBe('upgraded');
+    expect(env.forwarded).toHaveLength(2);
+  });
+
+  it('reports a second failure instead of retrying forever', async () => {
+    const env = fakeEnv({ arenaThrows: 2 });
+    await expect(handleFetch(upgrade('https://x/ws'), env)).rejects.toThrow(/invalidating/);
+    expect(env.forwarded).toHaveLength(2);
   });
 
   it('serves everything else from static assets', async () => {
@@ -140,6 +166,81 @@ describe('private-room routing (ticket 14, ADR-0004: 1 DO per room code)', () =>
     const response = await handleFetch(upgrade('https://x/ws?room=nope'), env);
     expect(response.status).toBe(400);
     expect(env.forwarded).toHaveLength(0);
+    // Not even the gate: a URL that cannot name a room costs a hand-typed
+    // address nothing, while a code GUESSER sends well-formed codes and pays
+    // (see the join budget below).
+    expect(env.charged).toHaveLength(0);
+  });
+});
+
+describe('join budget per address (spec §8.3 point 3, ticket 15)', () => {
+  it('charges the caller address before a socket reaches an arena', async () => {
+    const env = fakeEnv();
+    await handleFetch(upgrade('https://x/ws', '203.0.113.9'), env);
+    expect(env.charged).toEqual([{ bucket: 'join', ip: '203.0.113.9' }]);
+    expect(env.forwarded).toHaveLength(1);
+  });
+
+  it('charges a room code the same way — brute force is join traffic', async () => {
+    const env = fakeEnv();
+    await handleFetch(upgrade('https://x/ws?room=PQ7K3M', '203.0.113.9'), env);
+    expect(env.charged).toEqual([{ bucket: 'join', ip: '203.0.113.9' }]);
+  });
+
+  it('refuses over the budget without waking a Durable Object', async () => {
+    const env = fakeEnv({ refuseFor: 30 });
+    const response = await handleFetch(upgrade('https://x/ws'), env);
+    expect(response.status).toBe(429);
+    expect(response.headers.get('Retry-After')).toBe('30');
+    // The whole point of counting in front of the arena: a refused open does
+    // not wake it, so reconnect spam cannot cost the arena a thing.
+    expect(env.forwarded).toHaveLength(0);
+  });
+
+  it('stamps the address it vouches for onto the forwarded socket', async () => {
+    // The arena counts concurrent sockets per address, and it can only trust a
+    // value this Worker wrote: `CF-Connecting-IP` is only meaningful at the edge.
+    const env = fakeEnv();
+    await handleFetch(upgrade('https://x/ws', '203.0.113.9'), env);
+    expect(env.forwarded[0]?.request.headers.get(CLIENT_IP_HEADER)).toBe('203.0.113.9');
+    // The upgrade must survive the restamping, or nothing would connect at all.
+    expect(env.forwarded[0]?.request.headers.get('Upgrade')).toBe('websocket');
+  });
+
+  it('overwrites an address the client made up', async () => {
+    const env = fakeEnv();
+    const forged = new Request('https://x/ws', {
+      headers: {
+        Upgrade: 'websocket',
+        'CF-Connecting-IP': '203.0.113.9',
+        [CLIENT_IP_HEADER]: '10.9.9.9',
+      },
+    });
+    await handleFetch(forged, env);
+    // `set`, not `append`: a client that sends the header itself would otherwise
+    // hand itself a fresh address per socket and walk past every per-IP cap.
+    expect(env.forwarded[0]?.request.headers.get(CLIENT_IP_HEADER)).toBe('203.0.113.9');
+  });
+
+  it('lets everyone in when the gate itself is broken', async () => {
+    // Spec §8.1 puts availability first: a rate limiter that turns its own bad
+    // minute into "nobody may play" is a worse outage than the abuse it slows
+    // down. The caps that protect the arena itself do not depend on this object.
+    const env = fakeEnv({ gateBroken: true });
+    const response = await handleFetch(upgrade('https://x/ws'), env);
+    expect(response.status).toBe(200);
+    expect(env.forwarded).toHaveLength(1);
+    // Same for a room creation — refusing one because the counter is down would
+    // strand a group whose room is the only way they can play together.
+    const created = await handleFetch(createRequest(), env);
+    expect(created.status).toBe(200);
+  });
+
+  it('shares one bucket for everything without an address', async () => {
+    const env = fakeEnv();
+    await handleFetch(new Request('https://x/ws', { headers: { Upgrade: 'websocket' } }), env);
+    expect(env.charged).toEqual([{ bucket: 'join', ip: 'unknown' }]);
+    expect(env.forwarded[0]?.request.headers.get(CLIENT_IP_HEADER)).toBe('unknown');
   });
 });
 
@@ -149,7 +250,7 @@ describe('room creation (spec §2.6/§8.3 point 6)', () => {
     const response = await handleFetch(createRequest(), env);
     expect(response.status).toBe(200);
     const body: { code: string; hostToken: string; url: string } = await response.json();
-    expect(env.charged).toEqual(['203.0.113.7']);
+    expect(env.charged).toEqual([{ bucket: 'create', ip: '203.0.113.7' }]);
     // The code is a real one, the DO it was written to is named by it, and the
     // link is the code on the origin the request came in on.
     expect(normalizeRoomCode(body.code)).toBe(body.code);
@@ -228,7 +329,7 @@ describe('room creation (spec §2.6/§8.3 point 6)', () => {
     // budget would make the header the way around it.
     const env = fakeEnv();
     await handleFetch(new Request('https://x/api/rooms', { method: 'POST', body: '{}' }), env);
-    expect(env.charged).toEqual(['unknown']);
+    expect(env.charged).toEqual([{ bucket: 'create', ip: 'unknown' }]);
   });
 
   it('answers anything but POST on the rooms endpoint with 405', async () => {

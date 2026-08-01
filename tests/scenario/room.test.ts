@@ -22,10 +22,11 @@ import { describe, expect, it } from 'vitest';
  *
  * README rules apply. Two are worth spelling out here:
  *
- * - **Every creation comes from its own address.** The endpoint is rate-limited
- *   per IP (spec §8.3 point 6) and this file creates far more rooms than one
- *   address may — sharing one would make the sixth test fail for a reason that
- *   has nothing to do with what it tests.
+ * - **Every creation and every socket comes from its own address.** Both are
+ *   rate-limited per IP (spec §8.3 point 6 and, since ticket 15, point 3) and
+ *   this file creates and joins far more rooms than one address may — sharing one
+ *   would make the sixth test fail for a reason that has nothing to do with what
+ *   it tests.
  * - **The grace period is fired, not waited out.** It is 90 s of wall clock; the
  *   test drives the room's alarm directly, so it tests the rule instead of the
  *   runner's patience.
@@ -61,11 +62,11 @@ function roomStub(code: string): DurableObjectStub {
   return bindings.ARENA.get(bindings.ARENA.idFromName(code));
 }
 
-/** A fresh caller address per creation — see the header note on the rate limit. */
+/** A fresh caller address per creation and per socket — see the header note. */
 let nextCaller = 0;
 function freshCaller(): string {
   nextCaller += 1;
-  return `10.0.0.${String(nextCaller)}`;
+  return `10.0.${String(Math.floor(nextCaller / 250))}.${String(nextCaller % 250)}`;
 }
 
 interface Created {
@@ -104,7 +105,10 @@ async function joinRoom(code: string, name: string, hostToken?: string): Promise
   const search = new URLSearchParams({ room: code });
   if (hostToken !== undefined) search.set('host', hostToken);
   const response = await SELF.fetch(`https://arena/ws?${search.toString()}`, {
-    headers: { Upgrade: 'websocket' },
+    // Its own address, like every creation: socket opens are rate-limited per
+    // address too (spec §8.3 point 3, ticket 15), and this file opens far more
+    // sockets than one address may in a minute.
+    headers: { Upgrade: 'websocket', 'CF-Connecting-IP': freshCaller() },
   });
   const ws = response.webSocket;
   if (!ws) throw new Error('server did not upgrade the connection');

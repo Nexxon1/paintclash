@@ -18,7 +18,7 @@ import { LocalRecords } from './game/records.js';
 import {
   HostTokens,
   lobbyView,
-  roomCloseMessage,
+  refusalMessage,
   roomCodeWish,
   type RoomEntry,
 } from './game/room.js';
@@ -229,7 +229,7 @@ function start(name: string): void {
     // "already running" ask the player for three different things, and 1006
     // would tell them none of it.
     status.textContent =
-      roomCloseMessage(event.code) ?? 'Verbindung getrennt — erneut auf Spielen klicken.';
+      refusalMessage(event.code) ?? 'Verbindung getrennt — erneut auf Spielen klicken.';
     // A life that ends by disconnect never gets a `final` frame, but it was
     // still played: commit it, or a long survival would only ever count if it
     // ended in a death (spec §2.5 lists max-% and survival as records).

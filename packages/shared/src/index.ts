@@ -13,6 +13,7 @@ export {
   TICK_HZ,
   TURN_RADIUS_WU,
 } from './balance.js';
+export { ARENA_CLOSE, ROOM_CLOSE } from './close.js';
 export { LIMITS } from './limits.js';
 export {
   NICKNAME,
@@ -22,7 +23,6 @@ export {
   type NicknameVerdict,
 } from './nickname.js';
 export {
-  ROOM_CLOSE,
   ROOM_CODE,
   defaultMapSizeWU,
   defaultRoomConfig,

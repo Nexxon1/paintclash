@@ -438,13 +438,61 @@ describe('intent-only validation at the protocol boundary (spec §8.2/8.3)', () 
     expect(socket.sent).toHaveLength(0);
   });
 
-  it('rejects connections beyond the hard population cap (spec §8.3, u8 wire bound)', () => {
+  it('rejects connections beyond the arena population limit (spec §8.3 point 4)', () => {
     const arena = new ArenaCore(1);
-    for (let i = 0; i < LIMITS.maxConnections; i++) {
+    for (let i = 0; i < LIMITS.maxPlayers; i++) {
       expect(arena.connect(new FakeSocket())).not.toBeNull();
     }
+    // Clean rejection, no queue: the DO shell turns this null into a close with
+    // `ARENA_CLOSE.full`, and nothing is kept waiting.
     expect(arena.connect(new FakeSocket())).toBeNull();
-    expect(arena.connectionCount).toBe(LIMITS.maxConnections);
+    expect(arena.connectionCount).toBe(LIMITS.maxPlayers);
+  });
+
+  it('keeps the population limit under the CPU and wire ceiling', () => {
+    // `maxPlayers` is the tunable one (ticket 02 recommends 16 on gameplay
+    // grounds, and playtests may raise it). `maxConnections` is not a taste
+    // question: past it the snapshot's u8 player count overflows and every
+    // client's decoder breaks at once.
+    expect(LIMITS.maxPlayers).toBeLessThanOrEqual(LIMITS.maxConnections);
+  });
+
+  it('frees the slot of a socket that never announces itself (spec §8.3 point 4)', () => {
+    // Without a deadline the population limit would be squattable: one address
+    // may hold `maxConnectionsPerIp` sockets, which is the arena's whole limit,
+    // and a socket that upgrades but never joins would otherwise keep its slot
+    // until the 10 s idle sweep — renewable forever, for free.
+    const arena = new ArenaCore(1);
+    const socket = new FakeSocket();
+    const id = arena.connect(socket);
+    if (id === null) throw new Error('arena unexpectedly full');
+    for (let tick = 0; tick < LIMITS.joinDeadlineTicks; tick++) arena.tick(TICK_DT_SEC);
+    expect(socket.closed, 'closed before its deadline').toBeNull();
+    arena.tick(TICK_DT_SEC);
+    expect(socket.closed?.reason).toBe('join timeout');
+    expect(arena.connectionCount).toBe(0);
+  });
+
+  it('cannot be kept alive by a client that steers without joining', () => {
+    // The idle sweep resets on any valid frame, so inputs alone would hold a
+    // slot indefinitely. The join deadline runs from the connect, not from the
+    // last frame — that is the difference between the two.
+    const arena = new ArenaCore(1);
+    const socket = new FakeSocket();
+    const id = arena.connect(socket);
+    if (id === null) throw new Error('arena unexpectedly full');
+    for (let tick = 0; tick <= LIMITS.joinDeadlineTicks; tick++) {
+      arena.handleFrame(id, encodeInput([{ seq: tick + 1, turn: 1 }], 0));
+      arena.tick(TICK_DT_SEC);
+    }
+    expect(socket.closed?.reason).toBe('join timeout');
+  });
+
+  it('leaves a joined player alone past the join deadline', () => {
+    const arena = new ArenaCore(1);
+    const { socket } = joinedPlayer(arena);
+    for (let tick = 0; tick <= LIMITS.joinDeadlineTicks + 1; tick++) arena.tick(TICK_DT_SEC);
+    expect(socket.closed).toBeNull();
   });
 
   it("holds a private room to the host's player limit (ticket 14, spec §2.6)", () => {

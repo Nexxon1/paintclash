@@ -47,6 +47,7 @@ import {
   type LobbyMember,
 } from '@paintclash/protocol';
 import {
+  ARENA_CLOSE,
   BALANCE,
   LIMITS,
   ROOM_CLOSE,
@@ -57,7 +58,10 @@ import {
 } from '@paintclash/shared';
 
 import { ArenaCore, displayName } from './arena.js';
+import { chargeFrame, type FrameWindow } from './flood.js';
 import {
+  CLIENT_IP_HEADER,
+  UNKNOWN_ADDRESS,
   arenaSeedOverride,
   arenaSizeOverride,
   botTargetOverride,
@@ -101,6 +105,13 @@ interface LobbySocket {
   host: boolean;
   /** Consecutive malformed frames on this socket (spec §8.3). */
   garbage: number;
+  /** The caller address the router vouched for — see `addressIsFull`. */
+  ip: string;
+}
+
+/** Address of a socket that has no lobby identity (the public arena's). */
+interface PlainSocket {
+  ip: string;
 }
 
 const ROOM_KEY = 'room';
@@ -118,6 +129,14 @@ export class ArenaDO extends DurableObject<Env> {
   private ticking = false;
   /** The room record; `undefined` = not read from storage yet, `null` = public. */
   private room: StoredRoom | null | undefined;
+  /**
+   * Frame budget per socket (spec §8.3 point 2, `flood.ts`). In memory and not
+   * in the attachment, deliberately: a hibernating room receives no frames, so
+   * the only thing a revived socket loses is a window it was not filling. Paying
+   * for a serialize on every inbound frame — the one path a flood makes hot —
+   * would be the protection creating the cost it exists to prevent.
+   */
+  private readonly frameWindows = new Map<WebSocket, FrameWindow>();
 
   override async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
@@ -127,7 +146,10 @@ export class ArenaDO extends DurableObject<Env> {
     if (request.headers.get('Upgrade')?.toLowerCase() !== 'websocket') {
       return new Response('expected a WebSocket upgrade', { status: 426 });
     }
-    return url.searchParams.has('room') ? this.acceptRoom(url) : this.acceptPublic();
+    // Stamped by the router, which is the only place `CF-Connecting-IP` means
+    // anything (spec §8.3 point 3, see `CLIENT_IP_HEADER`).
+    const ip = request.headers.get(CLIENT_IP_HEADER) ?? UNKNOWN_ADDRESS;
+    return url.searchParams.has('room') ? this.acceptRoom(url, ip) : this.acceptPublic(ip);
   }
 
   /**
@@ -168,8 +190,13 @@ export class ArenaDO extends DurableObject<Env> {
   }
 
   /** The one public arena (ADR-0004): joins straight into the running world. */
-  private acceptPublic(): Response {
+  private acceptPublic(ip: string): Response {
     const { client, server } = this.upgrade();
+    if (this.addressIsFull(server, ip)) {
+      server.close(ARENA_CLOSE.tooManyConnections, 'too many connections');
+      return this.upgraded(client);
+    }
+    this.attachAddress(server, ip);
     const arenaSizeWU = arenaSizeOverride(this.env.ARENA_SIZE_WU) ?? BALANCE.arena.sizeWU;
     const arena = (this.arena ??= new ArenaCore(this.freshSeed(), {
       sizeWU: arenaSizeWU,
@@ -182,7 +209,10 @@ export class ArenaDO extends DurableObject<Env> {
     }));
     const playerId = arena.connect(this.socketFor(server));
     if (playerId === null) {
-      server.close(1013, 'arena full'); // spec §8.3: clean rejection, no queue
+      // Spec §8.3 point 4: the Arena-Populationsgrenze is reached. A clean
+      // refusal with a reason the client can put on screen — no queue, no
+      // redirect to a second arena (scaling is out of scope).
+      server.close(ARENA_CLOSE.full, 'arena full');
       return this.upgraded(client);
     }
     this.socketIds.set(server, playerId);
@@ -194,9 +224,13 @@ export class ArenaDO extends DurableObject<Env> {
    * A private room (spec §2.6): the socket lands in the lobby, or — if the host
    * already started and left the door open — straight in the game.
    */
-  private async acceptRoom(url: URL): Promise<Response> {
+  private async acceptRoom(url: URL, ip: string): Promise<Response> {
     const room = await this.loadRoom();
     const { client, server } = this.upgrade();
+    if (this.addressIsFull(server, ip)) {
+      server.close(ARENA_CLOSE.tooManyConnections, 'too many connections');
+      return this.upgraded(client);
+    }
     if (!room) {
       // No record under this code: never created, or closed after its grace
       // period. Either way the code is not a room, and saying so is the whole
@@ -217,8 +251,6 @@ export class ArenaDO extends DurableObject<Env> {
       server.close(ROOM_CLOSE.running, 'game already running');
       return this.upgraded(client);
     }
-    // Occupied again: the grace timer is not wanted until it empties.
-    await this.ctx.storage.deleteAlarm();
     const claimsHost = room.hostToken !== '' && url.searchParams.get('host') === room.hostToken;
     // The token wins outright (it is the creator coming back, possibly after a
     // reload). Failing that, a room whose host has left hands the role to whoever
@@ -226,11 +258,64 @@ export class ArenaDO extends DurableObject<Env> {
     // nobody can ever start.
     if (claimsHost) this.demoteHosts();
     const host = claimsHost || !peers.some((peer) => this.stateOf(peer)?.host);
-    this.attach(server, { id: this.freshLobbyId(peers), name: '', host, garbage: 0 });
+    // Attached before the first await of this path, deliberately: everything
+    // above decided against a socket list that must not change underneath it.
+    // Two upgrades from one address that both suspended before writing their
+    // address would both have counted zero and both been admitted.
+    this.attach(server, { id: this.freshLobbyId(peers), name: '', host, garbage: 0, ip });
+    // Occupied again: the grace timer is not wanted until it empties.
+    await this.ctx.storage.deleteAlarm();
     return this.upgraded(client);
   }
 
+  /**
+   * Does this address already hold as many sockets in this arena as it may
+   * (spec §8.3 point 3)? Counted from the live sockets rather than from a
+   * bookkeeping counter, because a socket IS the thing being limited: nothing
+   * can leak, nothing has to be released, and an eviction cannot leave an
+   * address locked out of its own arena.
+   *
+   * `fresh` is the socket asking, which `getWebSockets()` already lists.
+   */
+  private addressIsFull(fresh: WebSocket, ip: string): boolean {
+    let held = 0;
+    for (const peer of this.liveSockets(fresh)) {
+      if (this.addressOf(peer) === ip) held += 1;
+    }
+    return held >= LIMITS.maxConnectionsPerIp;
+  }
+
+  /** The address a socket counts against; `unknown` if it carries none. */
+  private addressOf(ws: WebSocket): string {
+    const raw: unknown = ws.deserializeAttachment();
+    if (typeof raw !== 'object' || raw === null) return UNKNOWN_ADDRESS;
+    const ip = (raw as Partial<PlainSocket>).ip;
+    return typeof ip === 'string' ? ip : UNKNOWN_ADDRESS;
+  }
+
+  /**
+   * The attachment of a public-arena socket: its address and nothing else. It
+   * deliberately carries no lobby identity, which is what `stateOf` reads — a
+   * public socket has none, and a room socket's identity is written over this by
+   * `attach` (`LobbySocket` carries the address along).
+   */
+  private attachAddress(ws: WebSocket, ip: string): void {
+    const state: PlainSocket = { ip };
+    ws.serializeAttachment(state);
+  }
+
   override webSocketMessage(ws: WebSocket, message: ArrayBuffer | string): void | Promise<void> {
+    // Frame budget FIRST (spec §8.3 point 2, `flood.ts`): a dropped frame must
+    // cost nothing beyond this counter — no decode, no player lookup, no
+    // allocation. That is the entire protection against a flood on a
+    // single-threaded arena.
+    const charged = chargeFrame(this.frameWindows.get(ws), Date.now());
+    this.frameWindows.set(ws, charged.window);
+    if (charged.verdict === 'kill') {
+      ws.close(1008, 'input flood');
+      return this.drop(ws);
+    }
+    if (charged.verdict === 'drop') return;
     // Text frames are protocol violations — run them through the same
     // malformed-frame accounting as binary garbage (spec §8.3).
     const bytes = typeof message === 'string' ? new Uint8Array([0xff]) : new Uint8Array(message);
@@ -402,6 +487,7 @@ export class ArenaDO extends DurableObject<Env> {
   private async drop(ws: WebSocket): Promise<void> {
     const playerId = this.socketIds.get(ws);
     this.socketIds.delete(ws);
+    this.frameWindows.delete(ws);
     if (playerId !== undefined) this.arena?.disconnect(playerId);
     const room = await this.loadRoom();
     if (!room) return; // the public arena has no lifecycle to manage
@@ -492,6 +578,9 @@ export class ArenaDO extends DurableObject<Env> {
       name: state.name,
       host: state.host === true,
       garbage: state.garbage ?? 0,
+      // Read back and written along by `attach`, so re-attaching a lobby
+      // identity never drops the address the per-IP cap counts.
+      ip: state.ip ?? UNKNOWN_ADDRESS,
     };
   }
 
