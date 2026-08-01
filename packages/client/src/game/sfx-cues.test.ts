@@ -258,7 +258,7 @@ describe('rank cue (spec §4.4: Leaderboard-Überholen)', () => {
 describe('the eat loop (spec §4.4: only over FOREIGN ground)', () => {
   const ownLand = { playerId: 1, territory: block(0, 0), rev: 1 };
   const enemyLand = { playerId: 2, territory: block(30, 0), rev: 1 };
-  const trail = (points: Point[]) => [{ playerId: 1, points }];
+  const trail = (points: Point[], visible = true) => [{ playerId: 1, points, visible }];
   const eating = trail([
     [10, 0],
     [30, 0],
@@ -269,6 +269,25 @@ describe('the eat loop (spec §4.4: only over FOREIGN ground)', () => {
     const state = alive(30, 0, {
       territories: [ownLand, enemyLand],
       trails: eating,
+    });
+    idle(cues, 1, state);
+    expect(cues.sample(state, 16).eating).toBe(true);
+  });
+
+  it('eats through enemy land even while the ribbon is too slight to draw', () => {
+    // Ticket 20 gates the own ribbon on DRAWING, not on existence: crossing
+    // straight from your own land into an enemy's, the trail is real and
+    // eating from the first tick, whatever the scene has decided to show.
+    const cues = new SfxCues();
+    const state = alive(30, 0, {
+      territories: [ownLand, enemyLand],
+      trails: trail(
+        [
+          [10, 0],
+          [30, 0],
+        ],
+        false,
+      ),
     });
     idle(cues, 1, state);
     expect(cues.sample(state, 16).eating).toBe(true);
