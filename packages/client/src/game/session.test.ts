@@ -14,9 +14,9 @@ import {
 } from '@paintclash/protocol';
 import { describe, expect, it } from 'vitest';
 
-import { distanceToTerritory, lifeScore, pointInTerritory } from '@paintclash/sim-core';
+import { lifeScore } from '@paintclash/sim-core';
 
-import { ClientSession, INPUT_FLUSH_TICKS, type RenderState } from './session.js';
+import { ClientSession, INPUT_FLUSH_TICKS } from './session.js';
 
 function harness(): { session: ClientSession; sent: Uint8Array[] } {
   const sent: Uint8Array[] = [];
@@ -40,35 +40,6 @@ function blockAt(cx: number, cy: number): Territory {
       ],
     ],
   ];
-}
-
-/** Own land in two 6×6 pieces with a 2 WU gap between them (x ∈ (100, 102)). */
-function gappedLand(): Territory {
-  return [...blockAt(97, 100), ...blockAt(105, 100)];
-}
-
-/**
- * Drive `ticks` sim ticks and report the frame drawn last: how far the head
- * ended up from `land`, and what the own ribbon's drawing verdict was
- * (undefined = no own trail at all). The two ticket-20 reveal rules are read
- * through exactly this pair.
- */
-function driveOutside(
-  session: ClientSession,
-  ticks: number,
-  land: Territory,
-): { depth: number; visible: boolean | undefined } {
-  let state: RenderState | null = null;
-  for (let i = 0; i < ticks; i++) {
-    session.simTick(0);
-    state = session.renderSample(1);
-  }
-  const self = state?.self;
-  if (!state || !self) throw new Error('no predicted pose');
-  return {
-    depth: distanceToTerritory(self.x, self.y, land),
-    visible: state.trails.find((t) => t.playerId === 1)?.visible,
-  };
 }
 
 function joined(session: ClientSession): void {
@@ -471,87 +442,6 @@ describe('snapshots feed reconciliation + interpolation', () => {
     // All synced points render immediately, head appended.
     expect(trail.points.length).toBeGreaterThanOrEqual(4);
     expect(trail.points[0]).toEqual([53, 100]);
-  });
-
-  it('circling at the own edge never draws the graze it really carves (ticket 20)', () => {
-    const { session } = harness();
-    joined(session); // block [97,103]², head at its centre, heading +x
-    const own = blockAt(100, 100);
-    // Full lock: the tightest circle a head can fly has radius
-    // TURN_RADIUS_WU = 1.61 WU, so from the block's centre it reaches
-    // 2 × 1.61 = 3.22 WU against the block's 3.0 WU half-width. The head is
-    // therefore REALLY outside for a few ticks per revolution — a fifth of a
-    // ribbon width deep. One revolution is ~22 ticks; the server's fill
-    // frame would clear the trail at each loop close, so 20 ticks is exactly
-    // the one graze this test is about.
-    let grazedFrames = 0;
-    let ribbonFrames = 0;
-    let deepest = 0;
-    for (let i = 0; i < 20; i++) {
-      session.simTick(1);
-      const state = session.renderSample(1);
-      const self = state.self;
-      if (!self) throw new Error('no predicted pose');
-      deepest = Math.max(deepest, distanceToTerritory(self.x, self.y, own));
-      if (!pointInTerritory(self.x, self.y, own)) grazedFrames += 1;
-      const ribbon = state.trails.find((t) => t.playerId === 1);
-      if (ribbon) {
-        ribbonFrames += 1;
-        expect(ribbon.visible).toBe(false);
-      }
-    }
-    // Premises, so a green run can never mean "nothing was there to hide":
-    // the head really left its land, a trail really got carved from it, and
-    // the excursion really stayed the shallow graze the ticket describes.
-    expect(grazedFrames).toBeGreaterThan(0);
-    expect(ribbonFrames).toBeGreaterThan(0);
-    expect(deepest).toBeGreaterThan(0.15);
-    expect(deepest).toBeLessThan(BALANCE.trail.collisionRadiusWU);
-  });
-
-  it('draws a short trail at once when it crosses a gap in the own land (ticket 20)', () => {
-    const { session } = harness();
-    session.receive(encodeWelcome(1, BALANCE.arena.sizeWU));
-    // Own land in two pieces with a 2 WU gap at x ∈ (100, 102) — the case
-    // that must NOT be swallowed: driving across it claims real ground, so
-    // the ribbon belongs on screen right away, however short it still is.
-    session.receive(encodeTerritory(1, 'sync', gappedLand()));
-    session.receive(encodeSnapshot(1, 0, [selfPlayer({ x: 99.2 })]));
-    const land = gappedLand();
-    driveOutside(session, 1, land); // 99.65 — still on own land
-    // 100.10: a tenth of a WU into the gap. Nothing worth drawing yet.
-    const entering = driveOutside(session, 1, land);
-    expect(entering.depth).toBeCloseTo(0.1, 5);
-    expect(entering.visible ?? false).toBe(false);
-    // 100.55: the head is a half ribbon-width clear, so the whole band has
-    // left the plateau — drawn, after 0.9 WU of running. The 2.61 WU
-    // backstop is nowhere near, so only reach can have revealed this.
-    const clear = driveOutside(session, 1, land);
-    expect(clear.depth).toBeCloseTo(0.55, 5);
-    expect(clear.depth).toBeGreaterThanOrEqual(BALANCE.trail.collisionRadiusWU);
-    expect(clear.visible).toBe(true);
-  });
-
-  it('a long skim along the own edge appears even though it never gets clear (ticket 20)', () => {
-    const { session } = harness();
-    session.receive(encodeWelcome(1, BALANCE.arena.sizeWU));
-    session.receive(encodeTerritory(1, 'sync', blockAt(100, 100)));
-    // Just above the block's top edge (y = 103), heading +x along it: the
-    // head stays 0.3 WU out for as long as it likes — never clear enough for
-    // reach to fire, but really outside and really cuttable the whole time.
-    session.receive(encodeSnapshot(1, 0, [selfPlayer({ x: 97.5, y: 103.3 })]));
-    const land = blockAt(100, 100);
-    // 5 ticks ≙ 1.8 WU of running, short of the 2.61 WU backstop.
-    const early = driveOutside(session, 5, land);
-    expect(early.depth).toBeCloseTo(0.3, 5);
-    expect(early.visible ?? false).toBe(false);
-    // 10 ticks ≙ 4.05 WU. Still 0.3 WU out — reach never fired, so this is
-    // the backstop, and it has to fire: an invisible ribbon out here would
-    // be a player who cannot see the line they are about to be killed on.
-    const late = driveOutside(session, 5, land);
-    expect(late.depth).toBeCloseTo(0.3, 5);
-    expect(late.depth).toBeLessThan(BALANCE.trail.collisionRadiusWU);
-    expect(late.visible).toBe(true);
   });
 
   it('exposes other players at an interpolation delay', () => {

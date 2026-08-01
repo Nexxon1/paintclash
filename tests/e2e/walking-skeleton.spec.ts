@@ -284,47 +284,6 @@ test('recovers from a main-thread stall without teleporting or whipping around',
   expect(result.maxTurnExcessDeg).toBeLessThanOrEqual(0);
 });
 
-test('circling in the own start block never flashes a trail (ticket 20)', async ({ page }) => {
-  // The reported gesture, exactly: hold one steer key and orbit inside your
-  // own block. The orbit does not fit (3.22 WU across a 6 WU block from its
-  // centre), so the head really does graze past its own edge and a real trail
-  // is carved every revolution — the sim is untouched here. It must simply
-  // never be drawn.
-  //
-  // What this adds over the unit test at the session seam: real keyboard,
-  // real frames, and above all the SERVER closing each loop. The reveal
-  // budget is per excursion and resets on the fill frame; only a real arena
-  // running many revolutions shows that the reset actually happens instead
-  // of the budget creeping up over a life and revealing the graze late.
-  await join(page, 'E2E-Streifer', true);
-  const probe = await page.evaluate(async (ms: number) => {
-    const started = performance.now();
-    let ribbonFrames = 0;
-    let visibleFrames = 0;
-    let frames = 0;
-    while (performance.now() - started < ms) {
-      await new Promise((resolve) => requestAnimationFrame(resolve));
-      const state = window.__paintclash?.lastRender;
-      if (!state || state.selfId === null) continue;
-      frames += 1;
-      const own = state.trails.find((t) => t.playerId === state.selfId);
-      if (!own) continue;
-      ribbonFrames += 1;
-      if (own.visible) visibleFrames += 1;
-    }
-    return { frames, ribbonFrames, visibleFrames };
-  }, 4000);
-  await page.keyboard.up('ArrowRight');
-
-  // Premise (README rule 2): the browser really did sample the game, and a
-  // real trail really was carved out there. Without both, "nothing was
-  // drawn" would only mean nothing happened.
-  expect(probe.frames).toBeGreaterThan(60);
-  expect(probe.ribbonFrames).toBeGreaterThan(0);
-  // …and not one frame of it was ever put on screen.
-  expect(probe.visibleFrames).toBe(0);
-});
-
 test('two browsers share one arena', async ({ browser }) => {
   const pageA = await (await browser.newContext()).newPage();
   const pageB = await (await browser.newContext()).newPage();

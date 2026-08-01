@@ -249,11 +249,10 @@ export class ArenaScene {
     const now = performance.now();
     const fills = new Set(state.fills);
     const seen = new Set<number>();
-    // Undrawn ribbons cut no groove either (ticket 20) — a channel through a
-    // plateau with no band running in it reads as a bug, not as polish.
-    const trailBounds = state.trails
-      .filter((trail) => trail.visible)
-      .map((trail) => ({ trail, bounds: pointsBounds(trail.points) }));
+    const trailBounds = state.trails.map((trail) => ({
+      trail,
+      bounds: pointsBounds(trail.points),
+    }));
     for (const view of state.territories) {
       seen.add(view.playerId);
       // Trails of OTHER players near this plateau carve it; the owner's own
@@ -356,17 +355,10 @@ export class ArenaScene {
     return new THREE.Mesh(geometry, material);
   }
 
-  /**
-   * Trail ribbons — one per player with a visible trail this frame. A trail
-   * the session lists but has not revealed (ticket 20: the graze you carve
-   * circling at your own edge) is treated exactly like no trail at all, down
-   * to disposing its ribbon: the player is still cuttable on it, it is simply
-   * not worth a band on screen.
-   */
+  /** Trail ribbons — one per player with a visible trail this frame. */
   private updateTrails(state: RenderState): void {
     const seen = new Set<number>();
-    for (const { playerId, points, visible } of state.trails) {
-      if (!visible) continue;
+    for (const { playerId, points } of state.trails) {
       seen.add(playerId);
       let ribbon = this.trails.get(playerId);
       if (!ribbon) {
