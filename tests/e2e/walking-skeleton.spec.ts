@@ -284,6 +284,127 @@ test('recovers from a main-thread stall without teleporting or whipping around',
   expect(result.maxTurnExcessDeg).toBeLessThanOrEqual(0);
 });
 
+test('circling on ground it already owns stops flashing a trail (ticket 20)', async ({ page }) => {
+  test.setTimeout(60_000);
+  // The reported gesture, exactly: hold one steer key and keep orbiting at
+  // your own edge. The orbit does not fit (3.22 WU across a 6 WU block), so
+  // the head really does step past its own boundary and a real trail is really
+  // carved every revolution — the sim is untouched here. Once the territory has
+  // healed onto the circle, those revolutions gain nothing, and THAT is the
+  // state that must stop being drawn.
+  //
+  // What this adds over the session-seam tests: real keyboard, real frames,
+  // and above all the SERVER closing each loop and deciding what it gained.
+  // Reaching that state is what the previous attempt at this ticket got wrong:
+  // it was green over 4 s and wrong over 15 s, because a held key EARNS land
+  // for its first revolutions and only then settles. So the settling is waited
+  // OUT here, by counting closes rather than seconds.
+  await join(page, 'E2E-Streifer', true);
+  const steady = await page.evaluate(
+    async ([barrenClosesToArm, steadyFramesWanted, ceilingMs]: [number, number, number]) => {
+      // Progress budget, not a wall-clock window (README rule 3): the steady
+      // state begins after N closes in a row gained no ground, and it is
+      // measured in FRAMES, not milliseconds. A slow runner makes this
+      // slower, never red.
+      //
+      // Closes are counted off the own territory's revision, which is monotonic
+      // state; "gained" is re-derived here by shoelace rather than read from
+      // `RenderState.fills`, because that list is drained per rendered frame and
+      // a probe sampling on its own rAF can miss one.
+      const area = (rings: readonly (readonly (readonly number[])[])[][]): number => {
+        let total = 0;
+        for (const poly of rings) {
+          for (const ring of poly) {
+            for (let i = 0; i < ring.length; i++) {
+              const a = ring[i];
+              const b = ring[(i + 1) % ring.length];
+              if (!a || !b) continue;
+              total += (a[0] ?? 0) * (b[1] ?? 0) - (b[0] ?? 0) * (a[1] ?? 0);
+            }
+          }
+        }
+        return Math.abs(total) / 2;
+      };
+      const started = performance.now();
+      let rev = -1;
+      let lastArea = -1;
+      let barrenCloses = 0;
+      let earningCloses = 0;
+      let frames = 0;
+      let ribbonFrames = 0;
+      let drawnFrames = 0;
+      while (frames < steadyFramesWanted && performance.now() - started < ceilingMs) {
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+        const state = window.__paintclash?.lastRender;
+        if (!state || state.selfId === null) continue;
+        const own = state.territories.find((t) => t.playerId === state.selfId);
+        if (!own) continue;
+        if (own.rev !== rev) {
+          rev = own.rev;
+          const now = area(own.territory);
+          if (lastArea >= 0) {
+            if (now > lastArea + 1e-9) {
+              earningCloses += 1;
+              barrenCloses = 0; // the settling is not over yet
+            } else {
+              barrenCloses += 1;
+            }
+          }
+          lastArea = now;
+        }
+        // Still settling: these revolutions claim ground and are SUPPOSED to
+        // show their ribbon (the phase below proves that half).
+        if (barrenCloses < barrenClosesToArm) continue;
+        frames += 1;
+        const ribbon = state.trails.find((t) => t.playerId === state.selfId);
+        if (!ribbon) continue;
+        ribbonFrames += 1;
+        if (ribbon.visible) drawnFrames += 1;
+      }
+      return { frames, ribbonFrames, drawnFrames, earningCloses, barrenCloses };
+    },
+    [2, 400, 40_000],
+  );
+
+  // Premises (README rule 2), each naming its stage and its measurement, so a
+  // green run can never mean "nothing happened out there".
+  expect(
+    steady.earningCloses,
+    `the head never claimed anything, so there was no settling to get past (${JSON.stringify(steady)})`,
+  ).toBeGreaterThan(0);
+  expect(
+    steady.frames,
+    `the steady state never got its frame budget (${JSON.stringify(steady)})`,
+  ).toBe(400);
+  expect(
+    steady.ribbonFrames,
+    `no trail was ever carved in the steady state (${JSON.stringify(steady)})`,
+  ).toBeGreaterThan(0);
+  // …and not one frame of it reached the screen.
+  expect(
+    steady.drawnFrames,
+    `${String(steady.drawnFrames)} of ${String(steady.ribbonFrames)} steady-state ribbon frames were drawn`,
+  ).toBe(0);
+
+  // The other half, in the same browser: let go and drive straight out. That
+  // claims real ground, and the clearance override has to put it on screen at
+  // once — otherwise this fix would have bought quiet by hiding real runs.
+  await page.keyboard.up('ArrowRight');
+  const claiming = await page.evaluate(async (ms: number) => {
+    const started = performance.now();
+    let drawnFrames = 0;
+    while (performance.now() - started < ms) {
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+      const state = window.__paintclash?.lastRender;
+      if (!state || state.selfId === null) continue;
+      const own = state.trails.find((t) => t.playerId === state.selfId);
+      if (own?.visible) drawnFrames += 1;
+    }
+    return drawnFrames;
+  }, 2_000);
+  expect(claiming).toBeGreaterThan(0);
+});
+
 test('two browsers share one arena', async ({ browser }) => {
   const pageA = await (await browser.newContext()).newPage();
   const pageB = await (await browser.newContext()).newPage();

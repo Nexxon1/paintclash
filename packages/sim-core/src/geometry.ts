@@ -151,7 +151,9 @@ export function segmentsProperlyCross(a1: Point, a2: Point, b1: Point, b2: Point
 /**
  * Distance from a point to a territory: 0 inside, else the distance to the
  * nearest boundary edge; Infinity for an empty territory. Drives the spawn
- * minimum distance (spec §2.3) against arbitrarily grown territories.
+ * minimum distance (spec §2.3) against arbitrarily grown territories, and on
+ * the client how far clear of its own land a head has to get for its ribbon to
+ * be drawn while its loop closes are earning nothing (ticket 20).
  */
 export function distanceToTerritory(x: number, y: number, territory: Territory): number {
   if (territory.length === 0) return Infinity;

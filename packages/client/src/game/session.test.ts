@@ -1,4 +1,4 @@
-import { BALANCE, type RoomConfig, type Territory } from '@paintclash/shared';
+import { BALANCE, type RoomConfig, type Territory, type TurnSignal } from '@paintclash/shared';
 import {
   decodeClientMessage,
   encodeDeath,
@@ -14,9 +14,9 @@ import {
 } from '@paintclash/protocol';
 import { describe, expect, it } from 'vitest';
 
-import { lifeScore } from '@paintclash/sim-core';
+import { distanceToTerritory, lifeScore } from '@paintclash/sim-core';
 
-import { ClientSession, INPUT_FLUSH_TICKS } from './session.js';
+import { ClientSession, INPUT_FLUSH_TICKS, OWN_TRAIL_REVEAL_CLEARANCE_WU } from './session.js';
 
 function harness(): { session: ClientSession; sent: Uint8Array[] } {
   const sent: Uint8Array[] = [];
@@ -37,6 +37,24 @@ function blockAt(cx: number, cy: number): Territory {
         [cx + 3, cy - 3],
         [cx + 3, cy + 3],
         [cx - 3, cy + 3],
+      ],
+    ],
+  ];
+}
+
+/**
+ * Own land with a long straight top edge (x ∈ [90, 130], y ∈ [97, 103]) — room
+ * to skim beside your own boundary for many seconds without running off its
+ * end, which a 6 WU block does not give (ticket 20).
+ */
+function longEdge(): Territory {
+  return [
+    [
+      [
+        [90, 97],
+        [130, 97],
+        [130, 103],
+        [90, 103],
       ],
     ],
   ];
@@ -341,6 +359,171 @@ describe('snapshots feed reconciliation + interpolation', () => {
     }
     const after = session.renderSample(1).trails.find((t) => t.playerId === 1)?.points.length;
     expect(after).toBe(before);
+  });
+
+  describe('drawing the own ribbon (ticket 20: the graze at your own edge)', () => {
+    /**
+     * The server's fill frame for a loop close that gained nothing — the same
+     * territory back. Measured against the real sim, that is the whole steady
+     * state of circling on ground you already own: a held key from a block's
+     * edge earns land on 2 revolutions and then nothing on the next 40.
+     */
+    function barrenClose(session: ClientSession, land: Territory): void {
+      session.receive(encodeTerritory(1, 'fill', land));
+    }
+
+    /**
+     * One sim tick and the frame drawn from it: how far the head ended up clear
+     * of `land`, and the own ribbon's DRAWING verdict — undefined when there is
+     * no own ribbon in the frame at all.
+     */
+    function tickFrame(
+      session: ClientSession,
+      turn: TurnSignal,
+      land: Territory,
+    ): { clearance: number; visible: boolean | undefined } {
+      session.simTick(turn);
+      const state = session.renderSample(1);
+      const self = state.self;
+      if (!self) throw new Error('no predicted pose');
+      return {
+        clearance: distanceToTerritory(self.x, self.y, land),
+        visible: state.trails.find((t) => t.playerId === 1)?.visible,
+      };
+    }
+
+    /** Hold `turn` for `ticks` ticks; tally what the own ribbon did. */
+    function hold(
+      session: ClientSession,
+      ticks: number,
+      turn: TurnSignal,
+      land: Territory,
+    ): { listed: number; drawn: number; deepest: number } {
+      let listed = 0;
+      let drawn = 0;
+      let deepest = 0;
+      for (let i = 0; i < ticks; i++) {
+        const { clearance, visible } = tickFrame(session, turn, land);
+        if (visible === undefined) continue;
+        listed += 1;
+        if (visible) drawn += 1;
+        deepest = Math.max(deepest, clearance);
+      }
+      return { listed, drawn, deepest };
+    }
+
+    /**
+     * A head running along the OUTSIDE of its own top edge, `clearWU` clear of
+     * it, with the last loop close having earned nothing. This is the graze in
+     * its purest form: really outside (so really cuttable, so a real trail),
+     * hairline shallow, and — because a skim along a straight edge encloses no
+     * area — closing on nothing, revolution after revolution.
+     */
+    function skimming(clearWU: number): ClientSession {
+      const { session } = harness();
+      session.receive(encodeWelcome(1, BALANCE.arena.sizeWU));
+      session.receive(encodeTerritory(1, 'sync', longEdge()));
+      session.receive(encodeSnapshot(1, 0, [selfPlayer({ x: 97.5, y: 103 + clearWU })]));
+      barrenClose(session, longEdge());
+      return session;
+    }
+
+    it('never draws the skim along its own edge once the closes stopped earning', () => {
+      const land = longEdge();
+      // 20 ticks ≙ 9 WU of running out there — 3.4× the 2.61 WU "it has been
+      // out a while" backstop the reverted first attempt used. It is not drawn
+      // anyway, because none of it is winning any ground.
+      const graze = hold(skimming(0.05), 20, 0, land);
+      // Premises, so a green run can never mean "there was nothing to hide".
+      expect(graze.listed, 'no own trail was ever carved out there').toBeGreaterThan(0);
+      expect(graze.deepest, 'the head never actually left its own land').toBeGreaterThan(0);
+      expect(
+        graze.deepest,
+        `the skim was not a graze: it got ${graze.deepest.toFixed(4)} WU clear`,
+      ).toBeLessThan(OWN_TRAIL_REVEAL_CLEARANCE_WU);
+      expect(graze.drawn, `${String(graze.drawn)} of ${String(graze.listed)} frames drew it`).toBe(
+        0,
+      );
+    });
+
+    it('draws a circle thrown from the own edge at once, however cold the streak', () => {
+      const { session } = harness();
+      session.receive(encodeWelcome(1, BALANCE.arena.sizeWU));
+      const land = blockAt(100, 100);
+      session.receive(encodeTerritory(1, 'sync', land));
+      // The reported gesture from its own starting point: at the block's edge,
+      // THEN hold. That circle does not fit inside the block at all — measured
+      // 1.29 WU clear against the real sim — and it claims real ground. It has
+      // to show at once, even though the close before it earned nothing.
+      session.receive(encodeSnapshot(1, 0, [selfPlayer({ x: 102.9 })]));
+      barrenClose(session, land);
+      const claiming = hold(session, 12, 1, land);
+      expect(claiming.deepest, 'the circle never left the block').toBeGreaterThan(
+        BALANCE.trail.widthWU,
+      );
+      expect(claiming.drawn, 'the claiming circle was never drawn').toBeGreaterThan(0);
+    });
+
+    // Crossing a gap in the own land claims real ground, so its ribbon belongs
+    // on screen from the first frame it exists — the ticket's explicit
+    // addendum. Inside a gap of width W the head can never get more than W/2
+    // clear, so the narrow end of this range is exactly what a clearance rule
+    // is in danger of swallowing: half a ribbon width (the first draft) drew
+    // nothing at all below 1 WU.
+    for (const gapWU of [0.6, 1, 2]) {
+      it(`draws a ${String(gapWU)} WU gap crossing on the first frame it exists`, () => {
+        const { session } = harness();
+        session.receive(encodeWelcome(1, BALANCE.arena.sizeWU));
+        // Two 6×6 pieces with the gap at x ∈ (100, 100 + gapWU).
+        const land: Territory = [...blockAt(97, 100), ...blockAt(103 + gapWU, 100)];
+        session.receive(encodeTerritory(1, 'sync', land));
+        session.receive(encodeSnapshot(1, 0, [selfPlayer({ x: 99.05 })]));
+        barrenClose(session, land);
+        // 0.45 WU per tick: 99.5 and 99.95 are still on own land, 100.4 is in
+        // the gap. Walk until the ribbon appears and judge THAT frame.
+        let appeared: { clearance: number; visible: boolean | undefined } | null = null;
+        for (let i = 0; i < 4 && !appeared; i++) {
+          const frame = tickFrame(session, 0, land);
+          if (frame.visible !== undefined) appeared = frame;
+        }
+        if (!appeared) throw new Error('the head never got into the gap');
+        expect(
+          appeared.clearance,
+          `a ${String(gapWU)} WU gap cannot give more than ${String(gapWU / 2)} WU of clearance`,
+        ).toBeLessThanOrEqual(gapWU / 2);
+        expect(appeared.visible, 'the gap crossing was hidden on its first frame').toBe(true);
+      });
+    }
+
+    it('shows the ribbon again as soon as a loop close earns land again', () => {
+      const land = longEdge();
+      const session = skimming(0.05);
+      expect(hold(session, 20, 0, land).drawn).toBe(0);
+      // The player breaks out and claims something somewhere. The gate switches
+      // itself off — no threshold, no timer, no per-excursion budget that could
+      // creep up over a life. The head keeps skimming the same hairline, so
+      // nothing but the earning close can be what puts the ribbon back.
+      session.receive(encodeTerritory(1, 'fill', [...longEdge(), ...blockAt(140, 140)]));
+      const earning = hold(session, 20, 0, land);
+      expect(earning.listed, 'no own trail was carved after the earning close').toBeGreaterThan(0);
+      expect(earning.drawn, 'an earning close did not hand the ribbon back').toBe(earning.listed);
+    });
+
+    it('never hides an enemy ribbon — that would hide THEIR vulnerability', () => {
+      const { session } = harness();
+      joined(session);
+      session.receive(encodeTerritory(2, 'sync', blockAt(50, 100)));
+      session.receive(
+        encodeTrail(2, [
+          [53, 100],
+          [54, 100],
+          [54, 101],
+        ]),
+      );
+      session.receive(encodeSnapshot(2, 0, [selfPlayer(), selfPlayer({ id: 2, x: 54, y: 102 })]));
+      const enemy = session.renderSample(1).trails.find((t) => t.playerId === 2);
+      expect(enemy?.visible).toBe(true);
+    });
   });
 
   it('derives enemy trails from snapshot poses, held back to the render timeline', () => {

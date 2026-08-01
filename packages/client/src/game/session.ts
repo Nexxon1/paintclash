@@ -29,7 +29,12 @@ import {
   type Territory,
   type TurnSignal,
 } from '@paintclash/shared';
-import { lifeScore, pointInTerritory, territoryArea } from '@paintclash/sim-core';
+import {
+  distanceToTerritory,
+  lifeScore,
+  pointInTerritory,
+  territoryArea,
+} from '@paintclash/sim-core';
 
 import { angleDiff, Interpolator } from './interpolator.js';
 import { Predictor, type RenderPose } from './predictor.js';
@@ -122,6 +127,46 @@ const MAX_ENEMY_GLIDE_WU = 8;
 const MAX_ENEMY_TURN_SPEEDUP = 2.2;
 
 /**
+ * How far clear of its own land the head must get for the OWN ribbon to be
+ * drawn even while the loop closes are earning nothing (ticket 20).
+ *
+ * This is the override, not the rule: the rule is whether the last loop close
+ * earned land (see `lastCloseEarnedLand`). What the override buys is the short
+ * trail that claims real ground while the streak is still cold — a run across a
+ * GAP in the own territory, or the first circle of the reported gesture when it
+ * is thrown from the block's edge rather than its centre. Waiting for the fill
+ * to prove those would hide them for exactly the fraction of a second in which
+ * the player is looking for the line.
+ *
+ * The threshold is one MIN_TRAIL_STEP_WU, and that is the whole argument: it is
+ * this file's existing yardstick for "the head has really moved rather than
+ * wobbled", so a head one step clear of its own land is out there in the same
+ * sense. Two measurements bound it from either side.
+ *
+ * Below — it must never fire on the graze. Against the real sim, one steer key
+ * held for 20 s, clearance = `distanceToTerritory`:
+ *
+ * | circle started at | max clearance while EARNING | while BARREN |
+ * | --- | --- | --- |
+ * | the block's centre | 0.2137 WU | **0.0157 WU** |
+ * | the block's edge | 1.2907 WU | **0.0000 WU** |
+ * | just outside the edge | 1.8907 WU | **0.0157 WU** |
+ *
+ * The barren steady state — the state the report is about — never gets a
+ * sixtieth of a ribbon width out, so this sits 6.4× above it, and above the
+ * reconciliation wobble that moves the RENDERED pose off the sim's by less than
+ * one step gate by construction.
+ *
+ * Above — a gap of width W tops out at W/2 of clearance in its middle, so this
+ * threshold is also the statement "gaps down to 0.2 WU reveal their ribbon".
+ * That matters: at half a ribbon width (the first draft of this constant) gaps
+ * of 0.6–1.0 WU never revealed at all, which is the case the ticket's addendum
+ * was written against. Anything narrower than 0.2 WU is a hairline crack no
+ * player is aiming at, and it still shows its ribbon the moment the fill lands.
+ */
+export const OWN_TRAIL_REVEAL_CLEARANCE_WU = MIN_TRAIL_STEP_WU;
+
+/**
  * Path depth (in WU) a fresh trail is seeded backward into the territory,
  * following the recently rendered path. A single last-inside pose is not
  * enough: at oblique exit angles the ribbon's flat start cap leaves a
@@ -155,6 +200,28 @@ export interface TerritoryView {
 }
 
 /**
+ * One player's trail polyline for this frame (ticket 04), ending at their
+ * rendered head: the own one from rendered frame poses, enemy ones from
+ * snapshot poses held back to the enemy render timeline. Over foreign plateaus
+ * the scene carves a ground-level groove along the same polyline (ticket 06) —
+ * the ribbon always hugs the floor.
+ */
+export interface TrailView {
+  playerId: number;
+  points: Point[];
+  /**
+   * Should this be DRAWN? Not whether it exists (ticket 20): the graze carved
+   * by circling on ground you already own is still listed, because it is still
+   * there and its owner is still cuttable on it. The scene skips ribbon and
+   * groove for those; anything reasoning about what the player is DOING — the
+   * eat loop, say — reads the list itself. Enemy trails are always visible:
+   * hiding one would hide THEIR vulnerability from the player who could cut
+   * it, which is a rule change and not polish.
+   */
+  visible: boolean;
+}
+
+/**
  * The global ranking as last received (ticket 08, spec §2.5). `rev` bumps per
  * board, so the DOM HUD rebuilds on change instead of every frame.
  */
@@ -182,14 +249,8 @@ export interface RenderState {
   arenaSizeWU: number | null;
   /** Every known territory, own included (ticket 04). */
   territories: TerritoryView[];
-  /**
-   * Trail polylines to draw (ticket 04), each ending at its player's
-   * rendered head: the own one from rendered frame poses, enemy ones from
-   * snapshot poses held back to the enemy render timeline. Over foreign
-   * plateaus the scene carves a ground-level groove along these same
-   * polylines (ticket 06) — the ribbon always hugs the floor.
-   */
-  trails: { playerId: number; points: Point[] }[];
+  /** Every trail to reason about this frame, own included (ticket 04). */
+  trails: TrailView[];
   /** Players whose fill landed since the last sample (wave animation). */
   fills: number[];
   /**
@@ -256,6 +317,30 @@ export class ClientSession {
    * without the 0.1 WU gate quantizing it.
    */
   private ownTrail: Point[] = [];
+  /**
+   * Did the last own loop close gain land (ticket 20)? That single bit is what
+   * separates the two things a short own trail can be, and it is the one thing
+   * a threshold on length or depth cannot read:
+   *
+   * - Circling at the own edge to claim ground EARNS on its first revolutions
+   *   and then, once the territory has healed onto the circle, earns nothing
+   *   on every revolution after — while still carving a real trail each time.
+   *   That endless second half is the reported flicker.
+   * - Every deliberate loop — a raid, a gap crossing, a shallow one hugged
+   *   along the own edge — earns. So one earning close is enough to hand the
+   *   ribbon back, and the gate switches itself off the moment land flows
+   *   again. It needs no timer and no budget that could creep up over a life.
+   *
+   * True at spawn and after a death: a fresh life's first trail is drawn.
+   */
+  private lastCloseEarnedLand = true;
+  /**
+   * Has THIS excursion earned its way onto the screen (ticket 20)? Sticky
+   * until the trail ends: re-hiding a ribbon mid-run would be a worse flicker
+   * than the one this gate removes. Only consulted while still hidden, so the
+   * point-to-territory sweep stops running once the verdict has fallen.
+   */
+  private ownTrailRevealed = false;
   /** Recent rendered poses — a fresh trail is seeded backward from these. */
   private readonly ownRecent: Point[] = [];
   /** Enemy trails from snapshot poses, tick-stamped for the render timeline. */
@@ -360,15 +445,20 @@ export class ClientSession {
         rev: (previous?.rev ?? 0) + 1,
       });
       if (message.reason === 'fill') {
-        // A fill ends the trail that drew it (spec §2.2) — authoritative,
-        // never inferred from poses.
-        if (message.playerId === this.playerId) this.ownTrail = [];
-        else this.enemyTrails.delete(message.playerId);
-        // Animate only real growth — a discarded sliver loop (spec §2.2
-        // floor) still clears the trail but earns no wave.
+        // Did this close actually gain ground? A discarded sliver loop (spec
+        // §2.2 floor) still clears the trail but earns no wave — and, since
+        // ticket 20, no ribbon on the next graze either.
         const grew =
           previous === undefined ||
           territoryArea(message.territory) > territoryArea(previous.territory) + 1e-9;
+        // A fill ends the trail that drew it (spec §2.2) — authoritative,
+        // never inferred from poses.
+        if (message.playerId === this.playerId) {
+          this.clearOwnTrail();
+          this.lastCloseEarnedLand = grew;
+        } else {
+          this.enemyTrails.delete(message.playerId);
+        }
         if (grew) this.pendingFills.push(message.playerId);
       }
       return;
@@ -389,9 +479,11 @@ export class ClientSession {
       // clear. The respawn block (territory sync) and pose (snapshot)
       // follow in the same tick's frames.
       if (message.victimId === this.playerId) {
-        this.ownTrail = [];
+        this.clearOwnTrail();
         this.ownRecent.length = 0;
         this.snapOnReconcile = true;
+        // A new life starts owing nothing: its first trail is drawn (ticket 20).
+        this.lastCloseEarnedLand = true;
         // The score died with the life (ticket 09): zero the anchor in place,
         // so the panel reads the fresh life's 0 and climbs instead of blinking
         // out for the half second until the next live frame re-anchors it.
@@ -746,6 +838,12 @@ export class ClientSession {
       if (!last || Math.hypot(self.x - last[0], self.y - last[1]) >= MIN_TRAIL_STEP_WU) {
         this.pushOwnPoint([self.x, self.y]);
       }
+      // Ticket 20: draw the ribbon while the loop closes are still earning
+      // land, and otherwise only once the head is a half ribbon width clear of
+      // its own edge. Both are checked per frame while hidden and then stick.
+      this.ownTrailRevealed ||=
+        this.lastCloseEarnedLand ||
+        distanceToTerritory(self.x, self.y, own.territory) >= OWN_TRAIL_REVEAL_CLEARANCE_WU;
     }
     const lastRecent = this.ownRecent[this.ownRecent.length - 1];
     if (
@@ -755,6 +853,15 @@ export class ClientSession {
       this.ownRecent.push([self.x, self.y]);
       if (this.ownRecent.length > RECENT_POSES_CAP) this.ownRecent.shift();
     }
+  }
+
+  /**
+   * End the own trail: the polyline and, with it, this excursion's drawing
+   * verdict (ticket 20 — a revealed run says nothing about the next one).
+   */
+  private clearOwnTrail(): void {
+    this.ownTrail = [];
+    this.ownTrailRevealed = false;
   }
 
   /**
@@ -786,12 +893,14 @@ export class ClientSession {
    * only reveal stored points up to the enemy render timeline (they'd lead
    * their delayed heads otherwise).
    */
-  private sampleTrails(self: RenderPose | null, others: SnapshotPlayer[]): RenderState['trails'] {
-    const trails: RenderState['trails'] = [];
+  private sampleTrails(self: RenderPose | null, others: SnapshotPlayer[]): TrailView[] {
+    const trails: TrailView[] = [];
     if (self && this.playerId !== null && this.ownTrail.length >= 1) {
       const points = this.ownTrail.map((point): Point => [point[0], point[1]]);
       points.push([self.x, self.y]);
-      if (points.length >= 2) trails.push({ playerId: this.playerId, points });
+      if (points.length >= 2) {
+        trails.push({ playerId: this.playerId, points, visible: this.ownTrailRevealed });
+      }
     }
     for (const enemy of others) {
       const stamped = this.enemyTrails.get(enemy.id);
@@ -802,7 +911,7 @@ export class ClientSession {
         points.push([point[0], point[1]]);
       }
       points.push([enemy.x, enemy.y]);
-      if (points.length >= 2) trails.push({ playerId: enemy.id, points });
+      if (points.length >= 2) trails.push({ playerId: enemy.id, points, visible: true });
     }
     return trails;
   }
