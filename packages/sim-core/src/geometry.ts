@@ -203,6 +203,52 @@ export function appendTrailPoint(trail: Point[], x: number, y: number): void {
 }
 
 /**
+ * A band of the given half-width around a polyline: one rectangle per segment,
+ * offset to both sides of it, everything on the snap lattice.
+ *
+ * The rectangles are returned loose, one ring each, and are meant to be handed
+ * to the clipper together (as separate polygons of one multipolygon): at every
+ * joint the two adjacent rectangles overlap around the shared point, so their
+ * union is one connected band — no mitering, no join cases, and nothing that
+ * could leave a gap for a fill to leak through. A convex joint's outer corner
+ * is left un-filled, which is a notch of the band's own width, i.e. of the
+ * order this band exists to stay below.
+ *
+ * Every rectangle returned has real area, so a caller may take the band's
+ * presence as a seal. Two things earn that: points that coincide ON THE
+ * LATTICE contribute no segment at all (so a polyline of near-identical poses
+ * yields nothing rather than flat rings), and `halfWidthWU` must stay above √2
+ * lattice cells, which keeps the offset's larger component at least one cell
+ * wide however the segment is angled. Callers choose the width (see `fill.ts`);
+ * this function only promises the band is as thick as asked, to lattice
+ * resolution.
+ */
+export function polylineBand(points: readonly Point[], halfWidthWU: number): Ring[] {
+  const band: Ring[] = [];
+  let a: Point | undefined;
+  for (const raw of points) {
+    const b: Point = [snapWU(raw[0]), snapWU(raw[1])];
+    const dx = a === undefined ? 0 : b[0] - a[0];
+    const dy = a === undefined ? 0 : b[1] - a[1];
+    const length = Math.hypot(dx, dy);
+    if (a !== undefined && length > 0) {
+      // Left normal, scaled to the half-width; right side first keeps the
+      // rectangle CCW like every other ring this module builds.
+      const nx = (-dy / length) * halfWidthWU;
+      const ny = (dx / length) * halfWidthWU;
+      band.push([
+        [snapWU(a[0] - nx), snapWU(a[1] - ny)],
+        [snapWU(b[0] - nx), snapWU(b[1] - ny)],
+        [snapWU(b[0] + nx), snapWU(b[1] + ny)],
+        [snapWU(a[0] + nx), snapWU(a[1] + ny)],
+      ]);
+    }
+    a = b;
+  }
+  return band;
+}
+
+/**
  * Sanity check on clipper output: every hole ring must start inside its
  * outer ring. Violations mean corrupt topology — even-odd containment would
  * read such a "hole" as owned land (the exact failure the lattice guards

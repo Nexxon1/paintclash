@@ -41,3 +41,34 @@ Zwei Präzisierungen, die aus dieser Messung folgen:
   Folgeoperation darauf aufbaut. Der Carve speichert nichts Autoritatives; sein Ergebnis
   betritt den Clipper nur über `snappedDifference` wieder, und das rastert es dort. Der
   Effekt ist derselbe, die Stelle eine andere.
+
+## Nachtrag (2026-08-01, Ticket 26) — was der Sweep nicht sehen kann, muss ihm gegeben werden
+
+Diese ADR stellt die Robustheit des Fills auf exakte Prädikate plus Gitter. Beides
+beantwortet die Frage „liegt dieser Punkt links oder rechts" — keines beantwortet „ist
+dieser Ring überhaupt ein Gebiet". Ticket 26 fand die Lücke, die daraus folgt: eine
+**schnurgerade** Überfahrt faltet `appendTrailPoint` auf zwei Punkte (bewusst, damit gerade
+Fahrten O(1) Vertices kosten), und ein Zwei-Punkt-Ring hat Fläche 0. Der Sweep verarbeitet
+ihn tadellos — er trägt nur nichts bei: keine Vereinigung, kein Loch, kein Fang. Die
+Mechanik versagte damit genau bei dem Manöver, das man geradeaus fährt (über eine kleine
+Lücke im eigenen Rand).
+
+Die Konsequenz für diese Entscheidung: **entartete Eingaben sind kein Robustheitsproblem,
+sondern ein Repräsentationsproblem, und sie werden vor dem Clipper gelöst.** `closeLoop`
+legt dem Loop bei Fläche unter `DEBRIS_AREA_WU2` ein **Dichtband** von 1e-6 WU Halbbreite
+bei (`polylineBand`) — 10× die Gitterweite, damit das Snapping es nicht flachdrückt, und
+selbst über 200 WU Trail nur 1/40 der minimalen Fill-Fläche, damit es nie selbst zum Fang
+führt. Der Ring bleibt daneben stehen: „Fläche 0" heisst nicht „deckt nichts" (ein sich
+überkreuzender Trail hebt sich vorzeichenmässig auf, und der Sweep löst ihn korrekt zu
+seinem echten Land auf) — das Band **addiert**, es ersetzt nicht.
+
+Der Golden-Replay-Hash bleibt dabei unverändert, und zwar nachgewiesen statt zufällig: sein
+einziger Fill hat 13 Trail-Punkte und einen Ring von 13,5 WU² — kein Band wird dort gebaut.
+
+Ein Preis wird dabei bewusst bezahlt, in derselben Währung wie das Gitter selbst: das Band
+liegt im Loop, wird also mit-vereinigt und mit-ausgestanzt. Ein entarteter Fang nimmt
+deshalb zusätzlich zur Tasche einen ≤ 2e-6 WU breiten Streifen entlang des Trails —
+Land, das §2.2 nicht „eingeschlossen" nennt, im Extremfall (200 WU Trail) 4e-4 WU². Das ist
+drei Grössenordnungen unter dem Sliver-Boden und dieselbe Art von Handel wie die ≤ 5e-8 WU,
+um die das Gitter jede Grenze verschiebt; die Disjunktheit bleibt gewahrt, weil Gewinner und
+Verlierer denselben Streifen aus derselben Geometrie sehen.

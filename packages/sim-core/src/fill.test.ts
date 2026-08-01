@@ -10,6 +10,26 @@ import { pointInTerritory, squareRing, territoryArea } from './geometry.js';
 /** Own 6×6-ish block on (2..8)² — 36 WU². */
 const ownSquare = (): Territory => [[squareRing(5, 5, 3)]];
 
+/**
+ * The ticket-26 reproduction: a 12×6 block with a 4-wide, 4-deep notch cut
+ * into its top edge — 72 − 16 = 56 WU². A crossing at y = 3 runs inside →
+ * notch → inside and seals off the notch's lower half.
+ */
+const notchedBlock = (): Territory => [
+  [
+    [
+      [0, 0],
+      [12, 0],
+      [12, 6],
+      [8, 6],
+      [8, 2],
+      [4, 2],
+      [4, 6],
+      [0, 6],
+    ],
+  ],
+];
+
 describe('closeLoop', () => {
   it('captures the enclosed rectangle of a clean square loop', () => {
     // Exit right at (7,5), drive a rectangle, re-enter at (7,7). The chord
@@ -204,6 +224,65 @@ describe('closeLoop', () => {
     expect(outcome).not.toBeNull();
     // The notch interior is now owned.
     expect(pointInTerritory(6, 5, outcome?.territory ?? [])).toBe(true);
+  });
+
+  it('a dead-straight crossing seals the notch it drove over (ticket 26)', () => {
+    // The user report: "driving over small gaps to close an area often does
+    // nothing". A straight run is exactly collinear tick after tick, so
+    // `appendTrailPoint` folds the whole excursion into TWO points and the
+    // loop ring comes out with zero area — nothing for the clipper to bridge
+    // with. Verified red against the pre-ticket-26 code: `null`.
+    const trail: Point[] = [
+      [3.5, 3],
+      [8.5, 3],
+    ];
+    const outcome = closeLoop(notchedBlock(), trail, []);
+    expect(outcome).not.toBeNull();
+    // Sealed pocket = the notch below the crossing, [4..8]×[2..3] = 4 WU².
+    // The seal band adds its own hair-thin sliver on top (≤ 1e-5 WU²).
+    expect(outcome?.gainedArea).toBeCloseTo(4, 4);
+    expect(pointInTerritory(6, 2.5, outcome?.territory ?? [])).toBe(true);
+    // The notch ABOVE the crossing stays open — the run sealed a pocket, it
+    // did not swallow the whole notch.
+    expect(pointInTerritory(6, 4, outcome?.territory ?? [])).toBe(false);
+  });
+
+  it('the straight crossing captures the same pocket as a curved one (ticket 26)', () => {
+    // The bug was a representation artifact, not a rule: 0,05 WU of steering
+    // — a fifth of a head's width — used to decide between 4 WU² and nothing.
+    // Now both seal the same pocket, and the only difference left is the
+    // curve's OWN lens, the land it bulged around.
+    const straight: Point[] = [
+      [3.5, 3],
+      [8.5, 3],
+    ];
+    const curved: Point[] = [
+      [3.5, 3],
+      [6, 3.05],
+      [8.5, 3],
+    ];
+    const viaStraight = closeLoop(notchedBlock(), straight, []);
+    const viaCurved = closeLoop(notchedBlock(), curved, []);
+    expect(pointInTerritory(6, 2.5, viaStraight?.territory ?? [])).toBe(true);
+    expect(pointInTerritory(6, 2.5, viaCurved?.territory ?? [])).toBe(true);
+    // The lens: a 0,05 WU bulge over the 4 WU of notch it spans.
+    const lens = (viaCurved?.gainedArea ?? 0) - (viaStraight?.gainedArea ?? 0);
+    expect(lens).toBeGreaterThan(0);
+    expect(lens).toBeLessThan(0.15);
+  });
+
+  it('a straight crossing between two own pieces encloses nothing — no fill', () => {
+    // The other half of the user report, and the answer is different: two
+    // separate blocks with a gap between them are not a notch. A run from one
+    // to the other closes nothing off — the gap stays open on both flanks —
+    // so there is no pocket, and the seal band's own sliver stays far below
+    // the fill floor. Sealing a crossing must not invent land.
+    const twoBlocks: Territory = [[squareRing(3, 5, 3)], [squareRing(11, 5, 3)]];
+    const trail: Point[] = [
+      [5.8, 5],
+      [8.5, 5],
+    ];
+    expect(closeLoop(twoBlocks, trail, [])).toBeNull();
   });
 
   it('steals foreign land out of a POCKET the loop merely encloses', () => {

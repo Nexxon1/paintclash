@@ -218,6 +218,28 @@ function playerOnBlock(id: number, x: number, y: number, heading: number): Playe
   return { ...playerAt(id, x, y, heading), territory: [[squareRing(100, 100, 3)]] };
 }
 
+/**
+ * The same block, 12 WU wide, with a 4-wide, 3-deep notch bitten out of its
+ * top edge — 72 − 12 = 60 WU². A head crossing at mid-notch height runs
+ * inside → notch → inside without ever steering.
+ */
+function notchedBlock(): Territory {
+  return [
+    [
+      [
+        [94, 97],
+        [106, 97],
+        [106, 103],
+        [102, 103],
+        [102, 100],
+        [98, 100],
+        [98, 103],
+        [94, 103],
+      ],
+    ],
+  ];
+}
+
 describe('trail (spec §2.1: outside = trail, inside = safespace)', () => {
   it('starts a trail on leaving the territory, seeded with the last inside pose', () => {
     // Head near the right edge of the (97..103)² block, moving right:
@@ -275,6 +297,35 @@ describe('loop close → fill (spec §2.2)', () => {
     // Loop rectangle [102..106]×[100..106] = 24, overlap with block = 3.
     expect(territoryArea(p.territory)).toBeCloseTo(36 + 21, 4);
     expect(pointInTerritory(105, 104, p.territory)).toBe(true);
+  });
+
+  it('an unsteered straight crossing of a notch fills it (ticket 26)', () => {
+    // The two rules that used to cancel each other out, through the real tick
+    // path: a straight run is exactly collinear tick after tick, so the trail
+    // folds to TWO points — and a two-point ring used to be dropped before it
+    // could bridge anything. Nothing is steered here; `turn` stays 0 the whole
+    // way, which is exactly how a player crosses a small gap.
+    const player = { ...playerAt(1, 97, 101.5, 0), territory: notchedBlock() };
+    const state = stateWith(player);
+    // 97 → 102.4 at 0.45 WU/tick: leaves the block at 98, crosses the notch,
+    // re-enters past 102 on the twelfth tick.
+    let filledOn = -1;
+    let trailBeforeClose = 0;
+    for (let t = 1; t <= 12 && filledOn === -1; t++) {
+      trailBeforeClose = state.players[0]?.trail.length ?? 0;
+      if (step(state, {}, TICK_DT_SEC).fills.length > 0) filledOn = t;
+    }
+    expect(filledOn).toBe(12);
+    // The closing pose is collinear with the run, so it folded in too: the
+    // ring that captured this was two points long.
+    expect(trailBeforeClose).toBe(2);
+    const p = state.players[0];
+    if (!p) throw new Error('player vanished');
+    // Sealed pocket = the notch below the crossing, [98..102]×[100..101.5].
+    expect(territoryArea(p.territory) - 60).toBeCloseTo(6, 4);
+    expect(pointInTerritory(100, 100.5, p.territory)).toBe(true);
+    // Above the crossing the notch is still open — nothing enclosed it.
+    expect(pointInTerritory(100, 102.5, p.territory)).toBe(false);
   });
 
   it('a sliver loop fires the fill event but keeps the territory (spec §2.2 floor)', () => {

@@ -7,7 +7,9 @@
  *
  * Capture semantics (stealing since ticket 06):
  *
- *   1. union(territory, loop polygon)   — loop = trail + straight chord
+ *   1. union(territory, loop polygon)   — loop = trail + straight chord,
+ *                                         sealed with a hair-thin band when
+ *                                         the trail is straight (ticket 26)
  *   2. fill the union's holes           — everything enclosed is captured:
  *                                         neutral pockets AND foreign land
  *                                         (überfärbt/gestohlen, spec §2.2)
@@ -42,6 +44,7 @@ import { difference, union } from 'polyclip-ts';
 
 import {
   boundsSeparated,
+  polylineBand,
   ringArea,
   snapWU,
   squareRing,
@@ -51,8 +54,31 @@ import {
   type Bounds,
 } from './geometry.js';
 
-/** Rings below this area are float debris from the clipper, not land. */
+/**
+ * Rings below this area are float debris from the clipper, not land — and, the
+ * same fact read from the other side, too thin to bound a region at all, which
+ * is what decides whether a loop ring needs the seal band (`loopPolygons`).
+ */
 const DEBRIS_AREA_WU2 = 1e-9;
+
+/**
+ * Half-width of the seal band a degenerate loop ring is closed with
+ * (`loopPolygons`, ticket 26). Two facts fix the order of magnitude:
+ *
+ * - **Above the snap lattice** (1e-7 WU, ADR-0007) by 10×, so the band is real
+ *   geometry to the clipper and cannot be snapped flat.
+ * - **Far below the fill floor** in the only way that matters: a band is at
+ *   most `2 × this × trail length` of land, so even a trail spanning the whole
+ *   200 WU arena carries 4e-4 WU² — a fortieth of `minFillAreaWU2`. Sealing a
+ *   crossing can therefore never, on its own, lift a capture over the floor;
+ *   it only lets the clipper see a crossing that was always there.
+ *
+ * It is emphatically NOT the rendered trail width (`BALANCE.trail.widthWU` =
+ * 1 WU). Unioning the trail as the 1-WU band it looks like would hand every
+ * fill a half-width margin along its whole path — a balance change, and a big
+ * one. This is a numerical seal, sized to be invisible.
+ */
+const SEAL_HALF_WIDTH_WU = 1e-6;
 
 export interface FillOutcome {
   /** The player's new territory, replacing the old one. */
@@ -71,11 +97,12 @@ export interface FillOutcome {
 /**
  * Close a trail loop against the player's territory. `trail` runs from the
  * last pose inside the territory over the outside excursion to the first
- * pose back inside; the implicit chord back to the start closes the ring.
+ * pose back inside; the implicit chord back to the start closes the ring. A
+ * dead-straight excursion is a loop like any other — see `loopPolygons`.
  *
  * Returns `null` when nothing is captured: the enclosed area is below the
- * sliver floor, the trail is too short to enclose anything, or any boolean
- * op fails/corrupts (verified failure mode: massive self-overlap) — then the
+ * sliver floor, the trail is not even a segment, or any boolean op
+ * fails/corrupts (verified failure mode: massive self-overlap) — then the
  * capture is forfeited deterministically, steal included, instead of
  * crashing the tick or leaving half-applied land. Callers reset the trail
  * either way.
@@ -85,10 +112,8 @@ export function closeLoop(
   trail: readonly Point[],
   others: readonly Territory[],
 ): FillOutcome | null {
-  if (trail.length < 3) return null;
-  // All clipper inputs live on the snap lattice (see geometry.ts) — raw
-  // float trails go on it here; territories are prior lattice outputs.
-  const loop: Territory = [[trail.map((p): Point => [snapWU(p[0]), snapWU(p[1])])]];
+  const loop = loopPolygons(trail);
+  if (loop === null) return null;
   let captured: Territory | null;
   const updatedOthers: Territory[] = [];
   try {
@@ -134,6 +159,50 @@ export function closeLoop(
   const gainedArea = territoryArea(captured) - territoryArea(territory);
   if (!(gainedArea >= BALANCE.trail.minFillAreaWU2)) return null;
   return { territory: captured, gainedArea, others: updatedOthers };
+}
+
+/**
+ * The trail as polygons for the clipper: its own ring — the trail plus the
+ * implicit chord back to the start — and, when that ring is degenerate, a
+ * hair-thin band along the trail. `null` when the trail is not even a segment;
+ * everything else the area check at the end of `closeLoop` decides, which is
+ * the only question that was ever being asked (a capture below the sliver floor
+ * is no capture).
+ *
+ * The band is what makes a DEAD-STRAIGHT crossing count (ticket 26). Driving
+ * straight is exactly collinear tick after tick — same heading, same step — so
+ * `appendTrailPoint` folds the whole excursion into two points, deliberately
+ * (straight runs cost O(1) vertices instead of one per tick). But two points
+ * are a line, not a region: `union(territory, loop)` adds nothing, no hole
+ * appears, and the hole-fill finds nothing to capture. Driving straight is also
+ * precisely how one crosses a small gap, so the mechanic failed exactly where
+ * players reached for it, and 0,05 WU of steering — a fifth of a head's width —
+ * decided between a capture and nothing.
+ *
+ * A zero-area ring is not a rule about the move, though. Geometrically the run
+ * IS a closed loop: the trail seals the gap, and the pocket's remaining sides
+ * are the player's own border. The band gives that seal the one property the
+ * boolean pipeline needs from it — a thickness — and nothing else.
+ *
+ * The ring is kept ALONGSIDE the band rather than replaced by it, because
+ * "zero signed area" is not the same as "covers nothing": a trail that crosses
+ * itself into two counter-oriented lobes cancels to ~0 while covering real
+ * land, and the clipper resolves such a ring to exactly that land (the spiral
+ * case in `fill.test.ts`). Adding the band can only ever add; replacing the
+ * ring could silently drop a capture. A degenerate ring costs the clipper
+ * nothing — polyclip resolves it to the empty set, verified for both the
+ * two-point and the collinear-three-point case.
+ *
+ * The chord needs no seal of its own: a ring this thin has its chord lying
+ * along the trail it closes, so the band already covers it.
+ */
+function loopPolygons(trail: readonly Point[]): Territory | null {
+  if (trail.length < 2) return null;
+  // All clipper inputs live on the snap lattice (see geometry.ts) — raw float
+  // trails go on it here; territories are prior lattice outputs.
+  const ring: Ring = trail.map((p): Point => [snapWU(p[0]), snapWU(p[1])]);
+  if (Math.abs(ringArea(ring)) >= DEBRIS_AREA_WU2) return [[ring]];
+  return [[ring], ...polylineBand(ring, SEAL_HALF_WIDTH_WU).map((quad): Ring[] => [quad])];
 }
 
 /**

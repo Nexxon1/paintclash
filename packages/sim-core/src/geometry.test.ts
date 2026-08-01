@@ -8,6 +8,7 @@ import {
   cloneTerritory,
   distanceToTerritory,
   pointInTerritory,
+  polylineBand,
   ringArea,
   segmentDistanceSq,
   segmentsProperlyCross,
@@ -327,6 +328,120 @@ describe('validPolyTopology', () => {
     expect(validPolyTopology([])).toBe(false);
   });
 });
+
+describe('polylineBand', () => {
+  it('wraps each segment in a rectangle of exactly the asked width', () => {
+    const band = polylineBand(
+      [
+        [1, 1],
+        [5, 1],
+      ],
+      0.25,
+    );
+    expect(band).toHaveLength(1);
+    // 4 long, 0.5 wide, CCW like every other ring geometry.ts builds.
+    expect(ringArea(band[0] ?? [])).toBeCloseTo(2, 9);
+    expect(band[0]).toEqual([
+      [1, 0.75],
+      [5, 0.75],
+      [5, 1.25],
+      [1, 1.25],
+    ]);
+  });
+
+  it('straddles the polyline — the band covers both of its sides', () => {
+    const band = polylineBand(
+      [
+        [1, 1],
+        [5, 1],
+      ],
+      0.25,
+    );
+    const asTerritory: Territory = band.map((ring) => [ring]);
+    expect(pointInTerritory(3, 1.1, asTerritory)).toBe(true);
+    expect(pointInTerritory(3, 0.9, asTerritory)).toBe(true);
+    expect(pointInTerritory(3, 1.5, asTerritory)).toBe(false);
+  });
+
+  it('gives one rectangle per segment, overlapping at the joints', () => {
+    const band = polylineBand(
+      [
+        [0, 0],
+        [4, 0],
+        [4, 4],
+      ],
+      0.5,
+    );
+    expect(band).toHaveLength(2);
+    // Both rectangles cover the joint's neighborhood, so their union is one
+    // connected band — nothing to leak through at the corner.
+    const asTerritory: Territory = band.map((ring) => [ring]);
+    expect(pointInRingCount(3.9, 0.1, band)).toBe(2);
+    expect(pointInTerritory(4.4, 2, asTerritory)).toBe(true);
+  });
+
+  it('skips zero-length segments — coincident points yield no rectangles', () => {
+    expect(
+      polylineBand(
+        [
+          [2, 2],
+          [2, 2],
+          [2, 2],
+        ],
+        0.5,
+      ),
+    ).toEqual([]);
+    expect(polylineBand([[2, 2]], 0.5)).toEqual([]);
+    expect(polylineBand([], 0.5)).toEqual([]);
+  });
+
+  it('survives the snap lattice at the width the fill actually uses', () => {
+    // 1e-6 WU half-width on a 1e-7 lattice: whatever the segment's direction,
+    // the offset's larger component is ≥ 7e-7, so snapping can never flatten
+    // a rectangle along its width (`polylineBand`'s √2-cell precondition).
+    // Any direction, any length a tick could produce — a tick moves 0.45 WU,
+    // and a folded straight run is as long as the excursion was.
+    fc.assert(
+      fc.property(
+        fc.double({ min: 0, max: 2 * Math.PI, noNaN: true }),
+        fc.double({ min: 0.01, max: 200, noNaN: true }),
+        (angle, length) => {
+          const a: Point = [100, 100];
+          const b: Point = [100 + Math.cos(angle) * length, 100 + Math.sin(angle) * length];
+          const band = polylineBand([a, b], 1e-6);
+          const area = Math.abs(ringArea(band[0] ?? []));
+          // Never flat: a flat band seals nothing, which is the whole point.
+          expect(area).toBeGreaterThan(0);
+          // Thickness = area / length, within one lattice cell of 2e-6.
+          const thickness = area / Math.hypot(b[0] - a[0], b[1] - a[1]);
+          expect(thickness).toBeGreaterThan(2e-6 - 1e-7);
+          expect(thickness).toBeLessThan(2e-6 + 1e-7);
+        },
+      ),
+      { numRuns: 300 },
+    );
+  });
+
+  it('yields nothing for a segment shorter than the lattice', () => {
+    // Below 1e-7 WU the two endpoints ARE the same point, so there is no
+    // segment to lay a rectangle along — and a flat ring would be a band that
+    // seals nothing while looking like one.
+    expect(
+      polylineBand(
+        [
+          [100, 100],
+          [100, 100 + 1e-9],
+        ],
+        1e-6,
+      ),
+    ).toEqual([]);
+  });
+});
+
+/** In how many of the rings does the point sit? (Joint-overlap probe.) */
+function pointInRingCount(x: number, y: number, rings: readonly Ring[]): number {
+  return rings.filter((ring) => pointInTerritory(x, y, [[ring]])).length;
+}
 
 describe('squareRing / cloneTerritory', () => {
   it('builds a CCW square of the requested half-size', () => {
