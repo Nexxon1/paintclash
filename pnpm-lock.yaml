@@ -139,6 +139,9 @@ importers:
       '@paintclash/protocol':
         specifier: workspace:*
         version: link:../../packages/protocol
+      '@paintclash/server':
+        specifier: workspace:*
+        version: link:../../packages/server
       '@paintclash/shared':
         specifier: workspace:*
         version: link:../../packages/shared

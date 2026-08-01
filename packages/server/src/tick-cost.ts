@@ -4,36 +4,37 @@
  * node (spec §9.1). The ticker that feeds it lives in `arena-do.ts`, the read
  * side is `GET /api/arena-stats` in `router.ts`.
  *
- * ## Why lateness is the measurement, and not a stopwatch
+ * ## Lateness, and the runtime where it means nothing
  *
  * A stopwatch around `arena.tick()` reads zero in production. workerd freezes
  * `Date.now()` for the whole synchronous run of an event (Spectre hardening):
  * the clock only moves when I/O happens, so "after the tick" is the same
- * instant as "before the tick". That is exactly why the ticket-02 benchmark
- * timed its batches from OUTSIDE the object (`bench/do-cpu`) — and why the
- * deployed arena, which nobody can put a stopwatch around, needs a different
- * handle on the same number.
+ * instant as "before the tick". That is why the ticket-02 benchmark timed its
+ * batches from OUTSIDE the object (`bench/do-cpu`).
  *
- * The handle is the tick's own schedule. `startTicker` aims each tick at a
- * fixed 50 ms grid and sleeps `scheduled - Date.now()`. In production that
- * subtraction happens on the FROZEN clock, i.e. on the value read before the
- * tick ran — so the loop always sleeps the full remainder and the next tick
- * starts one tick-cost late. At the top of that tick the clock has thawed
- * (delivering a timer is an event), and the arithmetic is exact:
+ * So this records the next best thing: how late each tick started against the
+ * fixed 50 ms grid `startTicker` aims at. Where the clock advances during
+ * synchronous work — local workerd, `wrangler dev`, the scenario suite — that
+ * is the classic overrun signal: zero until a tick genuinely misses its slot,
+ * and the size of the miss when it does.
  *
- *     late(N+1) = now(N+1) - scheduled(N+1) = cost(N)
+ * **On Cloudflare it is identically zero, and that is a measurement, not a
+ * pass.** Ticket 16 ran a deployed arena at eight entities and 4 600 territory
+ * vertices for five minutes: all 6 026 ticks landed in the lowest bucket and
+ * `observedHz` read exactly 20.00. The isolate's clock is not merely frozen
+ * during work — it is slaved to the timer schedule, so `Date.now()` at the top
+ * of a tick returns the slot that tick was AIMED at, whatever really happened
+ * in between. Nothing an over-running tick does can move it. (Consistent with
+ * ticket 18, which found the same clock reporting a perfect 50.00 ms cadence
+ * while the world outside saw ~22 ticks a second.)
  *
- * So on Cloudflare, **the lateness recorded at each tick is the previous
- * tick's CPU cost**. Locally, where the clock does advance during synchronous
- * work, the loop subtracts the cost itself and the same number degrades to the
- * classic meaning — schedule overrun, zero until a tick genuinely misses its
- * slot. Both readings are worth having and neither needs an extra event per
- * tick; the report says which one it is via `observedHz` (a rate at or above
- * nominal means the schedule is being held, so lateness is cost).
- *
- * The clock itself runs ~10 % fast against real time in production (ticket 18),
- * so every millisecond here is ~0.9 real ones — the conservative direction, and
- * the reason `observedHz` is reported next to the costs rather than assumed.
+ * Hence `clockAdvances` in the report, probed once per arena: it says whether
+ * the cost columns below it mean anything on this runtime. When it is false the
+ * production instrument is the CLIENT side — snapshot ticks per wall-clock
+ * second, which the deployed arena cannot fake (`bench/prod-arena`, and
+ * `tests/soak/tickrate-probe.mjs` before it). What still carries information
+ * here is `observedHz`: held against the rate a client observes, the difference
+ * IS the clock skew of ticket 18.
  *
  * ## Why a histogram and not a list
  *
@@ -62,10 +63,29 @@ export const TICK_COST_EDGES_MS: readonly number[] = [1, 2, 4, 8, 12, 16, 25, 50
 /** Buckets in a report: one per edge, plus the open one past the last edge. */
 export const TICK_COST_BUCKETS = TICK_COST_EDGES_MS.length + 1;
 
+/**
+ * Does `Date.now()` move while this runtime burns CPU synchronously? Answers
+ * whether a lateness reading can carry a tick's cost at all (see the header).
+ *
+ * Same shape as `bench/do-cpu`'s `probeClockAdvance`, and deliberately so — the
+ * benchmark asks the same question of the same runtime. Called once per arena,
+ * from `startTicker`: a few milliseconds when a world is created, against hours
+ * of ticking, in exchange for a report that says whether to believe itself.
+ */
+export function clockAdvancesDuringWork(): boolean {
+  const started = Date.now();
+  let sink = 0;
+  for (let i = 1; i <= 2_000_000; i++) sink += Math.sqrt(i);
+  // `sink` has to escape, or the loop is dead code the optimizer may drop.
+  return Date.now() > started && sink > 0;
+}
+
 /** One arena's running tick-cost tally. Mutated in place, never reallocated. */
 export interface TickCost {
   /** DO-clock ms the window opened at — the tick loop's first schedule. */
   readonly openedMs: number;
+  /** Whether the costs below can mean anything here (see `clockAdvancesDuringWork`). */
+  readonly clockAdvances: boolean;
   /** Ticks recorded so far. */
   ticks: number;
   /** Sum of the recorded lateness, for the mean. */
@@ -84,6 +104,11 @@ export interface TickCost {
 
 export interface TickCostReport {
   ticks: number;
+  /**
+   * `false` means every cost below is structurally zero on this runtime and
+   * says nothing about the tick — read the client-side rate instead.
+   */
+  clockAdvances: boolean;
   /** How long this window has been open, in DO-clock ms. */
   windowMs: number;
   meanMs: number;
@@ -98,9 +123,10 @@ export interface TickCostReport {
   buckets: number[];
 }
 
-export function createTickCost(openedMs: number): TickCost {
+export function createTickCost(openedMs: number, clockAdvances: boolean): TickCost {
   return {
     openedMs,
+    clockAdvances,
     ticks: 0,
     sumMs: 0,
     maxMs: 0,
@@ -152,17 +178,13 @@ function bucketOf(lateMs: number): number {
  * carry — which is also what keeps a quantile from reporting `Infinity`.
  */
 function ceilingOf(index: number, maxMs: number): number {
-  let i = 0;
-  for (const edge of TICK_COST_EDGES_MS) {
-    if (i === index) return Math.min(edge, maxMs);
-    i += 1;
-  }
-  return maxMs;
+  return Math.min(TICK_COST_EDGES_MS[index] ?? Infinity, maxMs);
 }
 
 export function tickCostReport(cost: TickCost, nowMs: number): TickCostReport {
   return {
     ticks: cost.ticks,
+    clockAdvances: cost.clockAdvances,
     windowMs: nowMs - cost.openedMs,
     meanMs: cost.ticks === 0 ? 0 : cost.sumMs / cost.ticks,
     p50Ms: quantile(cost, 0.5),

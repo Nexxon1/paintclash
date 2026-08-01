@@ -20,3 +20,37 @@
 - [ ] Falls Option 2: Replay-Determinismus-Auswirkung geklärt und getestet.
 
 _Referenz: Ticket 17 Session-Logs 2026-07-20/21 (Messungen, Tail-Beweis); `tests/soak/tickrate-probe.mjs`; ADR-0003._
+
+## Comments
+
+### 2026-08-01 (Ticket 16) — erster Eintrag der geforderten Messreihe: die Anomalie trat nicht auf
+
+Zwei 5-Minuten-Läufe gegen `paintclash.secure-data.workers.dev` (Commit `8a6642e`,
+[`bench/prod-arena`](../../../bench/prod-arena/)), gemessen als **gelieferte Snapshot-Ticks
+gegen die Wanduhr** — dieselbe Grösse wie `tickrate-probe.mjs`, nur über 300 s statt 15 s:
+
+| Last | gelieferte Ticks / 300 s | Rate |
+| --- | --- | --- |
+| 8 Entities (1 Mensch + 7 Bots), 4 979 Vertices | 6 031 | **20,09 Hz** |
+| 16 Entities (Populationsgrenze), 4 570 Vertices | 6 027 | **20,10 Hz** |
+
+Also **nominelles Tempo**, nicht die 21,79–22,20 Hz vom 2026-07-21. Das Symptom dieses
+Tickets — Balance-Werte faktisch ~11 % skaliert — war an diesem Tag nicht vorhanden.
+
+Zwei Punkte, damit das nicht überinterpretiert wird:
+
+1. **Tick-Arbeit kann die Differenz nicht erklären.** Ein überlaufender Tick verschiebt den
+   nächsten (der Ticker verschläft die volle Restzeit auf einer eingefrorenen Uhr), 22,2 Hz
+   liesse sich also grundsätzlich durch ~4,7 ms mittlere Tick-Kosten auf 20,1 Hz drücken.
+   Dagegen spricht die Messung selbst: die Rate ist über den ganzen Lastbereich **flach**
+   (19,84–19,87 Hz je Fenster, während die Vertices von 179 auf 4 570 stiegen, Fill-Rate bis
+   4,5/s). Ein lastabhängiger Anteil dieser Grösse wäre sichtbar. Der Rest-Versatz gehört
+   dem Timer: ~0,5 % an diesem Tag, nicht 11 %.
+2. **Ein Tag, ein Colo, ein Client-Standort.** Genau deshalb verlangt die Akzeptanz hier
+   eine Reihe über ≥ 3 Tage/Colos. Dies ist Eintrag 1.
+
+Konsequenz für die Optionen: falls sich das bestätigt, ist die Anomalie **transient** und
+Option 1 („akzeptieren + dokumentieren") wird noch billiger — es gäbe dann nichts zu
+kalibrieren, sondern nur etwas zu beobachten. Ein wiederholbares Messwerkzeug liegt jetzt
+vor; `pnpm --filter @paintclash/bench-prod-arena bench` gegen Produktion reicht für den
+nächsten Eintrag.

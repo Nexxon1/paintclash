@@ -42,13 +42,13 @@ describe('tick budget of a deployed arena', () => {
 
     expect(result.joined, 'no client ever spawned — is the arena reachable?').toBeGreaterThan(0);
     const last = result.samples[result.samples.length - 1]?.stats;
-    expect(last?.tick?.ticks ?? 0, 'the arena reported no ticks at all').toBeGreaterThan(0);
+    expect(last?.tickCost?.ticks ?? 0, 'the arena reported no ticks at all').toBeGreaterThan(0);
     // The premise `pilot.test.ts` guards offline, re-checked over the wire: a
     // run without fills measures heads driving, not an arena painting, and its
     // tick cost would be meaningless.
     expect(result.fills, 'the clients never closed a loop').toBeGreaterThan(0);
     // Loud, not fatal — see above.
-    const over = last?.tick?.overBudgetTicks ?? 0;
+    const over = last?.tickCost?.overBudgetTicks ?? 0;
     if (over > 0) {
       console.log(
         `\n  ⚠ ${String(over)} ticks reached the ${String(TICK_DT_MS)} ms budget — ` +

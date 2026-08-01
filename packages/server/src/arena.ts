@@ -49,15 +49,17 @@ import {
 
 import { BotPilot, senseFor } from './bot.js';
 
+import type { TickCostReport } from './tick-cost.js';
+
 /**
  * What one arena currently holds — the half of `GET /api/arena-stats` that is
  * about the load, next to the half that is about what the load costs
  * (`tick-cost.ts`). Every field is a number the tick budget has to be read
- * against: a p95 of 12 ms means nothing without knowing whether eight entities
- * or sixteen produced it, and even less without the vertex count, since that
- * is what the fill actually scales with (ticket 22/23).
+ * against: a tick time means nothing without knowing whether eight entities or
+ * sixteen produced it, and even less without the vertex count, since that is
+ * what the fill actually scales with (ticket 22/23).
  */
-export interface ArenaPopulation {
+export interface ArenaLoad {
   /** Completed sim ticks — how long this world has been growing. */
   tick: number;
   sizeWU: number;
@@ -68,6 +70,24 @@ export interface ArenaPopulation {
   bots: number;
   /** Total territory ring vertices across every player. */
   vertices: number;
+}
+
+/**
+ * The body of `GET /api/arena-stats` (ticket 16) — declared here, next to the
+ * half of it this module produces, so the arena, the scenario test and
+ * `bench/prod-arena` all read the SAME shape. They used to declare it three
+ * times, and it had already drifted apart by one field.
+ *
+ * `load` and `tickCost` are deliberately not merged: one says what the arena is
+ * carrying, the other what carrying it costs, and a reader has to be able to
+ * tell `load.tick` (the sim's tick counter) from `tickCost` (what a tick spends)
+ * at a glance.
+ */
+export interface ArenaStatsPayload {
+  /** Is a world running right now? A hibernating arena answers with `false`. */
+  live: boolean;
+  load: ArenaLoad | null;
+  tickCost: TickCostReport | null;
 }
 
 /** What ArenaCore needs from a transport — a DO WebSocket satisfies this. */
@@ -219,7 +239,7 @@ export class ArenaCore {
    * count is only asked for when someone reads the endpoint, and even a
    * six-thousand-vertex arena is a single cheap pass then.
    */
-  get population(): ArenaPopulation {
+  get load(): ArenaLoad {
     let bots = 0;
     let vertices = 0;
     for (const player of this.state.players) {

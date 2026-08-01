@@ -5,6 +5,7 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
+    "./arena": "./src/arena.ts",
     "./bot": "./src/bot.ts"
   },
   "scripts": {

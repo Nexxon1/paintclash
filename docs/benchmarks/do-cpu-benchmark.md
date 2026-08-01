@@ -4,9 +4,12 @@ Ergebnis-Dokument zu **Bau-Ticket 02** (`.scratch/paintclash/issues/02-do-cpu-be
 graduiert aus Wayfinder-Ticket 14. Referenziert von T15 (Populationsgrenze) und T16
 (Re-Konfirmation gegen den echten Build). Harness: [`bench/do-cpu/`](../../bench/do-cpu/).
 
-Stand: 2026-07-19. **Teilweise überholt** — siehe die Nachträge von T12 (2026-07-30) und
-T22 (2026-07-31) am Ende: gegen echten Code ist der Kern-Befund dieses Dokuments
-umgekehrt. Der Fill dominiert den Tick, die Kollision ist vernachlässigbar.
+Stand: 2026-07-19. **Teilweise überholt** — siehe die Nachträge am Ende. T12/T22 drehen
+den Kern-Befund um (gegen echten Code dominiert der **Fill** den Tick, die Kollision ist
+vernachlässigbar); **T16 (2026-08-01) ersetzt die ganze Hochrechnung durch eine Messung
+auf echter Cloudflare-Hardware** und widerlegt dabei den 4×-Sicherheitsfaktor als Worst
+Case. Die Populationsgrenze 16 und das Bot-Ziel 8 sind damit **bestätigt** — nicht mehr
+extrapoliert.
 
 ## TL;DR
 
@@ -261,6 +264,108 @@ Zwei Punkte für **Ticket 16**, das die Grenze gegen echte Infrastruktur messen 
   bewusst so (spec §8.3 Punkt 3 ist ausdrücklich CGNAT-tolerant, „im Zweifel durchlassen"),
   aber es heisst auch: der Pro-IP-Deckel beisst erst, wenn die Populationsgrenze *über* ihn
   steigt. Wer die Grenze anhebt, sollte diesen Zusammenhang mitentscheiden.
+
+## Nachtrag (2026-08-01, Bau-Ticket 16: gegen echte Infrastruktur gemessen)
+
+Ticket 16 hat die Messung wiederholt, wo sie hingehört: gegen die **deployte** Arena auf
+Cloudflare (`paintclash.secure-data.workers.dev`, Commit `8a6642e`), mit dem **echten**
+Sim, echten Bots, echten WebSockets. Harness: [`bench/prod-arena`](../../bench/prod-arena/).
+Zwei Läufe à 5 Minuten, Last aus malenden Headless-Clients.
+
+### Erst der Befund über das Messen selbst
+
+**In einem Produktions-DO gibt es keine Stoppuhr — auch keine indirekte.** Das war der
+erste Anlauf: der Ticker zielt auf ein festes 50-ms-Raster, also sollte die *Verspätung*
+eines Ticks den Überhang des vorherigen tragen. Auf Cloudflare tut sie das nicht. Die
+Isolate-Uhr ist nicht nur während synchroner Arbeit eingefroren, sie ist an den
+Timer-**Fahrplan** gekoppelt: `Date.now()` liefert am Tick-Anfang exakt den Slot zurück,
+auf den gezielt wurde. Gemessen:
+
+| | 8 Entities, 4 979 Vertices | 16 Entities, 4 570 Vertices |
+| --- | --- | --- |
+| Ticks im untersten Verspätungs-Bucket (< 1 ms) | **6 031 von 6 031** | **6 128 von 6 128** |
+| `observedHz` (Uhr des DO) | **exakt 20,00** | **exakt 20,00** |
+
+Das deckt sich mit Ticket 17/18 („der Ticker misst exakt 50,00 ms/Tick via `Date.now()`")
+und erklärt es: die Uhr *kann* gar nichts anderes messen. Konsequenz im Code — jeder
+Report trägt seither ein `clockAdvances`, einmal pro Arena geprüft; das Instrument sagt
+zuerst, ob man ihm glauben darf, statt eine strukturelle Null als bequemes Budget zu
+verkaufen.
+
+### Was stattdessen misst: das gelieferte Tick-Defizit
+
+Von aussen, über Minuten. Ein überlaufender Tick verzögert den nächsten um genau seinen
+Überhang (der Ticker rechnet seine Schlafzeit auf einer Uhr aus, die sich nicht bewegt
+hat, verschläft also immer die volle Restzeit) — **gelieferte Snapshot-Ticks gegen das
+nominelle 20-Hz-Raster sind damit der aufsummierte Überhang.** Das kann keine
+eingefrorene Uhr wegdefinieren und kein einzelnes Jitter-Paket verfälschen.
+
+| Lauf | Entities | Vertices (Ende) | Fills | Tode | gelieferte Ticks / 300 s | Rate | aufsummierter Überhang |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Produktions-Default (1 Mensch + 7 Bots) | 8 | 4 979 | 63\* | 0 | 6 031 | **20,09 Hz** | ≤ 0 ms |
+| **An der Populationsgrenze** | **16** | 4 570 | 1 358 | 35 | 6 027 | **20,10 Hz** | **−1 461 ms (−0,49 %)** |
+
+Nominal wären in 300 s 6 000 Ticks. Beide Läufe lieferten **mehr**; negativer Überhang
+heisst also: die Arena verliert keine Zeit an die Arbeit, sie läuft ~0,5 % vor.
+
+\* nur die Fills des *einen* eigenen Clients; die sieben Bots füllten zusätzlich und
+ungezählt. Im 16er-Lauf sind alle 16 eigene Clients, daher die vollständige Zahl:
+**4,5 Fills/s** — mehr als die synthetische Last von Ticket 02 je annahm (ein Fill je
+Entity alle 5 s ⇒ 3,2/s).
+
+Negativer Überhang heisst: die Arena lieferte **mehr** Ticks als das nominelle Raster
+verlangt. Sie verliert keine Zeit an die Arbeit; sie läuft ~0,5 % vor.
+
+### Was daraus folgt
+
+- **Die Populationsgrenze 16 ist bestätigt.** Bei doppelter Population und ~2,6-facher
+  Fill-Rate änderte sich die gelieferte Kadenz um **0,01 Hz**. `LIMITS.maxPlayers = 16`
+  bleibt.
+- **Zum p95-≤-25-ms-Kriterium, ehrlich:** *direkt* messbar ist es auf Produktion nicht —
+  dafür bräuchte es Pro-Tick-Zeiten, die die Laufzeit verweigert. Was messbar ist, grenzt es
+  aber ein: der aufsummierte Überhang über 300 s ist ≤ 0. Selbst wenn man dem Timer 1 %
+  Ungenauigkeit zugesteht (≈ 3 s über den Lauf) und diesen ganzen Spielraum in die
+  langsamsten 5 % der Ticks steckt, landet p95 bei **≈ 10 ms**. Das Kriterium ist damit
+  *begründet* erfüllt, nicht gemessen.
+- **Das Bot-Ziel 8 ist bestätigt.** Der Produktions-Default lief fünf Minuten ohne einen
+  einzigen verlorenen Tick.
+- **Der 4×-Hardware-Faktor ist als Worst Case widerlegt.** Wäre Produktion 4× langsamer als
+  die Entwicklermaschine, würde der lokale Mittelwert von T22 (1,69 ms/Tick) zu 6,8 ms —
+  über 6 128 Ticks sind das **42 s** Überhang in einem 300-s-Lauf, also ~18 Hz statt 20,1.
+  Gemessen wurde kein Verlust. Die Rechnung „lokal × 4" bleibt als *Konvention* brauchbar,
+  ist aber nachweislich pessimistisch; sie darf keine Entscheidung mehr allein tragen.
+- **Die Kurve ist flach, nicht nur niedrig.** Der Tick-Zähler des DO stieg im 16er-Lauf in
+  **jedem** 30-s-Fenster um 669–670 — während die Vertices von 179 auf 4 570 wuchsen und die
+  Fill-Rate auf 4,5/s stieg. Gleichförmig auf ±0,15 %. Genau diese Flachheit ist das
+  Argument: ein last*abhängiger* Anteil wäre sichtbar geworden, also gehört der
+  verbleibende konstante Versatz dem Timer und nicht der Arbeit.
+  (Die *client-seitigen* Fenster-Raten streuen dagegen zwischen 19,8 und 22,2 Hz — ein
+  Artefakt der Fenstergrenzen: zwischen die zwei Marken eines Fensters fällt der
+  `/api/arena-stats`-Abruf, dessen Dauer schwankt. Über die volle 300-s-Spanne fällt das
+  weg; darum ist die Gesamtrate die belastbare Zahl und die Fenster-Rate nur die Kontur.)
+- **Datenpunkt für Ticket 18:** die dort beschriebene Anomalie (real ~22,2 Hz, Spieltempo
+  ~11 % über Spec) **trat in diesen Läufen nicht auf** — beide lieferten 20,09/20,10 Hz,
+  also nominelles Tempo. Da die Rate über den ganzen Lastbereich flach ist, lässt sich der
+  Rest-Versatz nicht als verdeckte Tick-Arbeit wegerklären: der Uhren-Versatz betrug an
+  diesem Tag ~0,5 %, nicht 11 %. Ein Lauf an einem Tag aus einem Colo — genau die
+  Messreihe, die Ticket 18 verlangt, hat damit ihren ersten Eintrag, mehr nicht.
+
+### Grenzen dieser Messung
+
+- **Ein Tag, ein Colo, ein Client-Standort.** Ticket 18 verlangt aus gutem Grund eine Reihe.
+- **Ein konstanter Sockel bleibt unauflösbar.** Getrennt werden konnte nur der
+  *last-abhängige* Anteil; ein last-unabhängiger Tick-Aufwand wäre von der Timer-Genauigkeit
+  nicht zu unterscheiden. Für die Frage „trägt die Arena 16 Spieler?" ist genau der
+  last-abhängige Anteil der relevante.
+- **Die Last ist ein Autopilot, kein Mensch.** Er fliegt die Lobe der Szenario-Suite, malt
+  entsprechend fleissig (4,5 Fills/s) und stirbt selten (35 Tode in 5 min bei 16 Köpfen).
+  Ein zufällig gefundener Gegensatz: derselbe Autopilot gegen lokales `wrangler dev` starb
+  **1 892**-mal — dort reisst der Runtime alle ~34 s für ~3,5 s ab (die GC-Stalls, die
+  dieses Dokument oben schon nennt), und ein blinder Kopf fährt geradeaus in fremde Trails.
+  Ein Grund mehr, `wrangler dev` nicht für Kapazitätsaussagen zu benutzen.
+- **Der lokale Kontrolllauf** (16 Clients gegen `wrangler dev`, 300 s) zeigte 5 485 Ticks,
+  p95 4 ms, 8 Ticks über Budget — sämtlich die genannten ~3,5-s-Stalls. Lokal misst die
+  Verspätung also weiterhin etwas; sie misst nur nicht Cloudflare.
 
 ## Anhang — vollständige Kurve (Lauf 1, ms/Tick)
 

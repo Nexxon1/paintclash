@@ -1,10 +1,16 @@
 import { describe, expect, it } from 'vitest';
 
-import { TICK_COST_BUCKETS, createTickCost, recordTick, tickCostReport } from './tick-cost.js';
+import {
+  TICK_COST_BUCKETS,
+  clockAdvancesDuringWork,
+  createTickCost,
+  recordTick,
+  tickCostReport,
+} from './tick-cost.js';
 
 /** Record a run of ticks that each fired `lateMs` after their slot. */
 function record(late: readonly number[], periodMs = 50): ReturnType<typeof createTickCost> {
-  const cost = createTickCost(1_000);
+  const cost = createTickCost(1_000, true);
   let scheduled = 1_000;
   let now = 1_000;
   for (const lateMs of late) {
@@ -17,7 +23,7 @@ function record(late: readonly number[], periodMs = 50): ReturnType<typeof creat
 
 describe('tick cost recorder', () => {
   it('reports nothing before the first tick', () => {
-    const report = tickCostReport(createTickCost(1_000), 1_000);
+    const report = tickCostReport(createTickCost(1_000, true), 1_000);
     expect(report.ticks).toBe(0);
     expect(report.meanMs).toBe(0);
     expect(report.maxMs).toBe(0);
@@ -82,6 +88,24 @@ describe('tick cost recorder', () => {
   });
 
   it('reports how long the window it summarises has been open', () => {
-    expect(tickCostReport(createTickCost(1_000), 4_500).windowMs).toBe(3_500);
+    expect(tickCostReport(createTickCost(1_000, true), 4_500).windowMs).toBe(3_500);
+  });
+});
+
+describe('the report says whether to believe itself', () => {
+  it('finds the clock running on a runtime whose clock runs', () => {
+    // Node is such a runtime, and so is local workerd — which is exactly why a
+    // lateness reading is worth having locally at all. The Cloudflare answer is
+    // the other one, and only a deployed arena can give it.
+    expect(clockAdvancesDuringWork()).toBe(true);
+  });
+
+  it('carries the clock verdict it was created with', () => {
+    // The one field a reader has to check first: on Cloudflare the isolate
+    // clock is slaved to the tick schedule, so every cost above reads zero no
+    // matter what the tick spent (ticket 16). A report that did not say so
+    // would look like a comfortable budget instead of a blind instrument.
+    expect(tickCostReport(createTickCost(0, false), 0).clockAdvances).toBe(false);
+    expect(tickCostReport(createTickCost(0, true), 0).clockAdvances).toBe(true);
   });
 });

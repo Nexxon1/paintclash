@@ -286,10 +286,17 @@ export async function handleFetch(request: Request, env: Env): Promise<Response>
  * Deliberately public and unauthenticated: it is a handful of aggregate numbers
  * about one shared arena, it names no player and no address, and gating it
  * behind a secret would mean the one measurement that matters is unavailable
- * exactly when someone is trying to find out why the game feels slow. It is
- * NOT charged against the join budget — a read must never be able to cost a
- * player their next socket — which is safe because it opens nothing and does
- * no per-request work beyond one DO round trip.
+ * exactly when someone is trying to find out why the game feels slow.
+ *
+ * It is also NOT charged against the join budget, unlike `/ws` — and that is
+ * the one thing worth being explicit about, because this DOES touch a Durable
+ * Object (`/api/health` does not). Charging it would mean a second DO round
+ * trip to the gate on every read, i.e. doubling the cost of the cheap thing to
+ * meter it. What a flood of these can buy is a share of the daily request
+ * budget, which is exactly what a flood of `/` buys too, and spec §8.5 already
+ * names that outcome: the arena parks until the reset, at no cost. What it
+ * cannot buy is a slot, a socket, or a tick's worth of arena work — the caps
+ * that protect the arena itself are elsewhere and do not depend on this.
  */
 async function arenaStats(env: Env): Promise<Response> {
   return arenaStub(env, PUBLIC_ARENA).fetch('https://arena/stats');

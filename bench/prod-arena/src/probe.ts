@@ -1,60 +1,32 @@
 /**
  * Load probe for a DEPLOYED arena (ticket 16). Opens real WebSockets to a
  * running paintclash — local `wrangler dev` or the production Worker — flies
- * headless clients that paint, and reads back what the arena says its own ticks
- * cost (`GET /api/arena-stats`, see `packages/server/src/tick-cost.ts`).
+ * headless clients that paint, and reads back what the arena reports about
+ * itself (`GET /api/arena-stats`).
  *
- * ## Why this exists next to the other two benches
- *
- * `bench/do-cpu` (ticket 02) measures a SYNTHETIC load in a real Durable
- * Object; `bench/fill-budget` (ticket 22) measures the REAL sim with no DO and
- * no wire. Both leave the same gap, and both say so in their own findings: the
- * numbers come off a dev machine, and the 4× factor standing in for
- * Cloudflare's multi-tenant hardware is an assumption nobody has checked.
- *
- * This one closes that gap the only way it can be closed — by measuring the
- * deployed thing. There is no stopwatch to attach: production freezes
- * `Date.now()` during synchronous work, so the arena reports its own cost
- * through the lateness of its ticks, and this probe is what produces the load
- * worth reporting on.
- *
- * ## What it costs to run
- *
- * Against the Free plan (spec §7.2): `clients` sockets, each sending one
- * batched input frame every `inputFlushTicks` ticks. Incoming WS messages bill
- * 20:1, so a 5-minute run with 16 clients is ~32 000 frames ≈ 1 600 billed
- * requests of the 100 000/day — plus one DO holding one arena for those five
- * minutes. Outgoing snapshots are free. It is a small bite, but it is not zero,
- * and that is why this is a manual `pnpm bench` and never CI.
+ * Why it exists beside `bench/do-cpu` and `bench/fill-budget`, and what a run
+ * costs on the Free plan: [`../README.md`](../README.md). What it can and
+ * cannot measure: `TickMark` below, and `packages/server/src/tick-cost.ts`.
  */
 
+import type { ArenaStatsPayload } from '@paintclash/server/arena';
 import { LIMITS, TICK_DT_MS, type Territory } from '@paintclash/shared';
 import { SimClient } from '@paintclash/sim-client';
 
 import { LoopPilot, type Pose } from './pilot.js';
 
-/** The shape `GET /api/arena-stats` answers with (`arena-do.ts`). */
-export interface ArenaStats {
-  live: boolean;
-  arena: {
-    tick: number;
-    sizeWU: number;
-    connections: number;
-    humans: number;
-    bots: number;
-    vertices: number;
-  } | null;
-  tick: {
-    ticks: number;
-    windowMs: number;
-    meanMs: number;
-    p50Ms: number;
-    p95Ms: number;
-    maxMs: number;
-    overBudgetTicks: number;
-    observedHz: number;
-    buckets: number[];
-  } | null;
+/**
+ * The newest server tick a client has seen, stamped with the local wall clock.
+ *
+ * This is the production stopwatch, and on Cloudflare it is the ONLY one. The
+ * arena's own clock is slaved to its timer schedule — it reports a perfect
+ * 50.00 ms cadence no matter what a tick really cost (ticket 16/18, see
+ * `tick-cost.ts`). Snapshots arriving out here cannot be faked that way: if a
+ * tick overruns, the next snapshot is simply late, and the rate drops.
+ */
+interface TickMark {
+  tick: number;
+  atMs: number;
 }
 
 export interface ProbeOptions {
@@ -75,8 +47,11 @@ export interface ProbeResult {
   /** Loops closed and lives lost, as the clients themselves saw them. */
   fills: number;
   deaths: number;
-  /** `/api/arena-stats` at join time and then every `sampleEverySeconds`. */
-  samples: { atSeconds: number; stats: ArenaStats }[];
+  /**
+   * `/api/arena-stats` at join time and then every `sampleEverySeconds`, each
+   * paired with the newest tick a client had seen at that moment (`TickMark`).
+   */
+  samples: { atSeconds: number; stats: ArenaStatsPayload; mark: TickMark | null }[];
 }
 
 /** `http(s)://host` → `ws(s)://host`. */
@@ -84,10 +59,10 @@ function socketBase(baseUrl: string): string {
   return baseUrl.replace(/^http/, 'ws').replace(/\/+$/, '');
 }
 
-export async function fetchStats(baseUrl: string): Promise<ArenaStats> {
+export async function fetchStats(baseUrl: string): Promise<ArenaStatsPayload> {
   const response = await fetch(`${baseUrl.replace(/\/+$/, '')}/api/arena-stats`);
   if (!response.ok) throw new Error(`arena-stats answered ${String(response.status)}`);
-  return (await response.json()) as ArenaStats;
+  return (await response.json()) as ArenaStatsPayload;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -100,13 +75,23 @@ interface Painter {
   client: SimClient;
   fills: number;
   deaths: number;
+  /** Newest snapshot seen and when — the client-side view of the tick rate. */
+  mark: TickMark | null;
+}
+
+/** Server ticks per real second between two marks; `null` if there is no span. */
+function rateBetween(from: TickMark | null, to: TickMark | null): number | null {
+  if (!from || !to) return null;
+  const seconds = (to.atMs - from.atMs) / 1000;
+  if (seconds <= 0 || to.tick <= from.tick) return null;
+  return (to.tick - from.tick) / seconds;
 }
 
 /**
  * Connect one client and put it to work. The autopilot runs off `onSnapshot`,
  * i.e. on the server's own cadence rather than on a local timer — which is the
- * point: a probe that steered on its own clock would drift against a
- * production arena that ticks ~22 Hz (ticket 18) and slowly stop painting.
+ * point: a probe that steered on its own clock would drift against an arena
+ * whose real cadence is its own business (ticket 18) and slowly stop painting.
  */
 async function connect(baseUrl: string, name: string): Promise<Painter> {
   const socket = new WebSocket(`${socketBase(baseUrl)}/ws`);
@@ -122,7 +107,7 @@ async function connect(baseUrl: string, name: string): Promise<Painter> {
   const client = new SimClient((frame) => {
     if (socket.readyState === WebSocket.OPEN) socket.send(frame);
   }, name);
-  const painter: Painter = { socket, client, fills: 0, deaths: 0 };
+  const painter: Painter = { socket, client, fills: 0, deaths: 0, mark: null };
   socket.addEventListener('message', (event: MessageEvent) => {
     if (event.data instanceof ArrayBuffer) client.receive(event.data);
   });
@@ -136,6 +121,9 @@ async function connect(baseUrl: string, name: string): Promise<Painter> {
   let pilot: LoopPilot | null = null;
   let sinceFlush = 0;
   client.onSnapshot = (snapshot) => {
+    // Stamped for EVERY snapshot, before anything can bail out: this pair is
+    // the only honest stopwatch a deployed arena has (see `TickMark`).
+    painter.mark = { tick: snapshot.tick, atMs: Date.now() };
     const id = client.playerId;
     const size = client.arenaSizeWU;
     if (id === null || size === null) return;
@@ -183,8 +171,18 @@ export async function runLoad(options: ProbeOptions): Promise<ProbeResult> {
     }
     const joined = painters.filter((p) => p.client.self() !== null).length;
 
+    // The newest tick any client has seen. Newest rather than a single fixed
+    // client, so a painter that dies, reconnects or simply stalls cannot make
+    // the arena look slow — the fastest observer is the least wrong one.
+    const newestMark = (): TickMark | null =>
+      painters.reduce<TickMark | null>(
+        (best, painter) =>
+          painter.mark && (!best || painter.mark.tick > best.tick) ? painter.mark : best,
+        null,
+      );
+
     const started = Date.now();
-    samples.push({ atSeconds: 0, stats: await fetchStats(baseUrl) });
+    samples.push({ atSeconds: 0, stats: await fetchStats(baseUrl), mark: newestMark() });
     for (;;) {
       const elapsed = (Date.now() - started) / 1000;
       if (elapsed >= seconds) break;
@@ -192,6 +190,7 @@ export async function runLoad(options: ProbeOptions): Promise<ProbeResult> {
       samples.push({
         atSeconds: Math.round((Date.now() - started) / 1000),
         stats: await fetchStats(baseUrl),
+        mark: newestMark(),
       });
     }
     return {
@@ -210,8 +209,8 @@ export async function runLoad(options: ProbeOptions): Promise<ProbeResult> {
 
 /** Difference between two samples — what the arena did in that window alone. */
 function windowOf(
-  previous: ArenaStats['tick'],
-  current: ArenaStats['tick'],
+  previous: ArenaStatsPayload['tickCost'],
+  current: ArenaStatsPayload['tickCost'],
 ): { ticks: number; overBudget: number } | null {
   if (!previous || !current) return null;
   return {
@@ -222,45 +221,81 @@ function windowOf(
 
 export function report(result: ProbeResult): string {
   const { baseUrl, clients, seconds } = result.options;
-  const last = result.samples[result.samples.length - 1]?.stats;
+  const samples = result.samples;
+  const last = samples[samples.length - 1]?.stats;
+  const trusted = last?.tickCost?.clockAdvances ?? false;
   const lines = [
     `${baseUrl} · ${String(clients)} clients (${String(result.joined)} spawned) · ` +
       `${String(seconds)} s`,
     `  ${String(result.fills)} fills · ${String(result.deaths)} deaths`,
+    trusted
+      ? '  in-DO clock advances during work — the cost columns mean something here'
+      : '  in-DO clock is SLAVED TO THE SCHEDULE — the cost columns are structurally ' +
+        'zero;\n  read "seen Hz" (client side), which the arena cannot fake',
     '',
-    '  t(s)  entities  vertices   ticks   Hz    mean     p50     p95     max   over  new-over',
+    '  t(s)  entities  vertices   ticks  DO Hz  seen Hz     mean     p95     max   over',
   ];
-  let previous: ArenaStats['tick'] = null;
-  for (const { atSeconds, stats } of result.samples) {
-    const arena = stats.arena;
-    const tick = stats.tick;
-    if (!arena || !tick) {
+  let previousTick: ArenaStatsPayload['tickCost'] = null;
+  let previousMark: TickMark | null = null;
+  for (const { atSeconds, stats, mark } of samples) {
+    const load = stats.load;
+    const tick = stats.tickCost;
+    if (!load || !tick) {
       lines.push(`  ${String(atSeconds).padStart(4)}  (no arena running)`);
       continue;
     }
-    const window = windowOf(previous, tick);
-    previous = tick;
+    // Per-window rather than since-start: the fill cost grows with the
+    // territories, so an average over the whole run would bury the trend that
+    // is the entire question.
+    const seenHz = rateBetween(previousMark, mark);
+    const window = windowOf(previousTick, tick);
+    previousTick = tick;
+    previousMark = mark;
     lines.push(
       `  ${String(atSeconds).padStart(4)}  ` +
-        `${String(arena.humans + arena.bots).padStart(8)}  ` +
-        `${String(arena.vertices).padStart(8)}  ` +
+        `${String(load.humans + load.bots).padStart(8)}  ` +
+        `${String(load.vertices).padStart(8)}  ` +
         `${String(tick.ticks).padStart(6)}  ` +
-        `${tick.observedHz.toFixed(1).padStart(4)}  ` +
-        `${tick.meanMs.toFixed(2).padStart(6)}  ` +
-        `${tick.p50Ms.toFixed(1).padStart(6)}  ` +
+        `${tick.observedHz.toFixed(1).padStart(5)}  ` +
+        `${(seenHz === null ? '-' : seenHz.toFixed(2)).padStart(7)}  ` +
+        `${tick.meanMs.toFixed(2).padStart(7)}  ` +
         `${tick.p95Ms.toFixed(1).padStart(6)}  ` +
         `${tick.maxMs.toFixed(1).padStart(6)}  ` +
-        `${String(tick.overBudgetTicks).padStart(4)}  ` +
-        (window ? String(window.overBudget).padStart(8) : '       -'),
+        String(window ? window.overBudget : tick.overBudgetTicks).padStart(5),
     );
   }
-  if (last?.tick) {
+  const first = samples[0]?.mark ?? null;
+  const final = samples[samples.length - 1]?.mark ?? null;
+  const overall = rateBetween(first, final);
+  if (last?.tickCost) {
     lines.push(
       '',
-      `  buckets (ms, upper bound): ${last.tick.buckets.join(' / ')}`,
-      `  budget ${String(TICK_DT_MS)} ms/tick · ` +
-        `${String(last.tick.overBudgetTicks)} of ${String(last.tick.ticks)} ticks over it`,
+      `  buckets (ms, upper bound): ${last.tickCost.buckets.join(' / ')}`,
+      `  in-DO lateness: ${String(last.tickCost.overBudgetTicks)} of ` +
+        `${String(last.tickCost.ticks)} ticks reached ${String(TICK_DT_MS)} ms` +
+        (last.tickCost.clockAdvances ? '' : ' (blind — see above)'),
+      `  client-observed tick rate over the whole run: ` +
+        (overall === null ? 'unknown' : `${overall.toFixed(2)} Hz`),
     );
+    // The number the whole probe exists for. A tick that overruns delays the
+    // next one by exactly its overrun (the ticker computes its sleep on a clock
+    // that did not move, so it always oversleeps the full remainder). Ticks the
+    // arena FAILED to deliver against the nominal grid are therefore the
+    // accumulated overrun, in ms — the one quantity that survives both the
+    // frozen in-DO clock and network jitter, because it is measured over
+    // minutes at the far end of the wire.
+    if (first && final && final.atMs > first.atMs) {
+      const elapsedMs = final.atMs - first.atMs;
+      const nominal = elapsedMs / TICK_DT_MS;
+      const delivered = final.tick - first.tick;
+      const deficit = nominal - delivered;
+      lines.push(
+        `  delivered ${String(delivered)} of ${nominal.toFixed(0)} nominal ticks in ` +
+          `${(elapsedMs / 1000).toFixed(1)} s → accumulated overrun ` +
+          `${(deficit * TICK_DT_MS).toFixed(0)} ms ` +
+          `(${((deficit / nominal) * 100).toFixed(2)} % of the run)`,
+      );
+    }
   }
   return lines.join('\n');
 }

@@ -1,4 +1,5 @@
 import { SELF } from 'cloudflare:test';
+import type { ArenaStatsPayload } from '@paintclash/server/arena';
 import { TICK_HZ } from '@paintclash/shared';
 import { SimClient } from '@paintclash/sim-client';
 import { describe, expect, it } from 'vitest';
@@ -11,11 +12,11 @@ import { describe, expect, it } from 'vitest';
  * answering at all, and the numbers in it describing the arena that is actually
  * running.
  *
- * What it deliberately does NOT assert is the tick COST. Locally the clock
- * advances during synchronous work, so lateness reads ~0 whatever a tick
- * spends; the measurement only carries cost on a clock-freezing runtime (see
- * `tick-cost.ts`). Asserting a number here would be asserting the local
- * runtime's clock behaviour, not the arena's.
+ * What it deliberately does NOT assert is the tick COST. What that number means
+ * depends on the runtime — locally the clock advances during synchronous work,
+ * on Cloudflare it does not (see `tick-cost.ts`) — so a threshold here would be
+ * an assertion about workerd's clock, and on a shared runner a GC stall would
+ * decide it.
  */
 
 /** A fresh caller address per socket (README rule 6, ticket 15). */
@@ -29,16 +30,31 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-interface StatsPayload {
-  live: boolean;
-  arena: { tick: number; sizeWU: number; connections: number; humans: number; bots: number } | null;
-  tick: { ticks: number; observedHz: number; overBudgetTicks: number; buckets: number[] } | null;
-}
-
-async function readStats(): Promise<StatsPayload> {
+async function readStats(): Promise<ArenaStatsPayload> {
   const response = await SELF.fetch('https://arena/api/arena-stats');
   expect(response.status, 'the stats probe must answer').toBe(200);
-  return response.json<StatsPayload>();
+  return response.json<ArenaStatsPayload>();
+}
+
+/**
+ * Wait for the arena to REPORT progress rather than for the clock to pass
+ * (README rule 3). A slow runner then makes this test slower, not red — and the
+ * ~3.5 s workerd stalls that `wrangler dev` shows every ~34 s cannot decide the
+ * outcome, which a fixed `sleep` would have let them do.
+ */
+async function untilTicks(atLeast: number, timeoutMs = 20_000): Promise<ArenaStatsPayload> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const stats = await readStats();
+    if ((stats.tickCost?.ticks ?? 0) >= atLeast) return stats;
+    if (Date.now() > deadline) {
+      throw new Error(
+        `the arena reported only ${String(stats.tickCost?.ticks ?? 0)} of ${String(atLeast)} ` +
+          `ticks — its ticker never got going`,
+      );
+    }
+    await sleep(50);
+  }
 }
 
 async function connect(name: string): Promise<{ client: SimClient; ws: WebSocket }> {
@@ -70,42 +86,48 @@ describe('arena stats probe (ticket 16)', () => {
     // is why the assertion is about the shape rather than about `live` itself.
     const stats = await readStats();
     expect(stats).toHaveProperty('live');
-    expect(stats).toHaveProperty('arena');
-    expect(stats).toHaveProperty('tick');
+    expect(stats).toHaveProperty('load');
+    expect(stats).toHaveProperty('tickCost');
   });
 
-  it('reports the population and the cadence of the arena that is running', async () => {
+  it('reports the load and the cadence of the arena that is running', async () => {
     const { client, ws } = await connect('budget-probe');
     try {
-      const deadline = Date.now() + 15_000;
-      while (!client.self() && Date.now() < deadline) await sleep(25);
+      const spawnBy = Date.now() + 15_000;
+      while (!client.self() && Date.now() < spawnBy) await sleep(25);
       expect(client.self(), 'the probe client never spawned').not.toBeNull();
-      // Two seconds of ticks: enough that a rate derived from the gaps between
-      // them is a rate and not a rounding artefact.
-      await sleep(2000);
+      // A second of ticks' worth of PROGRESS, not of clock (README rule 3).
+      const stats = await untilTicks(TICK_HZ);
 
-      const stats = await readStats();
       expect(stats.live, 'an arena with a spawned player must report as live').toBe(true);
-      const arena = stats.arena;
-      const tick = stats.tick;
-      if (!arena || !tick) throw new Error('a live arena reported no population or no ticks');
+      const load = stats.load;
+      const tick = stats.tickCost;
+      if (!load || !tick) throw new Error('a live arena reported no load and no ticks');
 
-      expect(arena.connections).toBe(1);
-      expect(arena.humans).toBe(1);
+      expect(load.connections, 'the one socket this test opened').toBe(1);
+      expect(load.humans, 'the one player this test joined').toBe(1);
       // README rule 5: this environment is bot-free, so the arena holds exactly
       // the head this test connected.
-      expect(arena.bots).toBe(0);
-      expect(arena.tick).toBeGreaterThan(TICK_HZ);
+      expect(load.bots, 'this environment runs with ARENA_BOTS=0').toBe(0);
+      expect(load.tick, 'the sim must have advanced, not just the ticker').toBeGreaterThan(0);
+      expect(load.vertices, 'a spawn block has corners to count').toBeGreaterThan(0);
 
-      expect(tick.ticks).toBeGreaterThan(TICK_HZ);
-      // The cadence the DO's own clock saw. Local workerd paces honestly, so a
-      // rate far off nominal here means the ticker's schedule is broken — the
-      // production skew (ticket 18) is a property of Cloudflare's clock, not of
-      // this loop.
-      expect(tick.observedHz).toBeGreaterThan(TICK_HZ * 0.8);
-      expect(tick.observedHz).toBeLessThan(TICK_HZ * 1.2);
+      // Every tick recorded lands in exactly one bucket — the report's own
+      // internal consistency, which no runner speed can influence.
       expect(tick.buckets.reduce((sum, n) => sum + n, 0)).toBe(tick.ticks);
-      expect(tick.overBudgetTicks).toBe(0);
+      // Deliberately NOT an assertion about the tick COST. Its meaning depends
+      // on the runtime (`tick-cost.ts`), and on a shared runner a stall would
+      // decide it. What is asserted is that the recorder is not stuck: a broken
+      // ticker reports 0 Hz, and one running on the wrong clock reports orders
+      // of magnitude off — neither is a slow-runner symptom.
+      expect(tick.observedHz, 'the ticker reported no cadence at all').toBeGreaterThan(TICK_HZ / 4);
+      expect(tick.observedHz, 'the ticker is not pacing on the 50 ms grid').toBeLessThan(
+        TICK_HZ * 4,
+      );
+      // The premise every cost in that report stands on. Local workerd runs its
+      // clock during synchronous work; on Cloudflare it does not, and there the
+      // numbers are structurally zero rather than good news (ticket 16).
+      expect(tick.clockAdvances, 'local workerd used to advance its clock').toBe(true);
     } finally {
       ws.close();
     }

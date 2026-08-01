@@ -49,5 +49,17 @@ fahren lassen, eine Arena messen, in der nie etwas gefüllt wird, und ein bequem
 Tick-Budget aus dem falschen Grund melden — exakt der Fehlmodus, den die synthetische Last
 aus Ticket 02 schon einmal hatte.
 
+## Was dieser Bench über sich selbst gelernt hat
+
+Die erste Fassung las die **Verspätung** der Ticks aus dem DO und hielt sie für die
+CPU-Zeit des vorherigen Ticks. Auf Cloudflare ist sie identisch null: die Isolate-Uhr ist
+an den Timer-Fahrplan gekoppelt und liefert am Tick-Anfang genau den Slot zurück, auf den
+gezielt wurde. Darum trägt jeder Report ein **`clockAdvances`** — und darum ist die Spalte,
+auf die es ankommt, **`seen Hz`**: gelieferte Snapshot-Ticks gegen die Wanduhr, gemessen am
+fernen Ende der Leitung. Die Schlusszeile rechnet daraus das **Tick-Defizit** gegen das
+nominelle 20-Hz-Raster aus — den aufsummierten Überhang in ms, die eine Zahl, die weder die
+eingefrorene Uhr noch Paket-Jitter verfälschen kann.
+
 **Ergebnisse:** [`docs/benchmarks/do-cpu-benchmark.md`](../../docs/benchmarks/do-cpu-benchmark.md)
-(Nachtrag Ticket 16).
+(Nachtrag Ticket 16) — Populationsgrenze 16 und Bot-Ziel 8 auf echter Hardware bestätigt,
+der 4×-Sicherheitsfaktor als Worst Case widerlegt.

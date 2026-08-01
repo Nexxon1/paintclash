@@ -59,7 +59,13 @@ import {
 
 import { ArenaCore, displayName } from './arena.js';
 import { chargeFrame, type FrameWindow } from './flood.js';
-import { createTickCost, recordTick, tickCostReport, type TickCost } from './tick-cost.js';
+import {
+  clockAdvancesDuringWork,
+  createTickCost,
+  recordTick,
+  tickCostReport,
+  type TickCost,
+} from './tick-cost.js';
 import {
   CLIENT_IP_HEADER,
   UNKNOWN_ADDRESS,
@@ -69,7 +75,7 @@ import {
   defaultBotTarget,
 } from './router.js';
 
-import type { ArenaSocket } from './arena.js';
+import type { ArenaSocket, ArenaStatsPayload } from './arena.js';
 import type { Env } from './router.js';
 
 /**
@@ -196,11 +202,12 @@ export class ArenaDO extends DurableObject<Env> {
   private stats(): Response {
     const arena = this.arena;
     const cost = this.tickCost;
-    return Response.json({
+    const payload: ArenaStatsPayload = {
       live: arena !== null && this.ticking,
-      arena: arena?.population ?? null,
-      tick: cost === null ? null : tickCostReport(cost, Date.now()),
-    });
+      load: arena?.load ?? null,
+      tickCost: cost === null ? null : tickCostReport(cost, Date.now()),
+    };
+    return Response.json(payload);
   }
 
   /**
@@ -688,8 +695,11 @@ export class ArenaDO extends DurableObject<Env> {
   private startTicker(arena: ArenaCore): void {
     if (this.ticking) return;
     this.ticking = true;
+    // Probed here, once, while the arena is still empty and nobody is waiting
+    // on a tick — and NOT in `stats()`, where it would burn the same CPU on
+    // every read of a public endpoint.
+    const cost = (this.tickCost = createTickCost(Date.now(), clockAdvancesDuringWork()));
     let scheduled = Date.now();
-    const cost = (this.tickCost = createTickCost(scheduled));
     let first = true;
     const loop = (): void => {
       if (arena.connectionCount === 0) {

@@ -1333,10 +1333,10 @@ describe('nickname policy (ticket 13, spec §2.8, §8.3 point 5)', () => {
   });
 });
 
-describe('population summary (ticket 16: what /api/arena-stats reports)', () => {
+describe('arena load summary (ticket 16: what /api/arena-stats reports)', () => {
   it('is empty before anyone joins', () => {
     const arena = new ArenaCore(1, { sizeWU: 120 });
-    expect(arena.population).toEqual({
+    expect(arena.load).toEqual({
       tick: 0,
       sizeWU: 120,
       connections: 0,
@@ -1352,7 +1352,7 @@ describe('population summary (ticket 16: what /api/arena-stats reports)', () => 
     // Bots are queued on the first tick and spawn on the next (ticket 12).
     arena.tick(TICK_DT_SEC);
     arena.tick(TICK_DT_SEC);
-    const { humans, bots, connections } = arena.population;
+    const { humans, bots, connections } = arena.load;
     expect(humans).toBe(1);
     expect(bots).toBe(BALANCE.bots.targetPopulation - 1);
     // A bot never holds a connection slot — that is the whole point of the rule.
@@ -1362,8 +1362,8 @@ describe('population summary (ticket 16: what /api/arena-stats reports)', () => 
   it('counts a socket that has not announced itself as a connection, not a human', () => {
     const arena = new ArenaCore(1);
     arena.connect(new FakeSocket());
-    expect(arena.population.connections).toBe(1);
-    expect(arena.population.humans).toBe(0);
+    expect(arena.load.connections).toBe(1);
+    expect(arena.load.humans).toBe(0);
   });
 
   it('reports the territory vertices the fill cost scales with (tickets 22/23)', () => {
@@ -1372,6 +1372,6 @@ describe('population summary (ticket 16: what /api/arena-stats reports)', () => 
     arena.tick(TICK_DT_SEC);
     // A spawn block is a rectangle, so the very first tick already has corners
     // to count — the number the production tick cost has to be read against.
-    expect(arena.population.vertices).toBeGreaterThan(0);
+    expect(arena.load.vertices).toBeGreaterThan(0);
   });
 });

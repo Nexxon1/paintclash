@@ -75,26 +75,28 @@ curl -s https://paintclash.secure-data.workers.dev/api/health      # lebt es, un
 curl -s https://paintclash.secure-data.workers.dev/api/arena-stats # was kostet der Tick gerade?
 ```
 
-`/api/arena-stats` ist die einzige Möglichkeit, dem **deployten** Tick beim Rechnen
-zuzusehen: workerd friert `Date.now()` während synchroner Arbeit ein, eine Stoppuhr um
-`arena.tick()` läse in Produktion immer null. Die Arena meldet ihre Kosten darum über die
-**Verspätung** ihrer Ticks — auf Cloudflare ist die Verspätung eines Ticks exakt die
-CPU-Zeit des vorherigen. Die Herleitung steht in
-[`packages/server/src/tick-cost.ts`](../packages/server/src/tick-cost.ts).
-
 So liest man die Antwort:
 
 - `arena.humans` / `arena.bots` / `arena.vertices` — die Last. Ohne die Vertex-Zahl sagt
   eine Tick-Zeit wenig: mit ihr skaliert der Fill (Tickets 22/23).
-- `tick.p95Ms` — die Größe, in der das Kriterium formuliert ist (**p95 ≤ 25 ms**,
-  `docs/benchmarks/do-cpu-benchmark.md`).
-- `tick.overBudgetTicks` — Ticks, die die vollen 50 ms erreicht haben. Jeder davon ist ein
-  kurzer Stillstand für **alle** in der Arena; `0` ist der Normalzustand.
-- `tick.observedHz` — die Kadenz nach der Uhr des DO. In Produktion liegt sie bei ~22 Hz
-  statt 20, weil die Isolate-Uhr ~10 % neben der Realzeit läuft (Ticket 18, offen). Ein
-  Wert **darunter** ist das Warnsignal: dann bremst die Tick-Arbeit den Takt.
+- **`tick.clockAdvances` zuerst.** Es sagt, ob man dem Rest glauben darf. Auf Cloudflare
+  ist es `false`: die Isolate-Uhr ist an den Timer-Fahrplan gekoppelt, `Date.now()` liefert
+  am Tick-Anfang genau den Slot zurück, auf den gezielt wurde — **`meanMs`, `p95Ms`,
+  `maxMs` und `overBudgetTicks` sind dort strukturell null und sagen nichts** (Ticket 16;
+  Herleitung in [`tick-cost.ts`](../packages/server/src/tick-cost.ts)). Lokal ist es `true`
+  und dieselben Zahlen sind das übliche Überlauf-Signal.
+- `tick.observedHz` — die Kadenz nach der Uhr des DO; auf Cloudflare per Konstruktion
+  exakt 20,00. Interessant ist sie nur **gegen** die von aussen beobachtete Rate: die
+  Differenz ist der Uhren-Versatz aus Ticket 18.
 - Das Fenster ist das Leben **einer** Arena. Läuft sie leer, verwirft sie ihre Welt
   (ADR-0004) und die Statistik startet mit der nächsten neu.
+
+**Was auf Produktion wirklich misst, ist die Rate von aussen:** gelieferte Snapshot-Ticks
+gegen das nominelle 20-Hz-Raster, über Minuten. Ein überlaufender Tick verzögert den
+nächsten um genau seinen Überhang, das Defizit ist also der aufsummierte Überhang — und
+das kann die eingefrorene Uhr nicht wegdefinieren. Genau das fährt
+[`bench/prod-arena`](../bench/prod-arena/); die Kurzform ohne Last ist
+`node tests/soak/tickrate-probe.mjs <url>`.
 
 Dazu die Worker-Logs (`observability` ist in `wrangler.jsonc` an):
 `pnpm --filter @paintclash/server exec wrangler tail`.
@@ -107,7 +109,7 @@ danach ein Blick auf `/api/arena-stats`.
 
 | Symptom | Erste Frage | Wo nachsehen |
 | --- | --- | --- |
-| Alles hakt für alle gleichzeitig | `overBudgetTicks` > 0? `vertices` hoch? | Fill-Kosten — Ticket 23; Notbremse ist die Populationsgrenze in `LIMITS.maxPlayers` |
+| Alles hakt für alle gleichzeitig | Liegt die von aussen gemessene Rate unter 20 Hz? `vertices` hoch? | Fill-Kosten — Ticket 23; Notbremse ist die Populationsgrenze in `LIMITS.maxPlayers` |
 | „Arena voll" bei wenigen Spielern | Hängen tote Sockets? | `arena.connections` vs. `arena.humans` |
 | `429` beim Beitreten | Teilen sich viele Spieler eine Adresse? | Per-IP-Budgets, spec §8.3 Punkt 3 — bewusst CGNAT-tolerant |
 | Nichts antwortet mehr | Ist das Tagesbudget aufgebraucht? | Cloudflare-Dashboard — **das ist der gewollte harte Stopp, kein Bug** |

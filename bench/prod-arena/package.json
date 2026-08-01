@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@paintclash/protocol": "workspace:*",
+    "@paintclash/server": "workspace:*",
     "@paintclash/shared": "workspace:*",
     "@paintclash/sim-client": "workspace:*",
     "@paintclash/sim-core": "workspace:*"
