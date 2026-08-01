@@ -15,7 +15,6 @@ describe('BALANCE', () => {
     expect(BALANCE.spawn.minDistanceWU).toBe(25);
     expect(BALANCE.trail.widthWU).toBe(1);
     expect(BALANCE.trail.collisionRadiusWU).toBe(0.5);
-    expect(BALANCE.trail.selfCutGraceWU).toBe(4.5);
     // Re-tuned from the §10.4 start value 1 WU² — see balance.ts rationale.
     expect(BALANCE.trail.minFillAreaWU2).toBe(0.01);
   });
@@ -64,12 +63,10 @@ describe('BALANCE', () => {
     expect(BALANCE.spawn.minDistanceWU).toBeLessThan(BALANCE.arena.sizeWU / 2);
   });
 
-  it('keeps the self-cut grace inside its geometric window', () => {
-    // Must forgive the trail glued to the head (> 2 × radius) but stay below
-    // π × turn radius — beyond that, genuine self-crossings become possible
-    // and would be forgiven (see balance.ts rationale).
-    expect(BALANCE.trail.selfCutGraceWU).toBeGreaterThan(2 * BALANCE.trail.collisionRadiusWU);
-    expect(BALANCE.trail.selfCutGraceWU).toBeLessThan(Math.PI * TURN_RADIUS_WU);
+  it('has no self-cut grace window left to tune (ticket 19)', () => {
+    // The self-cut is a line crossing now, not a proximity test with a
+    // forgiven path length — so there is no window whose bounds could drift.
+    expect(BALANCE.trail).not.toHaveProperty('selfCutGraceWU');
   });
 
   it('carries the spec §2.7 bot population rule', () => {

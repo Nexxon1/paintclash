@@ -35,25 +35,12 @@ export const BALANCE = Object.freeze({
     widthWU: 1,
     /**
      * Head/collision radius (half the trail width): a head within this of a
-     * trail centerline cuts it; heads within twice this collide head-on.
+     * FOREIGN trail's centerline cuts it; heads within twice this collide
+     * head-on. The OWN trail is not a proximity question at all since ticket
+     * 19 — a self-cut is a line crossing, so no radius (and no grace window)
+     * enters into it.
      */
     collisionRadiusWU: 0.5,
-    /**
-     * Path length behind the own head exempt from the self-cut test. The
-     * trail ends glued to the head (distance 0), so some grace is mandatory;
-     * its size is bounded by geometry on both sides:
-     *
-     * - Lower bound ≈ 4.2 WU: the soft barrier's clamp (spec §2.4) can slide
-     *   a pinned head back over its own just-laid wall trail — turning away
-     *   from the wall contacts trail up to ~4.2 WU of path behind the head.
-     *   Killing that would be an edge death in disguise.
-     * - Upper bound π·turn radius ≈ 5.06 WU: away from walls the turn-rate
-     *   cap (radius r ≈ 1.61 WU) keeps the head ≥ 2r·sin(s/2r) from trail
-     *   laid s ≤ πr ago, so NO genuine self-contact exists below πr of path —
-     *   every real self-cross (tightest: the full circle, contact at
-     *   ~2πr − 0.5 ≈ 9.6 WU) stays detectable.
-     */
-    selfCutGraceWU: 4.5,
     /**
      * Fills gaining less than this are discarded (spec §2.2) — purely to
      * drop numerical slivers; every deliberate loop paints. Re-tuned from
@@ -255,10 +242,10 @@ export const MAP_SHARE_PERCENT_SCALE = 10 ** BALANCE.leaderboard.percentDecimals
 /**
  * Tightest circle a head can fly, in WU (CONTEXT: **Wenderadius**) — speed over
  * turn rate in radians. Derived, never tuned: it falls out of the two movement
- * values above. One source because it is a real geometric bound that several
- * packages reason against (the bot pilot's lane offsets and waypoint tolerance,
- * the self-cut grace window's upper bound) — three hand-rolled copies of the
- * same conversion is how those arguments silently drift apart.
+ * values above. One source because it is a real geometric bound that other
+ * packages reason against (the bot pilot's lane offsets and waypoint
+ * tolerance) — hand-rolled copies of the same conversion are how those
+ * arguments silently drift apart.
  */
 export const TURN_RADIUS_WU =
   BALANCE.movement.speedWuPerSec / ((BALANCE.movement.turnRateDegPerSec * Math.PI) / 180);

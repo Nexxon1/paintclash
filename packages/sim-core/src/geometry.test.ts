@@ -9,6 +9,8 @@ import {
   distanceToTerritory,
   pointInTerritory,
   ringArea,
+  segmentDistanceSq,
+  segmentsProperlyCross,
   snapWU,
   squareRing,
   territoryArea,
@@ -111,6 +113,95 @@ describe('distanceToTerritory', () => {
 
   it('is Infinity for an empty territory', () => {
     expect(distanceToTerritory(0, 0, [])).toBe(Infinity);
+  });
+});
+
+describe('segmentsProperlyCross', () => {
+  it('is true for a transversal X crossing', () => {
+    expect(segmentsProperlyCross([0, 0], [10, 10], [0, 10], [10, 0])).toBe(true);
+    // Order of the two segments cannot matter.
+    expect(segmentsProperlyCross([0, 10], [10, 0], [0, 0], [10, 10])).toBe(true);
+  });
+
+  it('is false for a shared endpoint — two consecutive trail segments', () => {
+    // The whole point of "proper": a polyline meeting itself at the joint it
+    // was built from is not a crossing, however sharp the corner.
+    expect(segmentsProperlyCross([0, 0], [5, 0], [5, 0], [5, 5])).toBe(false);
+    expect(segmentsProperlyCross([0, 0], [5, 0], [5, 0], [0, 0.001])).toBe(false);
+  });
+
+  it('is false when an endpoint merely touches the other segment (T shape)', () => {
+    // The head arriving exactly ON its own line touches without passing
+    // through — the wall clamp produces exactly this.
+    expect(segmentsProperlyCross([5, 5], [5, 0], [0, 0], [10, 0])).toBe(false);
+    expect(segmentsProperlyCross([0, 0], [10, 0], [5, 5], [5, 0])).toBe(false);
+  });
+
+  it('is false for collinear segments, overlapping or not', () => {
+    // Driving back along the own line (the pinned wall slide) overlaps
+    // without ever crossing it.
+    expect(segmentsProperlyCross([0, 0], [10, 0], [8, 0], [2, 0])).toBe(false);
+    expect(segmentsProperlyCross([0, 0], [4, 0], [6, 0], [10, 0])).toBe(false);
+    expect(segmentsProperlyCross([0, 0], [10, 0], [0, 0], [10, 0])).toBe(false);
+  });
+
+  it('is false for segments that miss each other', () => {
+    expect(segmentsProperlyCross([0, 0], [10, 0], [0, 1], [10, 1])).toBe(false);
+    // Their infinite lines cross — the segments do not reach.
+    expect(segmentsProperlyCross([0, 0], [4, 0], [5, -5], [5, 5])).toBe(false);
+  });
+
+  it('is false for a degenerate (zero-length) segment, even sitting on the other', () => {
+    // A wall-pinned head does not move at all: its movement segment is a
+    // point, which can never cross anything.
+    expect(segmentsProperlyCross([5, 0], [5, 0], [0, 0], [10, 0])).toBe(false);
+    expect(segmentsProperlyCross([5, 1], [5, 1], [0, 0], [10, 0])).toBe(false);
+  });
+
+  it('is symmetric in both arguments and both endpoint orders', () => {
+    const coord = fc.integer({ min: -5, max: 5 });
+    const point = fc.tuple(coord, coord).map(([x, y]): Point => [x, y]);
+    fc.assert(
+      fc.property(point, point, point, point, (a1, a2, b1, b2) => {
+        const crosses = segmentsProperlyCross(a1, a2, b1, b2);
+        expect(segmentsProperlyCross(b1, b2, a1, a2)).toBe(crosses);
+        expect(segmentsProperlyCross(a2, a1, b1, b2)).toBe(crosses);
+        expect(segmentsProperlyCross(a1, a2, b2, b1)).toBe(crosses);
+      }),
+      { numRuns: 200 },
+    );
+  });
+
+  it('never reports a crossing where an endpoint sits on the other segment', () => {
+    // A *proper* crossing meets in both interiors, so no endpoint of either
+    // segment lies on the other one — the exact property the wall cases rely
+    // on. (The converse does not hold: touching and collinear overlap put an
+    // endpoint at distance 0 without being a crossing.)
+    const coord = fc.integer({ min: -4, max: 4 });
+    const point = fc.tuple(coord, coord).map(([x, y]): Point => [x, y]);
+    fc.assert(
+      fc.property(point, point, point, point, (a1, a2, b1, b2) => {
+        if (!segmentsProperlyCross(a1, a2, b1, b2)) return;
+        const onOtherSegment = Math.min(
+          segmentDistanceSq(a1[0], a1[1], b1, b2),
+          segmentDistanceSq(a2[0], a2[1], b1, b2),
+          segmentDistanceSq(b1[0], b1[1], a1, a2),
+          segmentDistanceSq(b2[0], b2[1], a1, a2),
+        );
+        expect(onOtherSegment).toBeGreaterThan(0);
+      }),
+      { numRuns: 200 },
+    );
+  });
+
+  it('is false where a segment passes exactly through the other’s endpoint', () => {
+    // The flip side of "proper", and the one degeneracy that is systematic
+    // rather than a float coincidence: the wall clamp puts trail vertices
+    // exactly on the wall line a pinned head slides along. Pinned by this
+    // test so the next reader knows it is a decision — see the wall cases in
+    // death.test.ts for why the wall is also the one place it is harmless.
+    expect(segmentsProperlyCross([0, 0], [10, 0], [5, 0], [5, -5])).toBe(false);
+    expect(segmentsProperlyCross([0, 0], [10, 0], [2, -3], [5, 0])).toBe(false);
   });
 });
 

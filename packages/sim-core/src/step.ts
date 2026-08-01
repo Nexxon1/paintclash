@@ -9,7 +9,7 @@
  * turns these into territory broadcasts; prediction ignores them).
  */
 
-import { BALANCE, LIMITS } from '@paintclash/shared';
+import { BALANCE, LIMITS, type Point } from '@paintclash/shared';
 
 import { detectDeaths, type Death } from './collision.js';
 import { closeLoop, spawnTerritory } from './fill.js';
@@ -340,9 +340,14 @@ export function step(state: SimState, inputs: TickInputs, dtSec: number): TickEv
   // Post-movement "stands on own land" — the head-on shield (spec §2.1) and
   // this tick's history `safe` flag, from one verdict per player.
   const safeIds = new Set<number>();
+  // Where each head stood before moving — the start of the movement segment
+  // the self-cut is judged on (ticket 19). Captured here because this is the
+  // only place that still knows it.
+  const movedFrom = new Map<number, Point>();
   for (const p of state.players) {
     const prevX = p.x;
     const prevY = p.y;
+    movedFrom.set(p.id, [prevX, prevY]);
     advancePlayer(p, state.arenaSizeWU, dtSec);
     trackTrail(state, p, prevX, prevY, events, safeIds);
   }
@@ -362,6 +367,10 @@ export function step(state: SimState, inputs: TickInputs, dtSec: number): TickEv
   const collisionDeaths = detectDeaths(state.players, {
     safeIds,
     viewedBy: (actor, target) => viewedBy(actor, target, judgedTick),
+    // Every live player moved above, so the fallback is unreachable by
+    // construction — it is what discharges the Map lookup, and a head whose
+    // movement is unknown must not be killed by a guessed segment.
+    movedFrom: (p) => movedFrom.get(p.id) ?? [p.x, p.y],
   });
   for (const death of collisionDeaths) {
     if (!dying.has(death.victimId)) {

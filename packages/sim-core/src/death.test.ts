@@ -141,7 +141,22 @@ describe('trail cut (spec §2.1: cutting a trail kills its owner)', () => {
   });
 });
 
+/**
+ * Since ticket 19 the self-cut is a *crossing* test, not a proximity test
+ * with a grace window: the tick's movement segment kills only where it
+ * transversally crosses an own trail segment. Every case below is one half of
+ * that rule.
+ */
 describe('self cut (spec §2.1: your own trail kills you too)', () => {
+  /** Step until someone dies, or `ticks` have passed without a death. */
+  function stepUntilDeath(state: SimState, ticks: number): TickEvents['deaths'] {
+    for (let t = 0; t < ticks; t++) {
+      const { deaths } = step(state, {}, TICK_DT_SEC);
+      if (deaths.length > 0) return deaths;
+    }
+    return [];
+  }
+
   it('driving straight never dies on the trail glued to the head', () => {
     const p = player(1, 110, 100, 0, 100, 100);
     const state = stateWith(p);
@@ -152,28 +167,125 @@ describe('self cut (spec §2.1: your own trail kills you too)', () => {
 
   it('closing a full circle onto the own trail is a self-kill', () => {
     // Held turn at max rate: full circle ≈ 22.5 ticks (r ≈ 1.61 WU), well
-    // clear of the own block — the head re-meets its own trail and dies.
+    // clear of the own block — the head comes around and crosses the trail's
+    // first segment, whatever the path length says.
     const p = player(1, 110, 110, 0, 100, 100, 1);
     const state = stateWith(p);
-    const deaths: TickEvents['deaths'] = [];
-    for (let t = 0; t < 30 && deaths.length === 0; t++) {
-      deaths.push(...step(state, {}, TICK_DT_SEC).deaths);
-    }
-    expect(deaths).toEqual([{ victimId: 1, killerId: 1, cause: 'trailCut' }]);
+    expect(stepUntilDeath(state, 30)).toEqual([{ victimId: 1, killerId: 1, cause: 'trailCut' }]);
     const respawned = state.players[0];
     if (!respawned) throw new Error('player vanished');
     expectRespawned(respawned);
   });
 
+  it('a teardrop crossing its own outbound line far behind the head dies', () => {
+    // Hand-built excursion: up the line x=100, across the top, down x=94 —
+    // then the head drives east and must cut the outbound leg at (100, 100),
+    // ~24 WU of path behind it. Path length is irrelevant now; the crossing
+    // is the whole rule.
+    const p = player(1, 94, 100, 0, 100, 85);
+    p.trail = [
+      [100, 88],
+      [100, 112],
+      [94, 112],
+      [94, 100],
+    ];
+    const state = stateWith(p);
+    // 6 WU east at 0.45 WU/tick — the 14th tick carries the head past x=100.
+    expect(stepUntilDeath(state, 13)).toEqual([]);
+    expect(step(state, {}, TICK_DT_SEC).deaths).toEqual([
+      { victimId: 1, killerId: 1, cause: 'trailCut' },
+    ]);
+  });
+
   it('turning away from the wall while pinned is NOT a self-kill (soft barrier, spec §2.4)', () => {
     // Pinned against the top wall with a held turn, the clamp slides the head
-    // back over its own just-laid wall trail — the grace window must forgive
-    // this, or the soft barrier would be an edge death in disguise.
+    // back over its own just-laid wall trail. That reversal is *collinear*
+    // overlap, never a crossing — or the soft barrier would be an edge death
+    // in disguise.
     const p = player(1, 110, BALANCE.arena.sizeWU, 0.698, 110, 185, 1);
     const state = stateWith(p);
     for (let t = 0; t < 14; t++) {
       expect(step(state, {}, TICK_DT_SEC).deaths).toEqual([]);
     }
+  });
+
+  it('jittering along the wall over many passes never dies (ticket 05 watch item)', () => {
+    // Sweeping the heading up through the wall and back down again keeps the
+    // head pinned while the clamp drags it right, then left, then right over
+    // the wall trail it laid — twelve cycles, ~7 WU of path each. This is
+    // watch item (a) of ticket 05: the old grace window covered only the last
+    // 4.5 WU of path, so from the first reversal onwards every re-pass was a
+    // death at proximity 0. As a crossing test they are all collinear
+    // overlap, and collinear is never a crossing.
+    const p = player(1, 40, BALANCE.arena.sizeWU, 0.698, 40, 185, 1);
+    const state = stateWith(p);
+    const cycles = 12;
+    const halfCycleTicks = 8; // 8 × 16° sweeps the heading across the wall
+    for (let cycle = 0; cycle < cycles; cycle++) {
+      for (const turn of [1, -1] as const) {
+        for (let t = 0; t < halfCycleTicks; t++) {
+          expect(step(state, { turns: [{ id: 1, turn }] }, TICK_DT_SEC).deaths).toEqual([]);
+          // The premise: the head never left the wall, so nothing it survived
+          // was survived by being somewhere else.
+          expect(state.players[0]?.y).toBe(BALANCE.arena.sizeWU);
+        }
+      }
+    }
+    // …and it really did lay pass after pass along the wall line, rather than
+    // one compacted run: every reversal is its own point at y = 200.
+    const onWall = state.players[0]?.trail.filter(([, y]) => y === BALANCE.arena.sizeWU) ?? [];
+    expect(onWall.length).toBeGreaterThan(2 * cycles);
+  });
+
+  it('sliding along the wall over the tip of an earlier leg survives — the wall has no far side', () => {
+    // Hand-built: an excursion that reached the top wall at (60, 200), ran
+    // east along it, boxed back down and came home to (50, 200), where the
+    // head now sits pinned and drives east straight over its own outbound tip.
+    //
+    // A proper-crossing test is blind to a hit landing exactly on a trail
+    // VERTEX, and the wall clamp makes those hits systematic rather than a
+    // float coincidence: every pinned point carries y = 200 exactly. At the
+    // wall that blindness is also correct — nothing reaches y > 200, so the
+    // leg being "hit" has no far side to cross to: west of x = 60 the leg
+    // runs below the head, east of it the trail lies exactly under it. The
+    // head merges with its own line and splits off again, which is the same
+    // collinear overlap the pinned slide already survives.
+    const wall = BALANCE.arena.sizeWU;
+    const p = player(1, 50, wall, 0, 40, 170);
+    p.trail = [
+      [40, 173],
+      [60, wall],
+      [70, wall],
+      [70, 180],
+      [50, 180],
+      [50, wall],
+    ];
+    const state = stateWith(p);
+    for (let t = 0; t < 40; t++) {
+      expect(step(state, {}, TICK_DT_SEC).deaths).toEqual([]);
+    }
+    // The premise: it really did stay pinned and drive past the tip at x = 60.
+    expect(state.players[0]?.y).toBe(wall);
+    expect(state.players[0]?.x).toBeGreaterThan(60);
+  });
+
+  it('running alongside the own trail inside the collision band survives', () => {
+    // The deliberate trade of ticket 19: for the OWN trail the centerline is
+    // the kill line, not the rendered band. A head 0.2 WU beside its own line
+    // overlaps it visually and used to die once past the grace window — now
+    // only actually crossing it does.
+    const p = player(1, 99.8, 112, -Math.PI / 2, 100, 85);
+    p.trail = [
+      [100, 88],
+      [100, 112],
+      [99.8, 112],
+    ];
+    const state = stateWith(p);
+    for (let t = 0; t < 40; t++) {
+      expect(step(state, {}, TICK_DT_SEC).deaths).toEqual([]);
+    }
+    // The premise: it really did run the length of its own outbound leg.
+    expect(state.players[0]?.y).toBeLessThan(94);
   });
 });
 

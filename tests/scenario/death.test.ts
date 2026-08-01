@@ -202,6 +202,32 @@ class WaypointPilot {
   }
 }
 
+/**
+ * Spans of a coordinate series between its direction reversals. The trail
+ * itself is not on the wire past the join-time world sync (trails derive from
+ * the snapshots), so a wall re-pass is measured from where the head went: two
+ * long runs in opposite directions cover the same stretch twice.
+ */
+function monotonicRuns(series: readonly number[]): number[] {
+  const runs: number[] = [];
+  let direction = 0;
+  let start = series[0] ?? 0;
+  let previous = start;
+  for (const value of series) {
+    const step = Math.sign(value - previous);
+    if (step !== 0) {
+      if (direction !== 0 && step !== direction) {
+        runs.push(Math.abs(previous - start));
+        start = previous;
+      }
+      direction = step;
+    }
+    previous = value;
+  }
+  runs.push(Math.abs(previous - start));
+  return runs;
+}
+
 /** A death stamped with the newest tick known when its frame arrived. */
 type StampedDeath = DeathUpdate & { tick: number };
 
@@ -496,6 +522,96 @@ describe('death over the real wire (ticket 05)', () => {
         defender.client.onSnapshot = null;
         attacker.ws.close();
         defender.ws.close();
+      }
+    },
+  );
+});
+
+describe('the soft barrier stays soft (ticket 19, spec §2.4)', () => {
+  it(
+    'jittering along the wall never kills, however often the head re-passes its own line',
+    // Budget = the drive to the wall (≤ 100 WU at 9 WU/s ≈ 12 s) plus 120
+    // pinned ticks (6 s), with the generous wall-clock ceiling README rule 3
+    // asks for: a slow runner makes this slower, not red.
+    { timeout: 90_000 },
+    async () => {
+      const flyer = await connect('wallflower');
+      try {
+        await until(() => flyer.client.self(), 'spawn');
+        const selfId = flyer.client.playerId ?? -1;
+        const size = flyer.client.arenaSizeWU ?? BALANCE.arena.sizeWU;
+        const deaths = trackDeaths(flyer.client);
+
+        // Slide back and forth along the nearer horizontal wall, so the head
+        // re-passes the wall trail it laid seconds ago again and again. That
+        // is watch item (a) of ticket 05 and the playtest finding of ticket
+        // 19: the old rule forgave only the last 4.5 WU of path, and every
+        // re-pass beyond that was a death at distance 0 — an edge death by
+        // the back door, which spec §2.4 does not have.
+        //
+        // Every waypoint sits `LIFT` WU BEYOND the wall. That is what makes
+        // the maneuver hold: the pilot keeps steering into the wall, so the
+        // clamp stays engaged and only slides the head sideways, and the
+        // heading can never drift out to wall-parallel (bearing stays within
+        // atan2(LIFT, ±LEG) of straight-on) the way a held turn would.
+        const LEG_WU = 9;
+        const LIFT_WU = 10;
+        const LEGS = 8;
+        const home = centerOf(
+          bounds(await until(() => flyer.client.territories.get(selfId), 'the start block')),
+        );
+        const wallY = home[1] > size / 2 ? size : 0;
+        // Clear of home in x, so a leg cannot re-enter the block and close a
+        // loop — a fill would reset the trail this test is about.
+        const near =
+          home[0] < size / 2 ? Math.min(size - 12, home[0] + 25) : Math.max(12, home[0] - 25);
+        const far = near + (near < size / 2 ? LEG_WU : -LEG_WU);
+        const pilot = new WaypointPilot(size);
+        pilot.fly(
+          Array.from({ length: LEGS }, (_, i): Point => [
+            i % 2 === 0 ? far : near,
+            wallY === 0 ? -LIFT_WU : size + LIFT_WU,
+          ]),
+        );
+
+        const PINNED_TICKS = 120;
+        let pinnedTicks = 0;
+        const wallXs: number[] = [];
+        flyer.client.onSnapshot = (snapshot) => {
+          const self = snapshot.players.find((p) => p.id === selfId);
+          if (!self) return;
+          if (self.y === wallY) {
+            pinnedTicks += 1;
+            wallXs.push(self.x);
+          }
+          flyer.client.queueTurn(pilot.steer(self));
+          flyer.client.flush();
+        };
+
+        const jittered = await waitFor(() => pinnedTicks >= PINNED_TICKS, 60_000);
+        // Every premise names itself (README rule 2): "it did not work" costs
+        // the next session a debugging round.
+        expect(
+          jittered,
+          `the head never held the wall for ${String(PINNED_TICKS)} ticks (best ${String(pinnedTicks)}, wall y=${String(wallY)})`,
+        ).toBe(true);
+        // …and it really RE-passed: two long slides in opposite directions
+        // over one stretch of wall. Length is the point — a short reversal is
+        // just the head-glued tip touching itself, which was always forgiven.
+        // These runs are half a leg or more, i.e. beyond anything a grace
+        // window on path length used to cover.
+        const passes = monotonicRuns(wallXs).filter((run) => run > LEG_WU / 2);
+        expect(
+          passes.length,
+          `the head never slid a full leg back over its own line (runs ${monotonicRuns(wallXs)
+            .map((r) => r.toFixed(1))
+            .join('/')} WU along y=${String(wallY)})`,
+        ).toBeGreaterThanOrEqual(2);
+
+        expect(deaths).toEqual([]);
+      } finally {
+        flyer.client.onSnapshot = null;
+        flyer.ws.close();
       }
     },
   );

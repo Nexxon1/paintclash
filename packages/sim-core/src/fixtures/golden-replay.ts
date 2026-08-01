@@ -63,9 +63,12 @@ export function goldenScript(): Map<number, TickInputs> {
 
 /**
  * Expected `hashSimState` after GOLDEN_TICKS — pinned once, guarded forever.
- * Regenerated for ticket 09 (the score entered the state: bot flag and the
- * per-life counters are hashed now, and the script gained the bot join
- * above): a deliberate semantics change, not drift.
- * Previous: '9ebfdacf' (ticket 07), '82bff39b' (ticket 05), '779967a5' (04).
+ * Regenerated for ticket 19: the self-cut became a line-crossing test instead
+ * of a proximity test with a grace window, so the held turns below close onto
+ * their own trail a tick or two later than they used to — a deliberate
+ * semantics change, not drift. (The replay still provably reaches the death
+ * path, asserted below.)
+ * Previous: 'a1106a61' (ticket 09), '9ebfdacf' (07), '82bff39b' (05),
+ * '779967a5' (04).
  */
-export const GOLDEN_END_HASH = 'a1106a61';
+export const GOLDEN_END_HASH = '1b0bf266';

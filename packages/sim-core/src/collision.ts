@@ -9,7 +9,9 @@
  *
  *   1. Trail cuts, live — every head against every live trail (foreign AND
  *      own). All cuts count, even by a head that dies itself this tick
- *      (simultaneity).
+ *      (simultaneity). The two are judged by different geometry since ticket
+ *      19: a FOREIGN trail is cut on proximity (the rendered band is the kill
+ *      zone), the OWN one only where this tick's movement actually crosses it.
  *   1b. Trail cuts, rewound — an actor's head against the trail their
  *      screen showed. Same-generation viewed trails are subsets of the
  *      live ones (see history.ts), so this only ever consults trails RESET
@@ -31,7 +33,7 @@
 
 import { BALANCE, type DeathCause, type Point } from '@paintclash/shared';
 
-import { segmentDistanceSq } from './geometry.js';
+import { segmentDistanceSq, segmentsProperlyCross } from './geometry.js';
 import type { RewoundView } from './history.js';
 import type { PlayerSim } from './state.js';
 
@@ -52,6 +54,18 @@ export interface DeathContext {
   safeIds: ReadonlySet<number>;
   /** How `actor`'s screen showed `target`, or null to judge live only. */
   viewedBy(actor: PlayerSim, target: PlayerSim): RewoundView | null;
+  /**
+   * Where `p`'s head stood BEFORE this tick's movement — the start of the
+   * movement segment the self-cut test judges (ticket 19). Total, so that no
+   * caller has to invent an answer for a player it is passing in anyway; the
+   * safe answer where one is somehow unknown is the current pose, whose
+   * zero-length segment crosses nothing.
+   *
+   * Only the LIVE self-cut needs it. A rewound self-cut does not exist: a
+   * pilot sees their own head live (ADR-0003), so the rewound pass below
+   * judges an actor against OTHER players' trails only.
+   */
+  movedFrom(p: PlayerSim): Point;
 }
 
 const RADIUS_WU = BALANCE.trail.collisionRadiusWU;
@@ -59,33 +73,43 @@ const RADIUS_WU = BALANCE.trail.collisionRadiusWU;
 const HEAD_ON_DIST_SQ = (2 * RADIUS_WU) ** 2;
 
 /**
- * Does a head at (x, y) touch this trail polyline? `graceWU` skips that much
- * path length from the trail's head end before testing (self-cut only, see
- * BALANCE.trail.selfCutGraceWU; foreign trails are tested in full —
- * including the piece glued to their owner's head, which is what makes
- * frontal contact with a trailing player a cut and keeps the pure head-on
- * pass for the 0.5–1 WU proximity band).
+ * Does a head at (x, y) touch a FOREIGN trail polyline? Proximity within the
+ * collision radius: the rendered band is the kill zone. Tested in full —
+ * including the piece glued to their owner's head, which is what makes frontal
+ * contact with a trailing player a cut and keeps the pure head-on pass for the
+ * 0.5–1 WU proximity band.
  */
-function headCutsTrail(x: number, y: number, trail: readonly Point[], graceWU: number): boolean {
+function headCutsTrail(x: number, y: number, trail: readonly Point[]): boolean {
   const radiusSq = RADIUS_WU * RADIUS_WU;
-  let remainingGrace = graceWU;
   for (let i = trail.length - 1; i > 0; i--) {
     const a = trail[i - 1];
-    let b = trail[i];
+    const b = trail[i];
     if (a === undefined || b === undefined) continue;
-    if (remainingGrace > 0) {
-      const length = Math.hypot(b[0] - a[0], b[1] - a[1]);
-      if (length <= remainingGrace) {
-        remainingGrace -= length;
-        continue;
-      }
-      // Straight runs compact to one long segment — cut it at the grace
-      // boundary instead of skipping it whole.
-      const t = remainingGrace / length;
-      b = [b[0] + (a[0] - b[0]) * t, b[1] + (a[1] - b[1]) * t];
-      remainingGrace = 0;
-    }
     if (segmentDistanceSq(x, y, a, b) <= radiusSq) return true;
+  }
+  return false;
+}
+
+/**
+ * Does this tick's movement cut the player's OWN trail (ticket 19)? A line
+ * crossing, not a proximity test: the segment `from` → head dies exactly where
+ * it transversally crosses an earlier own segment (see
+ * `segmentsProperlyCross` for what "transversally" buys — the glued tip, wall
+ * slides and grazes all fall out of it, so no grace window is needed).
+ *
+ * The trail's LAST segment is skipped: `trackTrail` already appended this
+ * tick's head, so that segment either IS the movement segment or is the
+ * straight run containing it (`appendTrailPoint` extends collinear motion in
+ * place). Nothing crosses itself, and the segment before it shares the joint
+ * they were built from.
+ */
+function crossesOwnTrail(p: PlayerSim, from: Point): boolean {
+  const to: Point = [p.x, p.y];
+  for (let i = 1; i < p.trail.length - 1; i++) {
+    const a = p.trail[i - 1];
+    const b = p.trail[i];
+    if (a === undefined || b === undefined) continue;
+    if (segmentsProperlyCross(from, to, a, b)) return true;
   }
   return false;
 }
@@ -108,8 +132,11 @@ export function detectDeaths(players: readonly PlayerSim[], ctx: DeathContext): 
   for (const owner of players) {
     if (owner.trail.length < 2) continue;
     for (const head of players) {
-      const grace = head === owner ? BALANCE.trail.selfCutGraceWU : 0;
-      if (headCutsTrail(head.x, head.y, owner.trail, grace)) {
+      const cuts =
+        head === owner
+          ? crossesOwnTrail(owner, ctx.movedFrom(owner))
+          : headCutsTrail(head.x, head.y, owner.trail);
+      if (cuts) {
         mark(owner.id, head.id, 'trailCut');
         break;
       }
@@ -123,7 +150,7 @@ export function detectDeaths(players: readonly PlayerSim[], ctx: DeathContext): 
       if (owner === actor) continue;
       const view = ctx.viewedBy(actor, owner);
       if (!view?.trail) continue;
-      if (headCutsTrail(actor.x, actor.y, view.trail, 0)) {
+      if (headCutsTrail(actor.x, actor.y, view.trail)) {
         mark(owner.id, actor.id, 'trailCut');
       }
     }

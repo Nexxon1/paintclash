@@ -100,6 +100,55 @@ export function segmentDistanceSq(x: number, y: number, a: Point, b: Point): num
 }
 
 /**
+ * Twice the signed area of the triangle p→q→r: positive when r lies left of
+ * p→q, negative right of it, 0 when the three are collinear.
+ */
+function orient(p: Point, q: Point, r: Point): number {
+  return (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0]);
+}
+
+/** Do c and d lie on strictly opposite sides of the line a→b? */
+function straddles(a: Point, b: Point, c: Point, d: Point): boolean {
+  return Math.sign(orient(a, b, c)) * Math.sign(orient(a, b, d)) < 0;
+}
+
+/**
+ * Do the segments a1–a2 and b1–b2 cross *transversally* — each strictly
+ * straddling the other's line, so they share an interior point and pass
+ * through each other?
+ *
+ * Deliberately narrower than "do they intersect" (ticket 19): everything
+ * degenerate answers **false**, and each exclusion is a gameplay rule, not a
+ * numerical convenience —
+ *
+ * - **Shared endpoint:** consecutive trail segments meet at the joint they
+ *   were built from, and a tick's movement segment starts where the trail's
+ *   tip is glued to the head. Neither is a self-cut.
+ * - **Touching (T shape):** an endpoint landing exactly ON the other segment
+ *   without passing through.
+ * - **Collinear:** overlapping or not — a head sliding back along its own
+ *   wall trail overlaps it without ever crossing it.
+ * - **Zero length:** a head pinned in a corner does not move at all; a point
+ *   crosses nothing.
+ *
+ * Three of those four hinge on an orientation being *exactly* 0, which no
+ * tolerance is doing for us — the coordinates make it exact. A shared endpoint
+ * is the identical pair of floats, so its two difference terms are both 0; and
+ * the soft barrier's clamp (spec §2.4) writes the wall coordinate itself, so
+ * every point pinned against a wall carries bit-identical x (or y) and the
+ * wall line is exactly collinear with itself. Away from walls, an exact hit on
+ * a segment's *interior* endpoint stays the float coincidence it is — which is
+ * also why the WALL is the one place where this predicate's vertex blindness
+ * is systematic, and the one place it is also right: nothing can reach the far
+ * side of a wall, so a trail touching it has no far side to be crossed to.
+ *
+ * Symmetric in both arguments and in each segment's endpoint order.
+ */
+export function segmentsProperlyCross(a1: Point, a2: Point, b1: Point, b2: Point): boolean {
+  return straddles(b1, b2, a1, a2) && straddles(a1, a2, b1, b2);
+}
+
+/**
  * Distance from a point to a territory: 0 inside, else the distance to the
  * nearest boundary edge; Infinity for an empty territory. Drives the spawn
  * minimum distance (spec §2.3) against arbitrarily grown territories.
