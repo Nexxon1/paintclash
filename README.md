@@ -3,9 +3,10 @@
 Browser-Multiplayer-Flächenfärbe-Spiel (Trail-/Territory-Genre, splix.io /
 Paper.io 2 verwandt) als kostenlos gehostete Grundversion.
 
-> **Status:** Bauphase — der Kern-Loop ist spielbar: server-autoritative
-> Bewegung, Trail → Loop → Fill, Tod, Gebiet stehlen/Totalverlust (Tickets
-> 01–06). Aktueller Stand: [`Bau-Tickets`](.scratch/paintclash/issues/).
+> **Status:** Bauphase — die Grundversion ist spielbar und deployt:
+> server-autoritative Bewegung, Trail → Loop → Fill, Tod, Gebiet
+> stehlen/Totalverlust, Leaderboard, Score, Bots, Nicknames, private Räume,
+> Abuse-Schutz. Aktueller Stand: [`Bau-Tickets`](.scratch/paintclash/issues/).
 
 ## Struktur
 
@@ -41,10 +42,10 @@ pnpm run dev:small         # dasselbe mit 50×50-WU-Mini-Arena (schnellere Duell
 pnpm run soak              # headless Soak-Client gegen einen laufenden Server
 ```
 
-Hinweis WSL2: `wrangler dev` kann dort stallen. Fallback ist die deployte
-Referenzumgebung (<https://paintclash.secure-data.workers.dev>, Deploy via
-`pnpm run deploy` in `packages/server`) — sie ist ohnehin die Referenz für
-Netcode-Tests, weil sie echte Latenz und die reale DO-Tickrate zeigt.
+Für Netcode- und Tick-Messungen ist die deployte Referenzumgebung
+(<https://paintclash.secure-data.workers.dev>) die Wahrheit, nicht `wrangler dev`:
+nur dort gelten echte Latenz, die reale DO-Tickrate und Cloudflares Hardware.
+Siehe [`docs/operations.md`](docs/operations.md).
 
 ## Entwicklung
 
@@ -64,13 +65,19 @@ pnpm test:e2e              # Playwright (baut Client + startet Server selbst)
 - **Bau-Tickets:** [`.scratch/paintclash/issues/`](.scratch/paintclash/issues/)
 - **Domänen-Vokabular:** [`CONTEXT.md`](CONTEXT.md) · **ADRs:** [`docs/adr/`](docs/adr/)
 
-## Deployment
+## Deployment & Betrieb
+
+Live: <https://paintclash.secure-data.workers.dev>
 
 CI/CD läuft über GitHub Actions (`.github/workflows/ci.yml`): `typecheck → lint +
-format:check → tests + coverage → build → e2e`, und ein CD-Tor deployt einen
-Platzhalter-Worker nach Cloudflare — nur wenn alle Gates grün sind und auf `main`
-gepusht wird. Läuft auf dem **Cloudflare Free-Plan ohne hinterlegte Kreditkarte**
-(Abbuchungssicherheit, ADR-0001 / spec §7.3).
+format:check → tests + coverage → build → e2e`, und ein CD-Tor deployt den echten Stack
+nach Cloudflare — nur wenn alle Gates grün sind und auf `main` gepusht wird; danach prüft
+es über `/api/health`, dass wirklich dieser Commit ausgeliefert wird. Läuft auf dem
+**Cloudflare Free-Plan ohne hinterlegte Kreditkarte** (Abbuchungssicherheit, ADR-0001 /
+spec §7.3); Verfügbarkeit ist ausdrücklich **best effort**.
 
 Benötigte GitHub-Secrets für den Deploy-Job: `CLOUDFLARE_API_TOKEN`,
 `CLOUDFLARE_ACCOUNT_ID`.
+
+Alles Weitere — was wo läuft, wie man dem Tick-Budget zusieht (`/api/arena-stats`), was
+bei Störungen zuerst zu fragen ist — steht in [`docs/operations.md`](docs/operations.md).

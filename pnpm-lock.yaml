@@ -134,6 +134,31 @@ importers:
         specifier: ^3.0.5
         version: 3.2.7(@types/node@22.20.1)(jiti@2.6.1)(lightningcss@1.32.0)(yaml@2.9.0)
 
+  bench/prod-arena:
+    dependencies:
+      '@paintclash/protocol':
+        specifier: workspace:*
+        version: link:../../packages/protocol
+      '@paintclash/shared':
+        specifier: workspace:*
+        version: link:../../packages/shared
+      '@paintclash/sim-client':
+        specifier: workspace:*
+        version: link:../../packages/sim-client
+      '@paintclash/sim-core':
+        specifier: workspace:*
+        version: link:../../packages/sim-core
+    devDependencies:
+      '@types/node':
+        specifier: ^22.10.7
+        version: 22.20.1
+      typescript:
+        specifier: ^5.7.3
+        version: 5.9.3
+      vitest:
+        specifier: ^3.0.5
+        version: 3.2.7(@types/node@22.20.1)(jiti@2.6.1)(lightningcss@1.32.0)(yaml@2.9.0)
+
   packages/client:
     dependencies:
       '@paintclash/protocol':

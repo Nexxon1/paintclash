@@ -60,6 +60,10 @@ jobs:
       - run: pnpm --filter @paintclash/bench-do-cpu test
       - run: pnpm --filter @paintclash/bench-fill-budget test
       - run: pnpm --filter @paintclash/bench-carve-budget test
+      # prod-arena's smoke test is its autopilot flown offline: it opens no
+      # socket and needs no deployment, and it is what keeps the manual
+      # production run from measuring an arena where nothing ever fills.
+      - run: pnpm --filter @paintclash/bench-prod-arena test
 
   build:
     runs-on: ubuntu-latest
@@ -100,8 +104,11 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      # Builds the client into packages/client/dist, which is the directory
+      # `packages/server/wrangler.jsonc` serves as Static Assets — the deploy
+      # step below ships whatever this produced.
       - run: pnpm build
-      - name: Deploy placeholder Worker to Cloudflare (Free plan, no card)
+      - name: Deploy the game to Cloudflare (Free plan, no card — spec §7.3)
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -109,3 +116,23 @@ jobs:
           workingDirectory: packages/server
           # Stamp the deployed commit SHA into the Worker (surfaced at /api/health).
           command: deploy --var COMMIT_SHA:${{ github.sha }}
+      # A deploy that reported success but is not serving THIS commit is the one
+      # failure mode a green CD gate would otherwise hide (a rollout that landed
+      # on a stale version, an assets upload that did not). The health probe
+      # carries the SHA precisely so this check can exist; it is the last word on
+      # whether main is live, and it retries because propagation is not instant.
+      - name: Verify the deployment serves this commit
+        env:
+          DEPLOY_URL: ${{ vars.DEPLOY_URL || 'https://paintclash.secure-data.workers.dev' }}
+        run: |
+          for attempt in 1 2 3 4 5 6; do
+            live=$(curl -fsS "$DEPLOY_URL/api/health" | jq -r .commit || true)
+            if [ "$live" = "${{ github.sha }}" ]; then
+              echo "live on $DEPLOY_URL @ $live"
+              exit 0
+            fi
+            echo "attempt $attempt: serving '$live', want '${{ github.sha }}'"
+            sleep 10
+          done
+          echo "::error::$DEPLOY_URL is not serving ${{ github.sha }}"
+          exit 1

@@ -49,6 +49,27 @@ import {
 
 import { BotPilot, senseFor } from './bot.js';
 
+/**
+ * What one arena currently holds — the half of `GET /api/arena-stats` that is
+ * about the load, next to the half that is about what the load costs
+ * (`tick-cost.ts`). Every field is a number the tick budget has to be read
+ * against: a p95 of 12 ms means nothing without knowing whether eight entities
+ * or sixteen produced it, and even less without the vertex count, since that
+ * is what the fill actually scales with (ticket 22/23).
+ */
+export interface ArenaPopulation {
+  /** Completed sim ticks — how long this world has been growing. */
+  tick: number;
+  sizeWU: number;
+  /** Sockets holding a slot, announced or not (the population limit counts these). */
+  connections: number;
+  /** Sockets that have announced themselves — humans (spec §2.7). */
+  humans: number;
+  bots: number;
+  /** Total territory ring vertices across every player. */
+  vertices: number;
+}
+
 /** What ArenaCore needs from a transport — a DO WebSocket satisfies this. */
 export interface ArenaSocket {
   send(frame: Uint8Array): void;
@@ -190,6 +211,31 @@ export class ArenaCore {
 
   get connectionCount(): number {
     return this.connections.size;
+  }
+
+  /**
+   * A snapshot of the load for the stats probe (ticket 16). Walks every ring of
+   * every territory, which is deliberately NOT something the tick does: the
+   * count is only asked for when someone reads the endpoint, and even a
+   * six-thousand-vertex arena is a single cheap pass then.
+   */
+  get population(): ArenaPopulation {
+    let bots = 0;
+    let vertices = 0;
+    for (const player of this.state.players) {
+      if (player.isBot) bots += 1;
+      for (const poly of player.territory) {
+        for (const ring of poly) vertices += ring.length;
+      }
+    }
+    return {
+      tick: this.state.tick,
+      sizeWU: this.state.arenaSizeWU,
+      connections: this.connections.size,
+      humans: this.humanCount(),
+      bots,
+      vertices,
+    };
   }
 
   /**

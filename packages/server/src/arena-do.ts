@@ -59,6 +59,7 @@ import {
 
 import { ArenaCore, displayName } from './arena.js';
 import { chargeFrame, type FrameWindow } from './flood.js';
+import { createTickCost, recordTick, tickCostReport, type TickCost } from './tick-cost.js';
 import {
   CLIENT_IP_HEADER,
   UNKNOWN_ADDRESS,
@@ -137,12 +138,21 @@ export class ArenaDO extends DurableObject<Env> {
    * would be the protection creating the cost it exists to prevent.
    */
   private readonly frameWindows = new Map<WebSocket, FrameWindow>();
+  /**
+   * What the current arena's ticks cost (ticket 16, `tick-cost.ts`). Created
+   * with the ticker and dropped with it, so the window a report covers is
+   * exactly one arena's life — an arena that emptied and came back is a fresh
+   * world with fresh territories, and averaging across the two would hide the
+   * growth that drives the cost.
+   */
+  private tickCost: TickCost | null = null;
 
   override async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
     // Only reachable from the router (a DO has no public address), so this is
     // the trusted side of the room-creation path.
     if (url.pathname === '/room' && request.method === 'POST') return this.createRoom(request);
+    if (url.pathname === '/stats') return this.stats();
     if (request.headers.get('Upgrade')?.toLowerCase() !== 'websocket') {
       return new Response('expected a WebSocket upgrade', { status: 426 });
     }
@@ -175,6 +185,22 @@ export class ArenaDO extends DurableObject<Env> {
     // Born empty: if nobody ever arrives, the grace alarm frees the code again.
     await this.armGrace();
     return new Response(null, { status: 201 });
+  }
+
+  /**
+   * The tick budget as this object has been living it (ticket 16), for
+   * `GET /api/arena-stats`. Answers even when nothing is running — "no arena
+   * right now" is a true and useful answer, and a probe must never be the
+   * thing that starts one.
+   */
+  private stats(): Response {
+    const arena = this.arena;
+    const cost = this.tickCost;
+    return Response.json({
+      live: arena !== null && this.ticking,
+      arena: arena?.population ?? null,
+      tick: cost === null ? null : tickCostReport(cost, Date.now()),
+    });
   }
 
   /**
@@ -650,11 +676,21 @@ export class ArenaDO extends DurableObject<Env> {
    * clients therefore servo their sim cadence to the OBSERVED tick rate
    * (ClientSession.simIntervalMs), which also keeps the tick-mapped input
    * timeline aligned. Do not "fix" pacing here by trusting Date.now().
+   *
+   * From the second tick on, `scheduled` names the slot the tick about to run
+   * was aimed at, which is what makes `now - scheduled` the measurement
+   * `tick-cost.ts` interprets. The pacing itself is untouched by that
+   * measurement — deliberately: this loop's cadence is ticket 18's subject, and
+   * a benchmark must not move the thing it is benchmarking. (It was tried: one
+   * tick of phase shift is enough to change who reaches whom first in the
+   * rewind choreography, `tests/scenario/rewind.test.ts`.)
    */
   private startTicker(arena: ArenaCore): void {
     if (this.ticking) return;
     this.ticking = true;
     let scheduled = Date.now();
+    const cost = (this.tickCost = createTickCost(scheduled));
+    let first = true;
     const loop = (): void => {
       if (arena.connectionCount === 0) {
         this.ticking = false;
@@ -662,6 +698,14 @@ export class ArenaDO extends DurableObject<Env> {
         this.socketIds.clear();
         return;
       }
+      // Recorded before the work, so it says how late THIS tick came — which on
+      // Cloudflare is what the previous one cost (see `tick-cost.ts`). The very
+      // first tick is skipped: it has no predecessor whose cost it could carry,
+      // and it is the one tick aimed a slot past `scheduled` (the initial
+      // `setTimeout` below), so recording it would only feed startup jitter
+      // into the histogram.
+      if (first) first = false;
+      else recordTick(cost, Date.now(), scheduled);
       arena.tick(TICK_DT_SEC);
       scheduled += TICK_DT_MS;
       if (Date.now() - scheduled > 2 * TICK_DT_MS) scheduled = Date.now();

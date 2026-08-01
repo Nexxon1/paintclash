@@ -124,6 +124,26 @@ export function healthPayload(commit: string): {
 const PUBLIC_ARENA = 'public';
 
 /**
+ * Where every Durable Object of this game is asked to live (spec §7.1: "EU via
+ * `weur`-Hint"). One constant, applied at every `get`, because the hint is only
+ * read when the object is **created**: a single path that forgets it is the path
+ * that places an arena on another continent for the rest of its life, and no
+ * later request can move it.
+ *
+ * It is a hint, not a guarantee — Cloudflare places the object in the nearest
+ * available location of that region, and an object that already exists stays
+ * where it was first created. The public arena and the room gate of the current
+ * deployment are therefore only re-placed if they are ever destroyed and
+ * recreated; new rooms get it from the start.
+ */
+export const ARENA_LOCATION_HINT: DurableObjectLocationHint = 'weur';
+
+/** The stub for one arena or room, placed per `ARENA_LOCATION_HINT`. */
+function arenaStub(env: Env, name: string): DurableObjectStub {
+  return env.ARENA.get(env.ARENA.idFromName(name), { locationHint: ARENA_LOCATION_HINT });
+}
+
+/**
  * Fresh codes tried before giving up. A collision means the drawn code already
  * names a live room — at ~10⁹ combinations and a handful of live rooms that is
  * astronomically unlikely, but it is checked rather than assumed: a collision
@@ -220,7 +240,9 @@ function callerIp(request: Request): string {
  * one only slows down how fast someone may knock.
  */
 async function refusedByGate(env: Env, bucket: GateBucket, ip: string): Promise<Response | null> {
-  const gate = env.ROOM_GATE.get(env.ROOM_GATE.idFromName('rooms'));
+  const gate = env.ROOM_GATE.get(env.ROOM_GATE.idFromName('rooms'), {
+    locationHint: ARENA_LOCATION_HINT,
+  });
   let charged: Response;
   try {
     charged = await gate.fetch(`https://gate/charge?bucket=${bucket}&ip=${encodeURIComponent(ip)}`);
@@ -243,12 +265,34 @@ export async function handleFetch(request: Request, env: Env): Promise<Response>
   if (url.pathname === '/api/health') {
     return Response.json(healthPayload(env.COMMIT_SHA));
   }
+  if (url.pathname === '/api/arena-stats') {
+    if (request.method !== 'GET') return new Response(null, { status: 405 });
+    return arenaStats(env);
+  }
   if (url.pathname === '/api/rooms') {
     if (request.method !== 'POST') return new Response(null, { status: 405 });
     return createRoom(request, env);
   }
   if (url.pathname === '/ws') return openSocket(request, env, url);
   return env.ASSETS.fetch(request);
+}
+
+/**
+ * What the public arena's tick currently costs (ticket 16, `tick-cost.ts`).
+ * This is how the population limit gets re-checked against real Cloudflare
+ * hardware — the deployed arena is the one thing no benchmark harness can
+ * stand in for, and nobody can put a stopwatch around it from outside.
+ *
+ * Deliberately public and unauthenticated: it is a handful of aggregate numbers
+ * about one shared arena, it names no player and no address, and gating it
+ * behind a secret would mean the one measurement that matters is unavailable
+ * exactly when someone is trying to find out why the game feels slow. It is
+ * NOT charged against the join budget — a read must never be able to cost a
+ * player their next socket — which is safe because it opens nothing and does
+ * no per-request work beyond one DO round trip.
+ */
+async function arenaStats(env: Env): Promise<Response> {
+  return arenaStub(env, PUBLIC_ARENA).fetch('https://arena/stats');
 }
 
 /**
@@ -277,7 +321,7 @@ async function openSocket(request: Request, env: Env, url: URL): Promise<Respons
   // Phase 1: exactly one public arena at a fixed address (ADR-0004). For a
   // private room the code IS the DO name (`idFromName(code)`); the room reads its
   // own canonical code out of storage, so nothing downstream re-normalizes.
-  const arena = env.ARENA.get(env.ARENA.idFromName(code ?? PUBLIC_ARENA));
+  const arena = arenaStub(env, code ?? PUBLIC_ARENA);
   try {
     return await arena.fetch(withCallerIp(request, ip));
   } catch {
@@ -291,9 +335,7 @@ async function openSocket(request: Request, env: Env, url: URL): Promise<Respons
     // second failure is a real fault and belongs in the response. The stub is
     // taken again rather than reused: the old one refers to the object that was
     // just replaced.
-    return env.ARENA.get(env.ARENA.idFromName(code ?? PUBLIC_ARENA)).fetch(
-      withCallerIp(request, ip),
-    );
+    return arenaStub(env, code ?? PUBLIC_ARENA).fetch(withCallerIp(request, ip));
   }
 }
 
@@ -325,7 +367,7 @@ async function createRoom(request: Request, env: Env): Promise<Response> {
   const hostToken = freshHostToken();
   for (let attempt = 0; attempt < ROOM_CODE_ATTEMPTS; attempt++) {
     const code = freshRoomCode();
-    const room = env.ARENA.get(env.ARENA.idFromName(code));
+    const room = arenaStub(env, code);
     const created = await room.fetch('https://room/room', {
       method: 'POST',
       body: JSON.stringify({ code, config, hostToken }),

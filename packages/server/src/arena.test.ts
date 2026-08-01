@@ -1332,3 +1332,46 @@ describe('nickname policy (ticket 13, spec §2.8, §8.3 point 5)', () => {
     expect(publishedName(arena, socket, id)).toBe('Ada');
   });
 });
+
+describe('population summary (ticket 16: what /api/arena-stats reports)', () => {
+  it('is empty before anyone joins', () => {
+    const arena = new ArenaCore(1, { sizeWU: 120 });
+    expect(arena.population).toEqual({
+      tick: 0,
+      sizeWU: 120,
+      connections: 0,
+      humans: 0,
+      bots: 0,
+      vertices: 0,
+    });
+  });
+
+  it('counts humans and bots apart, like the population rule does', () => {
+    const arena = new ArenaCore(1, { botTarget: BALANCE.bots.targetPopulation });
+    joinedPlayer(arena, 'Ada');
+    // Bots are queued on the first tick and spawn on the next (ticket 12).
+    arena.tick(TICK_DT_SEC);
+    arena.tick(TICK_DT_SEC);
+    const { humans, bots, connections } = arena.population;
+    expect(humans).toBe(1);
+    expect(bots).toBe(BALANCE.bots.targetPopulation - 1);
+    // A bot never holds a connection slot — that is the whole point of the rule.
+    expect(connections).toBe(1);
+  });
+
+  it('counts a socket that has not announced itself as a connection, not a human', () => {
+    const arena = new ArenaCore(1);
+    arena.connect(new FakeSocket());
+    expect(arena.population.connections).toBe(1);
+    expect(arena.population.humans).toBe(0);
+  });
+
+  it('reports the territory vertices the fill cost scales with (tickets 22/23)', () => {
+    const arena = new ArenaCore(1);
+    joinedPlayer(arena, 'Ada');
+    arena.tick(TICK_DT_SEC);
+    // A spawn block is a rectangle, so the very first tick already has corners
+    // to count — the number the production tick cost has to be read against.
+    expect(arena.population.vertices).toBeGreaterThan(0);
+  });
+});

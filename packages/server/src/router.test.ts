@@ -2,6 +2,7 @@ import { BALANCE, defaultRoomConfig, normalizeRoomCode } from '@paintclash/share
 import { describe, expect, it } from 'vitest';
 
 import {
+  ARENA_LOCATION_HINT,
   arenaSeedOverride,
   arenaSizeOverride,
   botTargetOverride,
@@ -28,6 +29,10 @@ interface FakeEnv extends Env {
   created: FakeRoom[];
   /** Addresses the gate was asked about, with the bucket they were charged in. */
   charged: { bucket: string; ip: string }[];
+  /** Every stub taken, with the placement it was asked for (spec §7.1). */
+  located: { namespace: 'arena' | 'gate'; name: string; hint: string | undefined }[];
+  /** Non-upgrade requests forwarded to an Arena-DO (the stats probe). */
+  probed: { name: string; url: string }[];
 }
 
 interface FakeOptions {
@@ -45,43 +50,56 @@ function fakeEnv(options: FakeOptions = {}, overrides: Partial<Env> = {}): FakeE
   const forwarded: { name: string; request: Request }[] = [];
   const created: FakeRoom[] = [];
   const charged: { bucket: string; ip: string }[] = [];
+  const located: FakeEnv['located'] = [];
+  const probed: FakeEnv['probed'] = [];
   const arena = {
     idFromName: (name: string) => name,
-    get: (name: unknown) => ({
-      fetch: (request: Request | string, init?: RequestInit) => {
-        if (typeof request === 'string') {
-          const body: unknown = JSON.parse(typeof init?.body === 'string' ? init.body : '{}');
-          created.push({ name: String(name), body });
-          return Promise.resolve(
-            new Response(null, { status: options.createStatus?.[created.length - 1] ?? 201 }),
-          );
-        }
-        // Node cannot build a real 101 Response — the marker body suffices.
-        forwarded.push({ name: String(name), request });
-        if (forwarded.length <= (options.arenaThrows ?? 0)) {
-          return Promise.reject(new Error('changed, invalidating this Durable Object'));
-        }
-        return Promise.resolve(new Response('upgraded'));
-      },
-    }),
+    get: (name: unknown, opts?: { locationHint?: string }) => {
+      located.push({ namespace: 'arena', name: String(name), hint: opts?.locationHint });
+      return {
+        fetch: (input: Request | string, init?: RequestInit) => {
+          const request = typeof input === 'string' ? new Request(input, init) : input;
+          if (new URL(request.url).pathname === '/room') {
+            const body: unknown = JSON.parse(typeof init?.body === 'string' ? init.body : '{}');
+            created.push({ name: String(name), body });
+            return Promise.resolve(
+              new Response(null, { status: options.createStatus?.[created.length - 1] ?? 201 }),
+            );
+          }
+          if (request.headers.get('Upgrade') === null) {
+            probed.push({ name: String(name), url: request.url });
+            return Promise.resolve(Response.json({ live: false }));
+          }
+          // Node cannot build a real 101 Response — the marker body suffices.
+          forwarded.push({ name: String(name), request });
+          if (forwarded.length <= (options.arenaThrows ?? 0)) {
+            return Promise.reject(new Error('changed, invalidating this Durable Object'));
+          }
+          return Promise.resolve(new Response('upgraded'));
+        },
+      };
+    },
   } as unknown as Env['ARENA'];
   const gate = {
     idFromName: (name: string) => name,
-    get: () => ({
-      fetch: (url: string) => {
-        const params = new URL(url).searchParams;
-        charged.push({ bucket: params.get('bucket') ?? '', ip: params.get('ip') ?? '' });
-        if (options.gateBroken === true) return Promise.reject(new Error('gate unavailable'));
-        return Promise.resolve(
-          options.refuseFor === undefined
-            ? new Response(null, { status: 200 })
-            : new Response(null, {
-                status: 429,
-                headers: { 'Retry-After': String(options.refuseFor) },
-              }),
-        );
-      },
-    }),
+    get: (name: unknown, opts?: { locationHint?: string }) => {
+      located.push({ namespace: 'gate', name: String(name), hint: opts?.locationHint });
+      return {
+        fetch: (url: string) => {
+          const params = new URL(url).searchParams;
+          charged.push({ bucket: params.get('bucket') ?? '', ip: params.get('ip') ?? '' });
+          if (options.gateBroken === true) return Promise.reject(new Error('gate unavailable'));
+          return Promise.resolve(
+            options.refuseFor === undefined
+              ? new Response(null, { status: 200 })
+              : new Response(null, {
+                  status: 429,
+                  headers: { 'Retry-After': String(options.refuseFor) },
+                }),
+          );
+        },
+      };
+    },
   } as unknown as Env['ROOM_GATE'];
   return {
     ASSETS: { fetch: () => Promise.resolve(new Response('asset', { status: 200 })) },
@@ -91,6 +109,8 @@ function fakeEnv(options: FakeOptions = {}, overrides: Partial<Env> = {}): FakeE
     forwarded,
     created,
     charged,
+    located,
+    probed,
     ...overrides,
   };
 }
@@ -142,6 +162,51 @@ describe('router worker (ADR-0004: stateless, routes WS to the arena DO)', () =>
     const response = await handleFetch(new Request('https://x/index.html'), env);
     expect(await response.text()).toBe('asset');
     expect(env.forwarded).toHaveLength(0);
+  });
+});
+
+describe('placement (spec §7.1: EU via the weur hint)', () => {
+  it('asks for western Europe every time it takes a Durable Object stub', async () => {
+    const env = fakeEnv();
+    await handleFetch(upgrade('https://x/ws'), env);
+    await handleFetch(upgrade('https://x/ws?room=PQ7K3M'), env);
+    await handleFetch(createRequest(), env);
+    expect(env.located).not.toHaveLength(0);
+    // Every one of them, gate included: the hint only takes effect at CREATION,
+    // so a single path that forgets it is the path that permanently places an
+    // object on the wrong continent.
+    expect(env.located.filter((stub) => stub.hint !== ARENA_LOCATION_HINT)).toEqual([]);
+  });
+
+  it('keeps the hint on the retry after a deploy replaced the object', async () => {
+    const env = fakeEnv({ arenaThrows: 1 });
+    await handleFetch(upgrade('https://x/ws'), env);
+    const arenaStubs = env.located.filter((stub) => stub.namespace === 'arena');
+    expect(arenaStubs).toHaveLength(2);
+    expect(arenaStubs.every((stub) => stub.hint === ARENA_LOCATION_HINT)).toBe(true);
+  });
+});
+
+describe('arena stats probe (ticket 16: the tick budget on real infrastructure)', () => {
+  it('asks the one public arena and passes its answer through', async () => {
+    const env = fakeEnv();
+    const response = await handleFetch(new Request('https://x/api/arena-stats'), env);
+    expect(await response.json()).toEqual({ live: false });
+    expect(env.probed.map((probe) => probe.name)).toEqual(['public']);
+    // Read-only: it must not be chargeable traffic against a player's join
+    // budget, and it must not open a socket.
+    expect(env.charged).toHaveLength(0);
+    expect(env.forwarded).toHaveLength(0);
+  });
+
+  it('is a GET, and says so', async () => {
+    const env = fakeEnv();
+    const response = await handleFetch(
+      new Request('https://x/api/arena-stats', { method: 'POST' }),
+      env,
+    );
+    expect(response.status).toBe(405);
+    expect(env.probed).toHaveLength(0);
   });
 });
 
