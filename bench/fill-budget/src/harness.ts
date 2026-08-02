@@ -119,6 +119,68 @@ export function runArena(options: ArenaRunOptions): ArenaRun {
   return { options, tickMs, steerMs, verticesPerSecond, fills, deaths };
 }
 
+/**
+ * How far the vertex count still moves between the two halves of a run's
+ * post-ramp tail — the question "did this run reach the plateau, or is it
+ * still filling up?".
+ */
+export interface Saturation {
+  /**
+   * Seconds each half covers. 0 when the run ends inside the settle time —
+   * check this before trusting `driftFraction`, which is 0 in that case too.
+   */
+  halfWindowSec: number;
+  earlyMeanVertices: number;
+  lateMeanVertices: number;
+  /**
+   * `(late − early) / early`: ~0 at equilibrium, clearly > 0 while growing.
+   *
+   * Also 0 for the two runs this cannot judge — no comparable window, and an
+   * arena that painted nothing — so "0" alone never means "plateau reached".
+   */
+  driftFraction: number;
+}
+
+/**
+ * Split a run's per-second vertex series after `settleSec` and compare its two
+ * halves — ticket 23's equilibrium table (6 592 → 6 473, −1,8 %) as a function.
+ *
+ * The steady-state measurement below stands or falls on this: a 30-minute run
+ * that never got out of the ramp yields tick costs from the *filling up*, not
+ * from the plateau, and reading them as a baseline would understate it.
+ */
+export function saturationOf(
+  verticesPerSecond: readonly number[] | Int32Array,
+  settleSec: number,
+): Saturation {
+  const tail = Math.max(0, verticesPerSecond.length - settleSec);
+  const halfWindowSec = Math.floor(tail / 2);
+  const empty = {
+    halfWindowSec: 0,
+    earlyMeanVertices: 0,
+    lateMeanVertices: 0,
+    driftFraction: 0,
+  };
+  if (halfWindowSec === 0) return empty;
+  const meanFrom = (start: number): number => {
+    let sum = 0;
+    for (let i = start; i < start + halfWindowSec; i++) sum += verticesPerSecond[i] ?? 0;
+    return sum / halfWindowSec;
+  };
+  // An odd tail drops its middle second, so both halves are the same width.
+  const earlyMeanVertices = meanFrom(settleSec);
+  const lateMeanVertices = meanFrom(verticesPerSecond.length - halfWindowSec);
+  return {
+    halfWindowSec,
+    earlyMeanVertices,
+    lateMeanVertices,
+    // An arena that painted nothing is trivially drift-free; that the bots
+    // painted at all is a separate premise (`fills`, `peakVertices`).
+    driftFraction:
+      earlyMeanVertices === 0 ? 0 : (lateMeanVertices - earlyMeanVertices) / earlyMeanVertices,
+  };
+}
+
 export interface RunStats {
   meanMs: number;
   p50Ms: number;

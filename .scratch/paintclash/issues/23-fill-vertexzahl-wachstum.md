@@ -42,8 +42,10 @@ töten einander kaum (31 Tode in 30 min). Die 50-WU-Arena mit 96 Toden in 5 min 
 ~1 200 Vertices. Eine Arena mit echten Menschen liegt also unter diesem Plateau — aber
 darauf zu bauen heisst, die Performance von der Sterberate abhängig zu machen.
 
-**Blocked by:** — (unabhängig; T16 misst die Populationsgrenze gegen echte Infrastruktur
-und liefert den Härtetest für das hier Entschiedene)
+**Blocked by:** 28 (seit 2026-08-02 — die Basislinie, gegen die hier gemessen würde, stammt
+aus einer unverstandenen Kosten-Regression; s. Kommentar unten. T16 misst daneben die
+Populationsgrenze gegen echte Infrastruktur und liefert den Härtetest für das hier
+Entschiedene.)
 
 **Status:** needs-triage
 
@@ -213,3 +215,66 @@ mit zu messen und nicht aus ADR-0007 zu übernehmen.
 Produktion **ohne** den Freeze aus Ticket 25 zeigen — gut möglich, dass das Restlaggen
 weniger stört, als es neben einem 4-Sekunden-Standbild aussah. `Status` bleibt darum
 `needs-triage`, und die nächste Runde beginnt mit der fehlenden 1 800-s-Basislinie.
+
+### 2026-08-02 — die 1 800-s-Basislinie liegt vor, und sie widerlegt die Prämisse dieses Tickets
+
+Der zweite Auftragspunkt ist gebaut: `bench/fill-budget` hat eine 30-Minuten-Variante
+(`pnpm --filter @paintclash/bench-fill-budget bench:steady`, `src/steady.test.ts`).
+**Der Sim-Clipper ist unangetastet** — die Änderung liegt vollständig in `bench/`, das
+Gate ist zu. Gemessen auf derselben Maschine und mit demselben Seed (20260730) wie die
+Zahlen oben:
+
+| 200 WU · 8 Bots · 30 min | 2026-07-31 | **2026-08-02** |
+|---|---|---|
+| mean | 4,91 ms | **7,84 ms** |
+| p95 | 31,7 ms | **50,80 ms** |
+| p99 | 51,9 ms | **90,57 ms** |
+| max | 138 ms | **230,14 ms** |
+| Ticks über 50 ms | 420 (1,2 %), ab t = 355 s | **1 860 (5,17 %), ab t = 221 s** |
+| Tode | 31 | 25 |
+| Peak-Vertices | ~8 000 | **10 502** |
+
+Die 50-WU-Arena bleibt dagegen unauffällig: mean 1,51–1,66 ms, p95 7,51–8,23 ms,
+p99 12,19–14,03 ms und **0–3 Ticks über Budget** über volle 30 Minuten (zwei Läufe,
+540 Tode). Die Spanne ist Stoppuhr, nicht Geometrie — Fills, Tode und Vertex-Zahl stimmen
+zwischen den Läufen auf die Einheit überein, bei Ticks von ~1,5 ms ist der `max` GC-Rauschen.
+Der todgetriebene Sägezahn funktioniert also weiterhin; auseinander läuft ausschliesslich
+der todarme 200-WU-Fall — 3 Ausreisser-Ticks gegen 1 860.
+
+**Die Korrektur ganz oben in diesem Ticket gilt nicht mehr.** „Die Kurve divergiert
+NICHT, sie sättigt" war am 31.07. richtig gemessen (6 592 → 6 473, **−1,8 %**). Heute:
+
+| Fenster | Ø Vertices |
+|---|---|
+| t = 450–1 125 s | 6 375 |
+| t = 1 125–1 800 s | 8 501 (**+33,3 %**) |
+
+Das ist kein Artefakt des Fenster-Schnitts. In den **exakt gleichen** Fenstern wie damals
+(t = 450–870 gegen t = 900–1 770) liegen die Werte bei 6 060 → 8 074, ebenfalls **+33 %**.
+Die Vertex-Zahl steigt bis t = 1 350 s auf 10 311 und steht am Ende des Laufs bei 8 842 —
+sie pendelt nicht mehr um ein Plateau, sie wandert nach oben.
+
+Die neue Prämissen-Zusicherung im Bench hat genau das gemeldet, statt die Zahlen still als
+Basislinie auszugeben:
+
+> vertices still moved 33.3 % between the two halves of the tail (6375 → 8501) — this run
+> never reached a plateau, so its tick costs are not a steady-state baseline
+
+**Warum das den Umfang dieses Tickets trifft.** Der Abschnitt „Umfang: NUR Ansatz 1"
+begründet sich wörtlich mit der Sättigung: „Weil die Kurve **sättigt**, ist ein ausreichend
+grosser konstanter Faktor hier eine *dauerhafte* Lösung und kein Aufschub — gegen ein festes
+Plateau von ~6 500 Vertices erschlägt ein 10× die 1,2 % Überläufe für immer." Gegen ein
+Plateau, das es in dieser Form nicht mehr gibt, ist ein 10× ein **Aufschub**: bei 5,17 %
+Überläufen und p99 90,57 ms kauft derselbe Faktor deutlich weniger Luft, und er kauft sie
+gegen eine steigende statt eine flache Kurve. Die Entscheidung am Gate ist damit eine
+andere als die, die hier vorbereitet wurde — deshalb wird sie hier auch nicht getroffen.
+
+**Der wahrscheinliche Grund ist keine Messschwankung, sondern eine Regression** zwischen
+dem 31.07. und heute — der 5-Minuten-Akzeptanzbench aus Ticket 22 ist auf `main`
+**rot** (57 Ticks über Budget statt 0). Das ist ein eigener Fund und steht in
+[Ticket 28](28-fill-kosten-regression-seit-t22.md).
+
+**Status bleibt `needs-triage`, das Gate bleibt zu.** Nächster Schritt ist nicht der
+Engine-Tausch, sondern Ticket 28: solange die Kosten aus einer unverstandenen Regression
+stammen, misst jeder Vorher/Nachher-Vergleich der Engine gegen eine Basislinie, die selbst
+kaputt ist.
