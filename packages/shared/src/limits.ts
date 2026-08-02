@@ -24,7 +24,12 @@ export const LIMITS = Object.freeze({
    * in every measured variant; the wire adds a hard reason of its own — the
    * snapshot format counts players in a single byte, and an overflow would make
    * every snapshot undecodable for every client (global freeze). Also sizes the
-   * client's color palette, so ids stay distinguishable up to here.
+   * client's color palette, so ids stay distinguishable up to here: the palette
+   * spends its hues on the ids that can be live AT ONCE (`maxPlayers` + bots)
+   * and covers the rest — reachable while departing ids are still blocked — on
+   * a second axis, sized by this ceiling (`colors.ts PALETTE_TIERS`). That is a
+   * practical cover, not a bound: this caps concurrent CONNECTIONS, not the ids
+   * they draw, so it is the HUD discriminator that carries the far tail.
    */
   maxConnections: 64,
   /**

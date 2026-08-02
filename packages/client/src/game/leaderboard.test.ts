@@ -1,7 +1,7 @@
 import type { LeaderboardRow } from '@paintclash/protocol';
 import { describe, expect, it } from 'vitest';
 
-import { SELF_COLOR_CSS } from './colors.js';
+import { PALETTE_SLOTS, PALETTE_TIERS, SELF_COLOR_CSS } from './colors.js';
 import { leaderboardView } from './leaderboard.js';
 
 function row(rank: number, playerId: number, areaPct: number, name: string): LeaderboardRow {
@@ -25,14 +25,17 @@ describe('leaderboard view (spec §2.5)', () => {
     ]);
     // The own swatch is the reserved blue; everyone else gets their hue.
     expect(view[1]?.color).toBe(SELF_COLOR_CSS);
-    expect(view[0]?.color).toBe('hsl(85, 65%, 55%)'); // 2 × 0.618034 → 0.236068
+    expect(view[0]?.color).toBe('hsl(52, 65%, 61%)'); // id 2 → palette slot 13
   });
 
   it('numbers rows whose swatches read as the same color', () => {
-    // Ids 1 and 11 land 0.1° apart (id 1 is bumped off the reserved blue) —
-    // two indistinguishable swatches, so both rows get a discriminator.
+    // The palette (ticket 21) gives every id that can be live at once its own
+    // color, so no ordinary pair collides any more. It encodes SLOTS × TIERS
+    // appearances; the first id past that repeats id 1 exactly, and carrying
+    // the discriminator for that case is the whole reason it still exists.
+    const wrapped = 1 + PALETTE_SLOTS * PALETTE_TIERS;
     const view = leaderboardView(
-      [row(1, 1, 5, 'Max'), row(2, 11, 4, 'Max'), row(3, 2, 3, 'Eve')],
+      [row(1, 1, 5, 'Max'), row(2, wrapped, 4, 'Max'), row(3, 2, 3, 'Eve')],
       9,
     );
     expect(view.map((r) => r.label)).toEqual(['Max ‹1›', 'Max ‹2›', 'Eve']);

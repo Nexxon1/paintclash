@@ -15,7 +15,7 @@ import { BALANCE, type Point, type Territory } from '@paintclash/shared';
 import * as THREE from 'three';
 
 import { CAMERA_DISTANCE_WU, CAMERA_ELEVATION_RAD, CAMERA_FOV_DEG } from '../game/camera.js';
-import { playerHue, PLAYER_LIGHTNESS, PLAYER_SATURATION, SELF_COLOR_CSS } from '../game/colors.js';
+import { playerColor, SELF_COLOR_CSS } from '../game/colors.js';
 
 import type { RenderState } from '../game/session.js';
 import {
@@ -47,14 +47,9 @@ const FILL_WAVE_MS = 450;
  * blue (a CSS string, hence sRGB by default) stayed saturated. Say sRGB.
  */
 function headColor(playerId: number, selfId: number | null): THREE.Color {
-  return playerId === selfId
-    ? new THREE.Color(SELF_COLOR_CSS)
-    : new THREE.Color().setHSL(
-        playerHue(playerId),
-        PLAYER_SATURATION,
-        PLAYER_LIGHTNESS,
-        THREE.SRGBColorSpace,
-      );
+  if (playerId === selfId) return new THREE.Color(SELF_COLOR_CSS);
+  const { hue, saturation, lightness } = playerColor(playerId);
+  return new THREE.Color().setHSL(hue, saturation, lightness, THREE.SRGBColorSpace);
 }
 
 /** Ease-out with a slight overshoot — the plateau "pops" up once. */
