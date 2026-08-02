@@ -46,20 +46,34 @@ import { driftFrom, report, runArena, statsOf } from './harness.js';
 const MAX_VERTEX_DRIFT = 0.05;
 
 /**
- * The recorded path of each arena, measured on ticket 30 (2026-08-02). All
+ * The recorded path of each arena, measured on ticket 31 (2026-08-02). All
  * three are deterministic outputs of the pinned seed. Re-record them
  * deliberately, in a commit that says why: a changed number here means the
  * arena now paints a different shape, which is exactly the event worth a second
  * look at what it costs.
  *
- * The 200 WU row moved with ticket 30 (7 408 → 7 369 vertices, 1 368 → 1 323
- * closures), and the reason is the fix itself: captures now also paint the
- * chambers a union walls in behind a sub-visible neck, so from the first one
- * a bot owns land it did not before and flies differently from there on. The
- * 50 WU row is unchanged **bit for bit** — no such chamber ever came up in
- * it — which is what says the change is the new rule firing and not a shift
- * in the arithmetic underneath. Cost measured on one machine across the
- * change, same seed: 50 WU mean 0,27 → 0,26 ms, p95 1,09 → 1,07 ms.
+ * **Both rows moved with ticket 31**, which stopped storing needles — the
+ * near-collinear triangles a Martinez sweep leaves where two boundaries almost
+ * coincide. They are not land in any sense (105 of them held 5,3e-6 WU²
+ * between them), but they were stored as territory, so they were vertices, and
+ * they accumulated all round: 105 of the 152 stored pieces at t = 300 s.
+ *
+ * The two rows moved differently, and the pair is the evidence:
+ *
+ * - **200 WU flies the identical path** — 1 323 closures and 1 death, bit for
+ *   bit — while dropping 7 369 → 7 044 vertices (−4,4 %). Nothing but dead
+ *   weight left. That makes it this change's valid A/B column, measured on one
+ *   machine, same seed, straight before and after: **mean 0,58 → 0,54 ms, p95
+ *   3,31 → 3,10 ms, p99 6,78 → 6,53 ms.**
+ * - **50 WU flies a different path** (1 750 → 1 562 vertices, 2 527 → 2 575
+ *   closures, 79 → 90 deaths) — and the reason is not the fill but the BOTS.
+ *   `closestOnTerritory` walks every ring, and `territoryCenter` averages
+ *   outer-ring vertices unweighted, so with 105 three-vertex needles among 152
+ *   pieces a bot's "where is my land" and "where is my nearest border" were
+ *   partly computed from hairs. At 50 WU — sixteen times the density — that
+ *   distortion is thick enough to steer by. The extra deaths are `headOn`
+ *   (33 → 46), not total-loss: the bots collide differently, nobody is
+ *   dispossessed by the change.
  *
  * 200 WU is the public arena (spec §10.2). 50 WU is `pnpm dev:small`, sixteen
  * times the density the spec sizes for; production caps its bot count by area
@@ -67,8 +81,8 @@ const MAX_VERTEX_DRIFT = 0.05;
  * saturation case, and it is the one that produced the reported freeze.
  */
 const ARENAS = [
-  { arenaSizeWU: 200, peakVertices: 7369, closures: 1323, deaths: 1 },
-  { arenaSizeWU: 50, peakVertices: 1750, closures: 2527, deaths: 79 },
+  { arenaSizeWU: 200, peakVertices: 7044, closures: 1323, deaths: 1 },
+  { arenaSizeWU: 50, peakVertices: 1562, closures: 2575, deaths: 90 },
 ];
 
 describe('fill cost under a saturating load', () => {
@@ -108,6 +122,18 @@ describe('fill cost under a saturating load', () => {
           `${flown}. Find out what changed and what it costs before re-recording the ` +
           `baseline`,
       ).toBeLessThan(MAX_VERTEX_DRIFT);
+      // Ticket 31: a needle is not land, so nothing above would notice it —
+      // not the vertex bound (it moves them by a few per cent at most), not
+      // closures, not deaths. It has to be asked for by name.
+      expect(
+        run.needles,
+        `${String(run.needles)} of the ${String(run.pieces)} stored pieces are thinner than ` +
+          `a hairline. Those are needles — the near-collinear triangles the boolean sweep ` +
+          `leaves where two boundaries almost coincide (ticket 31). They hold no land worth ` +
+          `counting, so nothing else in this bench goes red, but they are stored as ` +
+          `territory, they never go away, and the renderer extrudes each one into a ` +
+          `hairline wall standing on the map`,
+      ).toBe(0);
       expect(
         { closures: run.closures, deaths: run.deaths },
         `the arena flew a different path than the baseline records — ${flown}. The ` +

@@ -11,7 +11,23 @@ import { describe, expect, it } from 'vitest';
 
 import { closeLoop } from './fill.js';
 import { LATTICE_NOISE_WU2 } from './fixtures/tolerances.js';
-import { pointInTerritory, squareRing, territoryArea } from './geometry.js';
+import { pointInTerritory, ringThickness, squareRing, territoryArea } from './geometry.js';
+
+/**
+ * A needle: three lattice-snapped, near-collinear points spanning 20 WU. What
+ * a Martinez sweep leaves where two boundaries almost coincide, and what an
+ * area floor alone cannot recognise — this one carries 1e-6 WU², a thousand
+ * times the debris floor, while being 1e-7 WU wide.
+ */
+const needle = (y: number): Point[] => [
+  [10, y],
+  [20, y + 1e-7],
+  [30, y],
+];
+
+/** Every outer ring the outcome stores, own land and enemies alike. */
+const storedOuterRings = (territories: readonly Territory[]): Point[][] =>
+  territories.flatMap((territory) => territory.flatMap((poly) => (poly[0] ? [poly[0]] : [])));
 
 /** Own 6×6-ish block on (2..8)² — 36 WU². */
 const ownSquare = (): Territory => [[squareRing(5, 5, 3)]];
@@ -487,6 +503,58 @@ describe('closeLoop', () => {
         }
       }),
       { numRuns: 200 },
+    );
+  });
+
+  it('sweeps a needle out of the land it stores instead of keeping it as a piece', () => {
+    // The artefact this guards: a needle is not land, but it IS territory —
+    // it survives every later op, it accumulates over a round, and the
+    // renderer extrudes it into a hairline wall standing on the map. A fill
+    // that touches nothing near it still rewrites the whole territory, so
+    // this is also how an arena that already has them heals.
+    const territory: Territory = [[squareRing(5, 5, 3)], [needle(20)]];
+    const trail: Point[] = [
+      [7, 5],
+      [12, 5],
+      [12, 10],
+      [7, 10],
+      [7, 7],
+    ];
+    const outcome = closeLoop(territory, trail, []);
+    expect(outcome).not.toBeNull();
+    expect(outcome?.territory).toHaveLength(1);
+    // The sweep is billed honestly: the capture is the same 22 WU² it would be
+    // without the needle, minus the needle's own 1e-6 WU², which the player
+    // nominally held a moment ago. That is the whole price of the cleanup —
+    // a ten-thousandth of the smallest capture the rules allow.
+    expect(outcome?.gainedArea).toBeCloseTo(22 - 1e-6, 9);
+  });
+
+  it('property: no ring a fill stores is thinner than a hairline', () => {
+    // Every operand here is a clean block, so any sub-hairline ring in the
+    // output was MADE by the sweep — which is exactly the accumulation the
+    // map artefacts came from.
+    //
+    // Enemies are checked alongside the filler's own land, but the needles
+    // this catches are all on the union side: reproducing one on the CARVE
+    // side takes the accumulated, hundreds-of-vertex boundaries of a real
+    // arena, and 4 000 randomized diagonal enemies produced none. That side
+    // is covered by construction rather than here — a carve result reaches
+    // storage through the very same `compactPoly` — and it is measured in the
+    // bot arena, where the victims of a steal collected 115 of the 165
+    // needles a five-minute round used to leave behind.
+    const coord = fc.double({ min: 0, max: 30, noNaN: true });
+    fc.assert(
+      fc.property(fc.array(fc.tuple(coord, coord), { minLength: 1, maxLength: 16 }), (rawTrail) => {
+        const enemies: Territory[] = [[[squareRing(20, 20, 4)]], [[squareRing(12, 25, 3)]]];
+        const trail: Point[] = [[7, 5], ...rawTrail.map(([x, y]): Point => [x, y]), [5, 5]];
+        const outcome = closeLoop(ownSquare(), trail, enemies);
+        if (!outcome) return;
+        for (const ring of storedOuterRings([outcome.territory, ...outcome.others])) {
+          expect(ringThickness(ring)).toBeGreaterThanOrEqual(1e-4);
+        }
+      }),
+      { numRuns: 300 },
     );
   });
 

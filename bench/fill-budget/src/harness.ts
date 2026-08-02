@@ -22,7 +22,7 @@ import {
   type Territory,
   type TurnSignal,
 } from '@paintclash/shared';
-import { createSimState, step } from '@paintclash/sim-core';
+import { createSimState, ringThickness, step } from '@paintclash/sim-core';
 
 /**
  * The tick budget in ms: one 20 Hz timestep. A tick costing more than the
@@ -70,6 +70,16 @@ export interface ArenaRun {
    */
   closures: number;
   deaths: number;
+  /**
+   * Stored pieces too thin to be land, at the end of the run (`needlePieces`).
+   * A deterministic output of the pinned seed like the three above, and the
+   * only automated check that covers the CARVE side of ticket 31: needles on
+   * the victim of a steal need the accumulated, hundreds-of-vertex boundaries
+   * of a real arena, which no unit test reproduces.
+   */
+  needles: number;
+  /** Stored pieces in total at the end — the scale `needles` is read against. */
+  pieces: number;
 }
 
 /** Total vertices across every ring of every territory — the cost driver. */
@@ -81,6 +91,34 @@ export function totalVertices(territories: readonly Territory[]): number {
     }
   }
   return total;
+}
+
+/**
+ * How thin a stored piece may be before this bench calls it a needle, in WU.
+ *
+ * Deliberately the bench's OWN number rather than `sim-core`'s land floor: a
+ * guard that reads the constant it guards moves whenever that constant does,
+ * and would go quietly green on the day someone lowers it. 1e-4 is where the
+ * measurement put the line — before ticket 31 a five-minute 200 WU arena
+ * stored 105 pieces at or below 1,00e-7 WU and 47 at or above 6,9e-3 WU, with
+ * five empty decades in between.
+ */
+const NEEDLE_THICKNESS_WU = 1e-4;
+
+/**
+ * Stored pieces too thin to be land — the artefact of ticket 31. Counted on
+ * outer rings, because that is what the renderer extrudes into a plateau and
+ * what a piece IS; a needle among them is a hairline wall standing on the map.
+ */
+export function needlePieces(territories: readonly Territory[]): number {
+  let needles = 0;
+  for (const territory of territories) {
+    for (const poly of territory) {
+      const outer = poly[0];
+      if (outer !== undefined && ringThickness(outer) < NEEDLE_THICKNESS_WU) needles += 1;
+    }
+  }
+  return needles;
 }
 
 /**
@@ -135,7 +173,17 @@ export async function runArena(options: ArenaRunOptions): Promise<ArenaRun> {
       await new Promise((resolve) => setImmediate(resolve));
     }
   }
-  return { options, tickMs, steerMs, verticesPerSecond, closures, deaths };
+  const finalTerritories = state.players.map((p) => p.territory);
+  return {
+    options,
+    tickMs,
+    steerMs,
+    verticesPerSecond,
+    closures,
+    deaths,
+    needles: needlePieces(finalTerritories),
+    pieces: finalTerritories.reduce((sum, territory) => sum + territory.length, 0),
+  };
 }
 
 /**

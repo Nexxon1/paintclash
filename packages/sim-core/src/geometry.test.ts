@@ -10,6 +10,7 @@ import {
   pointInTerritory,
   polylineBand,
   ringArea,
+  ringThickness,
   sealEnclosedBays,
   segmentDistanceSq,
   segmentsProperlyCross,
@@ -44,6 +45,83 @@ describe('ringArea', () => {
         [4, 4],
       ]),
     ).toBe(0);
+  });
+});
+
+describe('ringThickness', () => {
+  it('is the width of a long thin strip', () => {
+    // 20 WU long, 0.01 WU wide — 2A/P = 2·0.2/40.02.
+    expect(
+      ringThickness([
+        [0, 0],
+        [20, 0],
+        [20, 0.01],
+        [0, 0.01],
+      ]),
+    ).toBeCloseTo(0.01, 5);
+  });
+
+  it('does not depend on winding or on where the ring starts', () => {
+    const strip: Ring = [
+      [0, 0],
+      [20, 0],
+      [20, 0.01],
+      [0, 0.01],
+    ];
+    const reversed = [...strip].reverse();
+    const rotated = [...strip.slice(2), ...strip.slice(0, 2)];
+    expect(ringThickness(reversed)).toBe(ringThickness(strip));
+    expect(ringThickness(rotated)).toBe(ringThickness(strip));
+  });
+
+  it('reads a needle as the nothing it is, however much area it carries', () => {
+    // The shape the fix is about: three lattice-snapped, near-collinear points
+    // spanning 27 WU. Its AREA clears `fill.ts`' 1e-9 debris floor four
+    // hundredfold — only its width gives it away.
+    const needle: Ring = [
+      [0, 0],
+      [13.5, 1e-7],
+      [27, 0],
+    ];
+    expect(Math.abs(ringArea(needle))).toBeGreaterThan(1e-9);
+    expect(ringThickness(needle)).toBeLessThan(1e-7);
+  });
+
+  it('is 0 for rings with no extent', () => {
+    expect(ringThickness([])).toBe(0);
+    expect(ringThickness([[3, 3]])).toBe(0);
+    expect(
+      ringThickness([
+        [1, 1],
+        [1, 1],
+      ]),
+    ).toBe(0);
+  });
+
+  it('never exceeds half the smaller side of the ring’s bounding box', () => {
+    // The bound that makes a single threshold safe for every shape: a piece
+    // fat enough to matter always reads well above a hairline.
+    fc.assert(
+      fc.property(
+        fc.array(
+          fc.tuple(
+            fc.double({ min: -50, max: 50, noNaN: true }),
+            fc.double({ min: -50, max: 50, noNaN: true }),
+          ),
+          { minLength: 3, maxLength: 12 },
+        ),
+        (points) => {
+          const ring = points.map(([x, y]): Point => [x, y]);
+          const xs = ring.map((p) => p[0]);
+          const ys = ring.map((p) => p[1]);
+          const shorter = Math.min(
+            Math.max(...xs) - Math.min(...xs),
+            Math.max(...ys) - Math.min(...ys),
+          );
+          expect(ringThickness(ring)).toBeLessThanOrEqual(shorter / 2 + 1e-9);
+        },
+      ),
+    );
   });
 });
 

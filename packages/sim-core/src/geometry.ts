@@ -47,6 +47,34 @@ export function ringArea(ring: Ring): number {
 }
 
 /**
+ * How thick a ring is: twice its area over its perimeter. For a long thin
+ * strip that is exactly its width; for fat shapes it is roughly half their
+ * smaller dimension, which is far above any threshold worth setting. A ring
+ * with no extent reads 0.
+ *
+ * This asks the question an AREA floor cannot. A Martinez sweep run along two
+ * boundaries that nearly coincide emits *needle triangles*: three
+ * lattice-snapped, near-collinear points. A needle is not land in any sense a
+ * player can see, own or use — but it is LONG, so its area clears any floor
+ * that a floor can sensibly be set to. Measured over five minutes of a
+ * saturated 200 WU arena: needles up to 27 WU long carrying 4e-7 WU², four
+ * hundred times `fill.ts`' debris floor. Their width is what gives them away,
+ * and it is bounded by the lattice they were snapped onto — the widest of the
+ * 105 found was 1,00e-7 WU, one cell.
+ */
+export function ringThickness(ring: Ring): number {
+  let prev = ring[ring.length - 1];
+  if (prev === undefined) return 0;
+  let perimeter = 0;
+  for (const curr of ring) {
+    perimeter += Math.hypot(curr[0] - prev[0], curr[1] - prev[1]);
+    prev = curr;
+  }
+  if (perimeter === 0) return 0;
+  return (2 * Math.abs(ringArea(ring))) / perimeter;
+}
+
+/**
  * Total owned area: per piece, |outer ring| minus its |hole rings| — the
  * quantity behind the "areas + neutral = 100 %" invariant (spec §9.2).
  */

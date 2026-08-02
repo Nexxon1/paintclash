@@ -41,6 +41,11 @@
  * are the same result). Measured over 8 bots × 5 min: max 189 → 36–43 ms per
  * tick. What remains grows with the territories' vertex count — ticket 23.
  *
+ * Whatever any of those steps produces, only LAND is stored: a ring has to
+ * clear a floor on its area and one on its thickness (`isLandRing`). The
+ * second floor is what keeps the sweep's own residue out of the world — see
+ * there; without it the map silently fills up with hairs over a round.
+ *
  * The whole capture is atomic: if any boolean op fails or returns corrupt
  * topology, the entire fill — steal included — is forfeited deterministically
  * instead of crashing the tick or leaving half-applied land. Stored
@@ -61,6 +66,7 @@ import {
   boundsSeparated,
   polylineBand,
   ringArea,
+  ringThickness,
   sealEnclosedBays,
   snapWU,
   squareRing,
@@ -76,6 +82,30 @@ import {
  * is what decides whether a loop ring needs the seal band (`loopPolygons`).
  */
 const DEBRIS_AREA_WU2 = 1e-9;
+
+/**
+ * How thin a ring may be and still count as land (`isLandRing`). The area
+ * floor above cannot decide this: a needle is arbitrarily long, so it carries
+ * arbitrarily much area while being nothing at all. 1e-4 WU sits in the middle
+ * of an empty five-decade gap, measured over five minutes of a saturated
+ * 200 WU arena — every needle came in at or below **1,00e-7 WU** (one lattice
+ * cell, which is what bounds them), the thinnest piece of real land at
+ * **6,9e-3 WU**. So the value is pinned by a void, not by a judgement call,
+ * and the same three facts hold for it as for `SEALED_NECK_WU`:
+ *
+ * - **Three orders above the snap lattice** (1e-7, ADR-0007), which is the
+ *   scale the residue is made of.
+ * - **It is where the client stops resolving geometry** — the carve lattice is
+ *   1e-4 WU (ticket 25). A strip the renderer cannot draw apart is not land.
+ * - **Four orders below anything playable.** A head is 1 WU wide, and a
+ *   capture must clear `minFillAreaWU2` = 0,01 WU² — so a strip this thin
+ *   would have to run 100 WU, half the arena, to be a legal capture at all.
+ *
+ * What it costs in land is nothing: the 105 needles a five-minute arena had
+ * accumulated held **5,3e-6 WU²** between them, against 15 308 WU² painted —
+ * half a thousandth of ONE minimum fill.
+ */
+const MIN_LAND_THICKNESS_WU = 1e-4;
 
 /**
  * Half-width of the seal band a degenerate loop ring is closed with
@@ -272,12 +302,19 @@ function sealCapture(captured: Territory): { territory: Territory; bays: Territo
       territory.push(poly);
       continue;
     }
-    // Cutting bays out can only ever grow the ring's area, so a piece that
-    // survived `compactPoly` still has one — but its vertices are gone if the
-    // whole piece WAS a bay's rim, and a two-point remainder is not a ring.
-    if (sealed.ring.length >= 3) territory.push([sealed.ring, ...poly.slice(1)]);
+    // The only ring stored without passing `compactPoly`, so it answers the
+    // same question here. Cutting bays out can only ever grow the ring's area,
+    // but it can leave a rim that is no longer a shape — and its vertices are
+    // gone outright if the whole piece WAS a bay's rim.
+    if (sealed.ring.length >= 3 && isLandRing(sealed.ring)) {
+      territory.push([sealed.ring, ...poly.slice(1)]);
+    }
+    // A bay only ever feeds the carve (`gainedRegion`). One too thin to be
+    // land covers none, so carving with it wins nothing — and handing the
+    // clipper a near-degenerate operand is how needles get made in the first
+    // place.
     for (const bay of sealed.bays) {
-      if (Math.abs(ringArea(bay)) >= DEBRIS_AREA_WU2) bays.push([bay]);
+      if (isLandRing(bay)) bays.push([bay]);
     }
   }
   return { territory, bays };
@@ -403,20 +440,50 @@ export function spawnTerritory(
 }
 
 /**
+ * Is this ring land, or what a boolean op left behind? Both floors have to
+ * hold: too small to be land, or too thin to be a shape at all.
+ *
+ * The thinness half is the one that matters in a long game. An area floor
+ * alone lets *needles* through — the near-collinear triangles a Martinez sweep
+ * emits where two boundaries almost coincide (see `ringThickness`) — and every
+ * fill and every carve can leave one. They are stored as territory, they
+ * survive every later op, and they accumulate: measured over five minutes of a
+ * saturated 200 WU arena, **105 of 152** stored pieces were needles. Nothing
+ * in the simulation notices, because between them they hold 5,3e-6 WU². The
+ * RENDERER notices: it extrudes every stored polygon to a 0,35 WU plateau, so
+ * a needle's two side walls — invisibly thin, up to 27 WU long, full plateau
+ * height — coincide into a hairline ribbon on screen, and where the needle
+ * sits inside the plateau that took its land (all 105 did), its wall's top
+ * edge z-fights that surface into a faint scratch. Those are the artefacts
+ * that used to creep over the map as a round wore on.
+ */
+function isLandRing(ring: Ring): boolean {
+  return (
+    Math.abs(ringArea(ring)) >= DEBRIS_AREA_WU2 && ringThickness(ring) >= MIN_LAND_THICKNESS_WU
+  );
+}
+
+/**
  * Drop debris rings and collapse exactly-collinear vertex chains (unions
  * along straight edges accumulate them). Purely cosmetic-scale cleanup —
  * boundaries move < 1e-9 WU — but it keeps vertex counts bounded over
  * hundreds of fills. Dropping a degenerate outer ring drops its holes too.
+ *
+ * The outer ring is judged AFTER compaction, on the very geometry that would
+ * be stored. Judging the raw one and then storing the compacted one leaves a
+ * window where the two disagree, and the failure mode is not a lost sliver but
+ * a corrupt piece: with the outer ring gone and a hole surviving, `kept[0]` is
+ * a HOLE, and every reader takes index 0 for the boundary.
  */
 function compactPoly(poly: Ring[]): Ring[] {
-  const outer = poly[0];
-  if (outer === undefined || Math.abs(ringArea(outer)) < DEBRIS_AREA_WU2) return [];
-  const kept: Ring[] = [];
-  for (const ring of poly) {
-    const compacted = compactRing(ring);
-    if (compacted.length >= 3 && Math.abs(ringArea(compacted)) >= DEBRIS_AREA_WU2) {
-      kept.push(compacted);
-    }
+  const raw = poly[0];
+  if (raw === undefined) return [];
+  const outer = compactRing(raw);
+  if (outer.length < 3 || !isLandRing(outer)) return [];
+  const kept: Ring[] = [outer];
+  for (const hole of poly.slice(1)) {
+    const compacted = compactRing(hole);
+    if (compacted.length >= 3 && isLandRing(compacted)) kept.push(compacted);
   }
   return kept;
 }
