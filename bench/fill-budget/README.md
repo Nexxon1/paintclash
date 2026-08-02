@@ -107,25 +107,39 @@ kommen nach dem Tausch auf die Einheit gleich heraus. Das Snap-Gitter rastet die
 beider Engines auf dieselben Punkte, und über fünf Minuten reicht das für einen
 bit-identischen Pfad. Erst im Vier-Stunden-Lauf laufen die Pfade auseinander.
 
-## Stand auf `main` (2026-08-02, nach Ticket 23)
+Rotiert ist die 200-WU-Zeile erst mit **Ticket 30** (auf 7 369 / 1 323 / 1) — und zwar aus
+dem Grund, für den dieser Halt gebaut ist: nicht weil die Arithmetik verrutscht wäre,
+sondern weil die Arena eine andere Form malt. Der aktuelle Stand steht in der Tabelle
+unten.
+
+## Stand auf `main` (2026-08-02, nach Ticket 30)
 
 Die aufgezeichnete Basislinie, gegen die `bench` prüft — alles über dem Strich ist
-deterministisch und über Läufe **bit-identisch**, alles darunter streut. Die
-Geometrie-Zeilen sind seit Ticket 28 unverändert; **der Engine-Tausch hat sie nicht
-angefasst**, nur was sie kostet:
+deterministisch und über Läufe **bit-identisch**, alles darunter streut. Der
+Engine-Tausch (Ticket 23) hat die Geometrie-Zeilen **nicht** angefasst, nur was sie
+kostet; **Ticket 30** hat die 200-WU-Spalte bewegt, und zwar als Spielregel: seit der Fill
+auch die **Buchten** füllt, besitzt ein Bot ab der ersten gefüllten Kammer Land, das er
+vorher nicht hatte, und fliegt ab da anders. Die 50-WU-Spalte ist über dieselbe Änderung
+**bit-identisch** geblieben — dort kam keine Bucht vor:
 
-| 5 min · 8 Bots         | 200 WU vor T23      | **200 WU nach T23** | 50 WU vor T23 | **50 WU nach T23** |
-| ---------------------- | ------------------- | ------------------- | ------------- | ------------------ |
-| **Peak-Vertices**      | **7 408**           | **7 408**           | **1 750**     | **1 750**          |
-| **Loop-Schlüsse**      | **1 368**           | **1 368**           | **2 527**     | **2 527**          |
-| **Tode**               | **1**               | **1**               | **79**        | **79**             |
-| davon leer ausgegangen | 35                  | —                   | —             | —                  |
-| bemalt bei t = 300 s   | 37,7 % der Karte    | —                   | —             | —                  |
-| — — —                  |                     |                     |               |                    |
-| mean                   | 3,59–3,85 ms        | **0,54–0,57 ms**    | 1,58–1,62 ms  | **0,24–0,25 ms**   |
-| p95                    | 24,8–26,3 ms        | **3,04–3,20 ms**    | 7,8–7,9 ms    | **1,04–1,05 ms**   |
-| max                    | 94,9–116,3 ms       | **19,8–23,7 ms**    | 27,7–49,5 ms  | **9,9–11,0 ms**    |
-| Ticks über 50 ms       | 52–62, ab t ≈ 172 s | **0**               | 0             | **0**              |
+| 5 min · 8 Bots         | 200 WU vor T23      | 200 WU nach T23  | **200 WU nach T30** | 50 WU vor T23 | **50 WU nach T23/T30** |
+| ---------------------- | ------------------- | ---------------- | ------------------- | ------------- | ---------------------- |
+| **Peak-Vertices**      | **7 408**           | **7 408**        | **7 369**           | **1 750**     | **1 750**              |
+| **Loop-Schlüsse**      | **1 368**           | **1 368**        | **1 323**           | **2 527**     | **2 527**              |
+| **Tode**               | **1**               | **1**            | **1**               | **79**        | **79**                 |
+| davon leer ausgegangen | 35                  | —                | —                   | —             | —                      |
+| bemalt bei t = 300 s   | 37,7 % der Karte    | —                | —                   | —             | —                      |
+| — — —                  |                     |                  |                     |               |                        |
+| mean                   | 3,59–3,85 ms        | **0,54–0,57 ms** | n. g.               | 1,58–1,62 ms  | **0,24–0,25 ms**       |
+| p95                    | 24,8–26,3 ms        | **3,04–3,20 ms** | n. g.               | 7,8–7,9 ms    | **1,04–1,05 ms**       |
+| max                    | 94,9–116,3 ms       | **19,8–23,7 ms** | n. g.               | 27,7–49,5 ms  | **9,9–11,0 ms**        |
+| Ticks über 50 ms       | 52–62, ab t ≈ 172 s | **0**            | n. g.               | 0             | **0**                  |
+
+Die Zeit-Zeilen der T30-Spalte sind **nicht gemessen** (`n. g.`), weil sie nur neben den
+Nachbarspalten etwas hiessen und die von einer anderen Maschine stammen. Was der Fix
+kostet, wurde stattdessen dort gemessen, wo ein A/B überhaupt eines ist — am 50-WU-Lauf,
+der über die Änderung denselben Pfad fliegt: **mean 0,27 → 0,26 ms, p95 1,09 → 1,07 ms**
+(eine Maschine, derselbe Seed, direkt vorher/nachher).
 
 **Fett** = vom Bench zugesichert bzw. der aktuelle Stand. Die Spannen sind Läufe
 **derselben Geometrie**: sie messen die Streuung der Stoppuhr, nicht die des Spiels. Genau
