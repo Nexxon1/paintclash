@@ -313,6 +313,134 @@ export function boundsSeparated(a: Bounds, b: Bounds): boolean {
   return a[2] < b[0] || b[2] < a[0] || a[3] < b[1] || b[3] < a[1];
 }
 
+/**
+ * Sub-loops below this magnitude are float debris, not land — the same floor
+ * `fill.ts` reads its clipper output with, applied to the bays cut out below
+ * so that noise in a boundary never counts as an enclosure.
+ */
+const BAY_AREA_FLOOR_WU2 = 1e-9;
+
+/** What `sealEnclosedBays` found in one ring. */
+export interface SealedBays {
+  /** The ring with every bay cut out — the enclosures, filled. */
+  ring: Ring;
+  /** The cut-out bays as CCW rings, in the order they were found. */
+  bays: Ring[];
+}
+
+/**
+ * Fill the enclosures a ring wraps around through a neck no wider than
+ * `tolWU`, and hand them back.
+ *
+ * A boolean union answers "is this land a hole?" topologically, and that
+ * answer disagrees with the eye exactly once: when the boundary leaves the
+ * enclosure open through a channel far too narrow to see or to drive through.
+ * The clipper then reports one outer ring that walks out around the pocket
+ * the wrong way and back — no hole ring, nothing for a hole-fill to find, and
+ * a permanently unpainted island inside a player's own land (ticket 30).
+ * Measured over ten minutes of a saturated arena: necks of **4e-7 to 8e-7 WU**
+ * — four to eight lattice cells, a ten-millionth of the arena's width —
+ * around pockets of up to **3,6 WU²**.
+ *
+ * So the question this asks is not the topological one but the one the player
+ * is actually asking: *is this land walled in?* A neck below `tolWU` is not a
+ * way out, so the sub-loop behind it is an enclosure and the fill owns it.
+ *
+ * Only sub-loops wound AGAINST the ring are cut: the ring is an outer
+ * boundary (CCW), so a clockwise excursion is land the boundary excludes,
+ * while a counter-clockwise one is two lobes of owned land touching — real
+ * geometry, left alone. Cutting is iterated, so a bay inside a bay is found
+ * on the next pass, and each cut shortens the ring, so it terminates.
+ *
+ * The bays are returned because the fill has a second use for them: enclosed
+ * FOREIGN land is stolen (spec §2.2), and the steal carves with the region a
+ * fill gained. A bay the winner keeps but never carves would be owned twice.
+ */
+export function sealEnclosedBays(ring: Ring, tolWU: number): SealedBays {
+  const bays: Ring[] = [];
+  let current = ring;
+  // "Against the ring" is only meaningful once the ring itself has a
+  // direction. Outer rings come out of the clipper CCW, so anything else is
+  // corrupt output — and on that the reading would invert: the land lobes
+  // would look like the bays. Hand it back untouched instead.
+  if (ringArea(ring) <= 0) return { ring, bays };
+  for (;;) {
+    const cut = firstBay(current, tolWU);
+    if (cut === null) return { ring: current, bays };
+    const [from, to] = cut;
+    bays.push([...current.slice(from, to)].reverse());
+    current = [...current.slice(0, from), ...current.slice(to)];
+  }
+}
+
+/**
+ * The first bay in a ring as the half-open index range `[from, to)` that spans
+ * it, or `null` when there is none.
+ *
+ * Necks are pairs of near-coincident vertices, and finding them is the part
+ * that has to be cheap: this runs inside the fill, which is what the tick
+ * budget is spent on (tickets 22/23), it runs on every capture, and rings in a
+ * saturated arena carry hundreds of vertices. So the pairs come out of a hash
+ * grid of `tolWU`-wide cells — linear in the vertex count, against the
+ * quadratic sweep the obvious version would do — and the ring is walked to
+ * measure a sub-loop only for a pair that already passed the distance test,
+ * which in a run without bays never happens at all.
+ *
+ * Grid cells are keyed by a HASH of their coordinates rather than by a packed
+ * index, so no assumption about the arena's extent is baked in here. A
+ * collision only ever adds a candidate, and every candidate is verified by its
+ * real distance — it can cost a few comparisons, never a wrong answer.
+ */
+function firstBay(ring: Ring, tolWU: number): [number, number] | null {
+  const n = ring.length;
+  // Both sides must come out as rings of their own: three vertices each.
+  if (n < 6) return null;
+  const tolSqWU2 = tolWU * tolWU;
+  const grid = new Map<number, number[]>();
+  for (let i = 0; i < n; i++) {
+    const p = ring[i];
+    if (p === undefined) continue;
+    const key = cellHash(Math.floor(p[0] / tolWU), Math.floor(p[1] / tolWU));
+    const bucket = grid.get(key);
+    if (bucket === undefined) grid.set(key, [i]);
+    else bucket.push(i);
+  }
+  for (let i = 0; i < n; i++) {
+    const a = ring[i];
+    if (a === undefined) continue;
+    const cx = Math.floor(a[0] / tolWU);
+    const cy = Math.floor(a[1] / tolWU);
+    // Smallest partner wins, so the cut is the ring's own order rather than
+    // the order nine interleaved buckets happen to hand back.
+    let best = -1;
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dy = -1; dy <= 1; dy++) {
+        for (const j of grid.get(cellHash(cx + dx, cy + dy)) ?? []) {
+          // Neighbours along the ring share an edge, not a neck — and the
+          // first and last vertex are neighbours too, around the wrap.
+          if (j - i < 3 || n - (j - i) < 3) continue;
+          if (best !== -1 && j >= best) continue;
+          const b = ring[j];
+          if (b === undefined) continue;
+          const ddx = a[0] - b[0];
+          const ddy = a[1] - b[1];
+          if (ddx * ddx + ddy * ddy <= tolSqWU2) best = j;
+        }
+      }
+    }
+    if (best !== -1 && ringArea(ring.slice(i, best)) < -BAY_AREA_FLOOR_WU2) return [i, best];
+  }
+  return null;
+}
+
+/**
+ * Spread two cell indices over one integer. Only ever used to look a bucket
+ * up, never to reconstruct a cell, so the constants just need to mix.
+ */
+function cellHash(cx: number, cy: number): number {
+  return Math.imul(cx, 73856093) ^ Math.imul(cy, 19349663);
+}
+
 /** Axis-aligned CCW square ring around (cx, cy) — the spawn start block. */
 export function squareRing(cx: number, cy: number, half: number): Ring {
   return [

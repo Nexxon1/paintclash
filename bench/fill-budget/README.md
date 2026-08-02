@@ -193,12 +193,13 @@ Faktor für diese Last stimmt, sagt nur eine Messung gegen Produktion
 Der Halt fiel am 2026-08-02 auf `main`. Bisectiert über volle Worktrees, drei Läufe je
 Commit — **zwei** Änderungen, beide erwünscht, keine davon zurückgebaut:
 
-| Commit                            | Peak-Vertices   | mean    | Tode  | leer ausgegangen |
-| --------------------------------- | --------------- | ------- | ----- | ---------------- |
-| `b786fb6` (Ticket 22)             | 5 244           | 1,90 ms | 6     | 62               |
-| `3e2682b` (Ticket 19)             | 6 635 (+26,5 %) | 3,12 ms | **1** | 66               |
-| `b167439` (Ticket 26)             | 7 408 (+11,7 %) | 3,68 ms | 1     | **35**           |
-| `c43ea08` (HEAD, inkl. `e11ab96`) | 7 408           | 3,72 ms | 1     | 35               |
+| Commit                      | Peak-Vertices   | mean    | Tode  | leer ausgegangen |
+| --------------------------- | --------------- | ------- | ----- | ---------------- |
+| `b786fb6` (Ticket 22)       | 5 244           | 1,90 ms | 6     | 62               |
+| `3e2682b` (Ticket 19)       | 6 635 (+26,5 %) | 3,12 ms | **1** | 66               |
+| `b167439` (Ticket 26)       | 7 408 (+11,7 %) | 3,68 ms | 1     | **35**           |
+| `c43ea08` (inkl. `e11ab96`) | 7 408           | 3,72 ms | 1     | 35               |
+| Ticket 30 (HEAD)            | 7 369 (−0,5 %)  | s. u.   | 1     | n. g.            |
 
 - **Ticket 19** liess Bots aufhören, am eigenen Trail zu sterben (6 → 1 Tode in 5 min) —
   genau der Preis, den CONTEXT.md dort notiert („0,2 WU neben der eigenen Linie
@@ -210,9 +211,22 @@ Commit — **zwei** Änderungen, beide erwünscht, keine davon zurückgebaut:
   ab dem ersten geretteten Fang fliegen die Bots einen anderen Pfad, und danach sind die
   beiden Läufe nicht mehr Punkt für Punkt vergleichbar. Vergleichbar bleibt der
   Mechanismus — gleiche Schluss-Zahl, 31 Schlüsse weniger leer.
-- Die letzte Zeile deckt **zwei** Commits ab: `e11ab96` (Ticket 20) fasste `geometry.ts`
+- Die `c43ea08`-Zeile deckt **zwei** Commits ab: `e11ab96` (Ticket 20) fasste `geometry.ts`
   mit vier Zeilen an, `c43ea08` nur Tests. Beide sind hier **gemessen** folgenlos, nicht
   bloss als harmlos eingeschätzt: die Geometrie ist gegen `b167439` bit-identisch.
+- **Ticket 30** lässt den Fill auch die **Buchten** füllen — eingeschlossene Flächen, die
+  die Union durch einen Hals von wenigen Gitterzellen offen lässt und deshalb nie als Loch
+  meldet (140 Fälle in 10 min, bis 3,6 WU²; s. das Ticket). Ab der ersten gefüllten Kammer
+  besitzt ein Bot Land, das er vorher nicht hatte, und fliegt ab da anders — daher die neue
+  Vertex- und Schluss-Zahl. Die **ms-Spalte ist hier absichtlich leer**: die Zeilen darüber
+  stammen von der Bisect-Maschine, und ein Wert von einer anderen daneben zu stellen wäre
+  ein Vergleich, den niemand nachrechnen kann. Gemessen wurde stattdessen ein A/B über die
+  Änderung auf **einer** Maschine, und zwar am **50-WU**-Lauf, weil der vorher/nachher
+  bit-identisch fliegt (1 750 Vertices, 2 527 Schlüsse, 79 Tode) und die Stoppuhr damit
+  wirklich nur den Code misst: **mean 0,27 → 0,26 ms, p95 1,09 → 1,07 ms**. Die
+  Bucht-Suche läuft über ein Hash-Gitter statt über einen quadratischen Sweep und misst
+  eine Teilschleife erst, wenn ein Vertex-Paar den Abstandstest bestanden hat — in einem
+  Lauf ohne Buchten also nie.
 - Eine ehrliche Einschränkung: die Ticket-22-Zahlen reproduzieren auf dieser Maschine
   **auch bei `b786fb6` nicht** (max 47–56 ms statt 36–43, 0–2 Überläufe statt 0). Ein Teil
   des Abstands ist Umgebung, nicht Code — und ein weiterer Grund, `max` nicht zu glauben.

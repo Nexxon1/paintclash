@@ -46,11 +46,20 @@ import { driftFrom, report, runArena, statsOf } from './harness.js';
 const MAX_VERTEX_DRIFT = 0.05;
 
 /**
- * The recorded path of each arena, measured on `c43ea08` (2026-08-02, ticket
- * 28). All three are deterministic outputs of the pinned seed. Re-record them
+ * The recorded path of each arena, measured on ticket 30 (2026-08-02). All
+ * three are deterministic outputs of the pinned seed. Re-record them
  * deliberately, in a commit that says why: a changed number here means the
  * arena now paints a different shape, which is exactly the event worth a second
  * look at what it costs.
+ *
+ * The 200 WU row moved with ticket 30 (7 408 → 7 369 vertices, 1 368 → 1 323
+ * closures), and the reason is the fix itself: captures now also paint the
+ * chambers a union walls in behind a sub-visible neck, so from the first one
+ * a bot owns land it did not before and flies differently from there on. The
+ * 50 WU row is unchanged **bit for bit** — no such chamber ever came up in
+ * it — which is what says the change is the new rule firing and not a shift
+ * in the arithmetic underneath. Cost measured on one machine across the
+ * change, same seed: 50 WU mean 0,27 → 0,26 ms, p95 1,09 → 1,07 ms.
  *
  * 200 WU is the public arena (spec §10.2). 50 WU is `pnpm dev:small`, sixteen
  * times the density the spec sizes for; production caps its bot count by area
@@ -58,7 +67,7 @@ const MAX_VERTEX_DRIFT = 0.05;
  * saturation case, and it is the one that produced the reported freeze.
  */
 const ARENAS = [
-  { arenaSizeWU: 200, peakVertices: 7408, closures: 1368, deaths: 1 },
+  { arenaSizeWU: 200, peakVertices: 7369, closures: 1323, deaths: 1 },
   { arenaSizeWU: 50, peakVertices: 1750, closures: 2527, deaths: 79 },
 ];
 

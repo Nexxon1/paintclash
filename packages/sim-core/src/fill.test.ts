@@ -58,6 +58,124 @@ describe('closeLoop', () => {
     expect(pointInTerritory(3, 3, outcome?.territory ?? [])).toBe(true);
   });
 
+  it('paints a chamber the union walled in but never called a hole (ticket 30)', () => {
+    // The reported symptom: a capture that leaves a patch of neutral ground
+    // fully surrounded by the player's own colour, which no later fill ever
+    // paints. It survives because the clipper's outer ring walks AROUND the
+    // patch and back through a channel a few lattice cells wide — geometry
+    // says "bay", so the hole-fill finds no hole. Measured in a saturated
+    // arena: necks of 4e-7 to 8e-7 WU around pockets of up to 3,6 WU².
+    //
+    // The neck here is 6e-7 WU: six lattice cells, a ten-millionth of a head.
+    const neck = 6e-7;
+    const chambered: Territory = [
+      [
+        [
+          [0, 0],
+          [12, 0],
+          [12, 6 - neck / 2],
+          [9, 6 - neck / 2],
+          [9, 3],
+          [3, 3],
+          [3, 9],
+          [9, 9],
+          [9, 6 + neck / 2],
+          [12, 6 + neck / 2],
+          [12, 12],
+          [0, 12],
+        ],
+      ],
+    ];
+    // The premise: 144 minus a 6×6 chamber the player does NOT own.
+    expect(territoryArea(chambered)).toBeCloseTo(108, 4);
+    expect(pointInTerritory(6, 6, chambered)).toBe(false);
+    // Any capture at all, on the far side of the block from the chamber: a
+    // 2,5×2 excursion off the left edge, of which 0,5×1 is already own land.
+    const trail: Point[] = [
+      [0.5, 11],
+      [-2, 11],
+      [-2, 13],
+      [0.5, 13],
+    ];
+    const outcome = closeLoop(chambered, trail, []);
+    expect(outcome).not.toBeNull();
+    // The chamber is the player's now, and the fill counted it as gained.
+    expect(pointInTerritory(6, 6, outcome?.territory ?? [])).toBe(true);
+    expect(territoryArea(outcome?.territory ?? [])).toBeCloseTo(144 + 4.5, 3);
+    // 36 for the chamber the hole-fill missed, 4.5 for the loop itself.
+    expect(outcome?.gainedArea).toBeCloseTo(40.5, 3);
+  });
+
+  it('leaves a chamber alone when its channel is a real way out', () => {
+    // Same shape, neck 0,05 WU — a twentieth of a head, still nothing a
+    // player would aim at, but three decades above the threshold. The rule
+    // has to have an edge, or "enclosed" means whatever the clipper rounded.
+    const neck = 0.05;
+    const chambered: Territory = [
+      [
+        [
+          [0, 0],
+          [12, 0],
+          [12, 6 - neck / 2],
+          [9, 6 - neck / 2],
+          [9, 3],
+          [3, 3],
+          [3, 9],
+          [9, 9],
+          [9, 6 + neck / 2],
+          [12, 6 + neck / 2],
+          [12, 12],
+          [0, 12],
+        ],
+      ],
+    ];
+    const trail: Point[] = [
+      [0.5, 11],
+      [-2, 11],
+      [-2, 13],
+      [0.5, 13],
+    ];
+    const outcome = closeLoop(chambered, trail, []);
+    expect(outcome).not.toBeNull();
+    expect(pointInTerritory(6, 6, outcome?.territory ?? [])).toBe(false);
+  });
+
+  it('steals foreign land sitting inside such a chamber (spec §2.2)', () => {
+    // The chamber is filled, so whatever it holds changes hands — and the
+    // loser has to be carved, or the same land is owned twice.
+    const neck = 6e-7;
+    const chambered: Territory = [
+      [
+        [
+          [0, 0],
+          [12, 0],
+          [12, 6 - neck / 2],
+          [9, 6 - neck / 2],
+          [9, 3],
+          [3, 3],
+          [3, 9],
+          [9, 9],
+          [9, 6 + neck / 2],
+          [12, 6 + neck / 2],
+          [12, 12],
+          [0, 12],
+        ],
+      ],
+    ];
+    // A 2×2 enemy block inside the chamber, which nothing else touches.
+    const enemy: Territory = [[squareRing(6, 6, 1)]];
+    const trail: Point[] = [
+      [0.5, 11],
+      [-2, 11],
+      [-2, 13],
+      [0.5, 13],
+    ];
+    const outcome = closeLoop(chambered, trail, [enemy]);
+    expect(outcome).not.toBeNull();
+    expect(territoryArea(outcome?.others[0] ?? [])).toBeCloseTo(0, 6);
+    expect(pointInTerritory(6, 6, outcome?.territory ?? [])).toBe(true);
+  });
+
   it('rejects a numerical sliver below the fill floor (spec §2.2)', () => {
     // A grazing re-entry enclosing ~0.0007 WU² beyond the own edge.
     const trail: Point[] = [

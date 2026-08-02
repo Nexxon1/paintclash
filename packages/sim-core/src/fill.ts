@@ -13,10 +13,22 @@
  *   2. fill the union's holes           — everything enclosed is captured:
  *                                         neutral pockets AND foreign land
  *                                         (überfärbt/gestohlen, spec §2.2)
+ *   2b. fill its BAYS as well           — an enclosure the clipper left open
+ *                                         through a neck of a few lattice
+ *                                         cells is no hole, and step 2 walks
+ *                                         straight past it (ticket 30)
  *   3. carve the capture out of every   — territories stay pairwise
  *      overlapped foreign territory       disjoint; a foreign territory
  *                                         reduced to nothing is the step's
  *                                         total-loss verdict
+ *
+ * Steps 2 and 2b are the same question asked twice, and they have to be, since
+ * only the second one can be asked on the lattice: the hole-fill reads the
+ * union's raw output, where "enclosed" is topological, while `sealCapture`
+ * reads the snapped output and asks what the player is actually asking — is
+ * this land walled in? A channel four lattice cells wide is a way out to the
+ * first question and not to the second, and the difference was a patch of
+ * neutral ground inside a player's own colour that nothing ever painted.
  *
  * Step 3 is where a tick's cost lives (ticket 22): one clipper op per foreign
  * player per fill, each sweeping both territories entirely, so it grew with
@@ -36,7 +48,10 @@
  * blocks are carved to AVOID foreign land (never to hole it), and a steal
  * removes a connected, boundary-touching bite. That invariant matters —
  * step 2 fills every hole of the union, so a hole backed by foreign land
- * would be stolen without being enclosed; none can exist.
+ * would be stolen without being enclosed; none can exist. A carve or a spawn
+ * block may still leave a BAY behind, and those are deliberately left alone:
+ * there the pocket is land the winner just took and holds, so filling it for
+ * the loser would hand the same ground to two players.
  */
 
 import { BALANCE, type Point, type Ring, type Territory } from '@paintclash/shared';
@@ -46,6 +61,7 @@ import {
   boundsSeparated,
   polylineBand,
   ringArea,
+  sealEnclosedBays,
   snapWU,
   squareRing,
   territoryArea,
@@ -79,6 +95,25 @@ const DEBRIS_AREA_WU2 = 1e-9;
  * one. This is a numerical seal, sized to be invisible.
  */
 const SEAL_HALF_WIDTH_WU = 1e-6;
+
+/**
+ * How wide a channel out of an enclosure may be before the fill accepts it as
+ * a way out (`sealEnclosedBays`, ticket 30). Three facts fix the value at
+ * 1e-4 WU:
+ *
+ * - **Three orders above the snap lattice** (1e-7, ADR-0007), which is what it
+ *   has to clear: the necks the clipper leaves behind measure four to eight
+ *   lattice cells, and matching them exactly — asking for a repeated vertex —
+ *   would have caught 6 of the 140 pockets a ten-minute arena produced.
+ * - **Four orders below anything playable.** A head is 1 WU wide and steps
+ *   `MIN_TRAIL_STEP_WU` = 0,1 WU per tick, so the narrowest gap a player can
+ *   aim at, drive through or even see is a thousand times this. Nothing that
+ *   loses a capture here was ever a channel.
+ * - **It is where the client already stops resolving geometry** — the carve
+ *   lattice is 1e-4 WU (ticket 25). A neck the renderer cannot draw apart is
+ *   not a neck to the player looking at it.
+ */
+const SEALED_NECK_WU = 1e-4;
 
 export interface FillOutcome {
   /** The player's new territory, replacing the old one. */
@@ -129,11 +164,16 @@ export function closeLoop(
       if (outer !== undefined) filled.push([outer]);
       for (const hole of poly.slice(1)) rawPockets.push([hole]);
     }
-    captured = cleanClipperOutput(filled);
-    if (captured === null) return null;
+    const cleaned = cleanClipperOutput(filled);
+    if (cleaned === null) return null;
+    // Second pass over the same question, now that the output sits on the
+    // lattice: an enclosure the clipper left open through a sub-visible neck
+    // is no hole and survived the fill above (ticket 30).
+    const sealed = sealCapture(cleaned);
+    captured = sealed.territory;
     // Compacted, not vetted: each pocket becomes a single-ring polygon, and
     // the topology check only has something to say about holes.
-    const pockets = compactTerritory(rawPockets);
+    const pockets = [...compactTerritory(rawPockets), ...sealed.bays];
     const gained = gainedRegion(loop, pockets);
     const gainedBounds = territoryBounds(gained);
     for (const other of others) {
@@ -203,6 +243,44 @@ function loopPolygons(trail: readonly Point[]): Territory | null {
   const ring: Ring = trail.map((p): Point => [snapWU(p[0]), snapWU(p[1])]);
   if (Math.abs(ringArea(ring)) >= DEBRIS_AREA_WU2) return [[ring]];
   return [[ring], ...polylineBand(ring, SEAL_HALF_WIDTH_WU).map((quad): Ring[] => [quad])];
+}
+
+/**
+ * Fill the enclosures the hole-fill could not see, and report them as pockets.
+ *
+ * The hole-fill above reads the union's RAW output, where an enclosure only
+ * counts if the clipper called it a hole ring. It does not when the boundary
+ * leaves it open through a channel of a few lattice cells — geometry says
+ * "bay", the player sees a walled-in island of neutral ground that no later
+ * fill ever paints. `sealEnclosedBays` asks the same question of the
+ * lattice-snapped ring instead, where that channel is a rounding artefact
+ * rather than a way out; see its preamble for why 1e-4 WU is the line.
+ *
+ * The cut-out bays join the union's hole rings as `pockets`, for the same
+ * reason those exist: they are part of what this fill GAINED, so the steal
+ * has to carve foreign land out of them (spec §2.2). Skipping that would let
+ * a pocket backed by an opponent's land be owned twice.
+ */
+function sealCapture(captured: Territory): { territory: Territory; bays: Territory } {
+  const territory: Territory = [];
+  const bays: Territory = [];
+  for (const poly of captured) {
+    const outer = poly[0];
+    if (outer === undefined) continue;
+    const sealed = sealEnclosedBays(outer, SEALED_NECK_WU);
+    if (sealed.bays.length === 0) {
+      territory.push(poly);
+      continue;
+    }
+    // Cutting bays out can only ever grow the ring's area, so a piece that
+    // survived `compactPoly` still has one — but its vertices are gone if the
+    // whole piece WAS a bay's rim, and a two-point remainder is not a ring.
+    if (sealed.ring.length >= 3) territory.push([sealed.ring, ...poly.slice(1)]);
+    for (const bay of sealed.bays) {
+      if (Math.abs(ringArea(bay)) >= DEBRIS_AREA_WU2) bays.push([bay]);
+    }
+  }
+  return { territory, bays };
 }
 
 /**

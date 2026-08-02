@@ -10,6 +10,7 @@ import {
   pointInTerritory,
   polylineBand,
   ringArea,
+  sealEnclosedBays,
   segmentDistanceSq,
   segmentsProperlyCross,
   snapWU,
@@ -326,6 +327,189 @@ describe('validPolyTopology', () => {
 
   it('rejects an empty poly', () => {
     expect(validPolyTopology([])).toBe(false);
+  });
+});
+
+describe('sealEnclosedBays', () => {
+  /**
+   * A 12×12 block holding a 6×6 chamber of neutral ground, reachable only
+   * through a channel `neckWU` wide — the shape a union leaves behind when two
+   * boundary chains come within a few lattice cells of each other but do not
+   * meet (ticket 30). One ring, no hole: the chamber is walled in by the
+   * boundary walking around it the wrong way and back.
+   */
+  const chamberedBlock = (neckWU: number): Ring => [
+    [0, 0],
+    [12, 0],
+    [12, 6 - neckWU / 2],
+    [9, 6 - neckWU / 2],
+    [9, 3],
+    [3, 3],
+    [3, 9],
+    [9, 9],
+    [9, 6 + neckWU / 2],
+    [12, 6 + neckWU / 2],
+    [12, 12],
+    [0, 12],
+  ];
+
+  it('leaves a ring without bays untouched', () => {
+    const square = squareRing(5, 5, 3);
+    const sealed = sealEnclosedBays(square, 1e-4);
+    expect(sealed.bays).toEqual([]);
+    expect(sealed.ring).toEqual(square);
+  });
+
+  it('fills a chamber behind a sub-visible neck and hands the chamber back', () => {
+    const sealed = sealEnclosedBays(chamberedBlock(6e-7), 1e-4);
+    // 144 − 36 chamber − a channel too thin to matter.
+    expect(ringArea(chamberedBlock(6e-7))).toBeCloseTo(108, 5);
+    expect(ringArea(sealed.ring)).toBeCloseTo(144, 5);
+    expect(sealed.bays).toHaveLength(1);
+    // Handed back CCW, so the fill can carve foreign land out of it.
+    expect(ringArea(sealed.bays[0] ?? [])).toBeCloseTo(36, 5);
+  });
+
+  it('leaves a channel wide enough to be a way out alone', () => {
+    // A hundred times the tolerance is still a thousandth of a head, but the
+    // rule has to be a threshold rather than "narrow", or it has no edge.
+    const open = chamberedBlock(1e-2);
+    const sealed = sealEnclosedBays(open, 1e-4);
+    expect(sealed.bays).toEqual([]);
+    expect(sealed.ring).toEqual(open);
+  });
+
+  it('leaves two lobes of OWNED land that merely touch', () => {
+    // Same pinch, wound the other way: this is real geometry — a waist in the
+    // player's own land — not an enclosure. Cutting it would change nothing
+    // about who owns what and would only shred the ring.
+    const bowtie: Ring = [
+      [0, 0],
+      [4, 4],
+      [8, 0],
+      [8, 8],
+      [4, 4],
+      [0, 8],
+    ];
+    expect(sealEnclosedBays(bowtie, 1e-4).bays).toEqual([]);
+  });
+
+  it('keeps cutting until the ring is clean — two chambers, one pass each', () => {
+    const w = 4e-7;
+    // A 20×12 block with two 6×6 chambers, each behind its own channel down
+    // to the bottom edge. Nothing about the first cut helps find the second.
+    const twoChambers: Ring = [
+      [0, 0],
+      [5 - w / 2, 0],
+      [5 - w / 2, 3],
+      [2, 3],
+      [2, 9],
+      [8, 9],
+      [8, 3],
+      [5 + w / 2, 3],
+      [5 + w / 2, 0],
+      [15 - w / 2, 0],
+      [15 - w / 2, 3],
+      [12, 3],
+      [12, 9],
+      [18, 9],
+      [18, 3],
+      [15 + w / 2, 3],
+      [15 + w / 2, 0],
+      [20, 0],
+      [20, 12],
+      [0, 12],
+    ];
+    // The premise: two chambers walled in, 240 − 36 − 36.
+    expect(ringArea(twoChambers)).toBeCloseTo(168, 5);
+    const sealed = sealEnclosedBays(twoChambers, 1e-4);
+    expect(sealed.bays).toHaveLength(2);
+    expect(sealed.bays.map((bay) => Math.round(ringArea(bay)))).toEqual([36, 36]);
+    expect(ringArea(sealed.ring)).toBeCloseTo(240, 5);
+  });
+
+  it('property: a chamber is filled exactly when its channel is sub-visible', () => {
+    const tol = 1e-4;
+    fc.assert(
+      fc.property(
+        // Block, chamber inside it, and the channel down to the bottom edge —
+        // built rather than filtered for, so every run exercises the cut
+        // instead of rejecting random points that form no ring at all.
+        fc.double({ min: 12, max: 40, noNaN: true }),
+        fc.double({ min: 12, max: 40, noNaN: true }),
+        fc.double({ min: 0.1, max: 0.8, noNaN: true }),
+        fc.double({ min: 0.1, max: 0.8, noNaN: true }),
+        // Straddles the threshold in both directions, decades either side.
+        fc.double({ min: 1e-7, max: 1e-2, noNaN: true }),
+        (w, h, sizeFrac, posFrac, neck) => {
+          const cw = (w / 2) * sizeFrac;
+          const ch = (h / 2) * sizeFrac;
+          const cx = snapWU(2 + posFrac * (w - 4 - cw));
+          const x0 = snapWU(cx);
+          const x1 = snapWU(cx + cw);
+          const y0 = snapWU(2);
+          const y1 = snapWU(2 + ch);
+          const mid = snapWU((x0 + x1) / 2);
+          const lip = snapWU(neck / 2);
+          const ring: Ring = [
+            [0, 0],
+            [mid - lip, 0],
+            [mid - lip, y0],
+            [x0, y0],
+            [x0, y1],
+            [x1, y1],
+            [x1, y0],
+            [mid + lip, y0],
+            [mid + lip, 0],
+            [snapWU(w), 0],
+            [snapWU(w), snapWU(h)],
+            [0, snapWU(h)],
+          ];
+          const chamber = (x1 - x0) * (y1 - y0);
+          // The premise: a chamber of real size, walled in by this ring.
+          fc.pre(chamber > 1);
+          const sealed = sealEnclosedBays(ring, tol);
+          // Never shrinks — a capture cannot LOSE land to the seal.
+          expect(ringArea(sealed.ring)).toBeGreaterThanOrEqual(ringArea(ring) - 1e-9);
+          if (2 * lip > tol) {
+            // A channel this wide is a way out; the chamber stays neutral.
+            expect(sealed.bays).toEqual([]);
+            return;
+          }
+          expect(sealed.bays).toHaveLength(1);
+          // Up to the seam the weld leaves behind: closing a channel `neck`
+          // wide moves the boundary by up to that, over the block's extent.
+          const seam = neck * (w + h) + 1e-9;
+          expect(Math.abs(ringArea(sealed.bays[0] ?? []) - chamber)).toBeLessThanOrEqual(seam);
+          // And the ring is the whole block again.
+          expect(Math.abs(ringArea(sealed.ring) - ringArea(ring) - chamber)).toBeLessThanOrEqual(
+            seam,
+          );
+        },
+      ),
+      { numRuns: 300 },
+    );
+  });
+
+  it('property: arbitrary rings come back intact, never shorter than a ring', () => {
+    const coord = fc.double({ min: 0, max: 20, noNaN: true });
+    fc.assert(
+      fc.property(fc.array(fc.tuple(coord, coord), { minLength: 0, maxLength: 24 }), (raw) => {
+        const ring: Ring = raw.map(([x, y]): Point => [snapWU(x), snapWU(y)]);
+        const sealed = sealEnclosedBays(ring, 1e-4);
+        // Garbage in — self-crossing, degenerate, empty — must not come back
+        // as a stub the clipper then chokes on. A cut either leaves a ring
+        // behind or does not happen; nothing is invented, so an input that
+        // was never a ring is handed straight back.
+        if (sealed.bays.length === 0) {
+          expect(sealed.ring).toEqual(ring);
+        } else {
+          expect(sealed.ring.length).toBeGreaterThanOrEqual(3);
+        }
+        for (const bay of sealed.bays) expect(bay.length).toBeGreaterThanOrEqual(3);
+      }),
+      { numRuns: 300 },
+    );
   });
 });
 
