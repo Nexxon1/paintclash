@@ -467,3 +467,41 @@ Ohne die Kontrolle hätte diese Answer sechs Server-Stalls behauptet, die es nic
 ~21,8 Hz, ein Tick hat also **~45,8 ms** statt 50 ms. Das Budget ist ~8 % enger als
 überall angeschrieben. Gegen p99 12,5 ms lokal ist das folgenlos; in eine künftige
 Budget-Rechnung gehört es.
+
+### Nachtrag 2026-08-02 — woher die verbleibenden 11 Lücken kommen: nicht von uns
+
+Auf die Frage „geht da noch was?" wurden die Restlücken zugeordnet, statt sie zu schätzen.
+**Zwei Sockets im selben Prozess** gegen dieselbe Arena, ausgerichtet an der **Tick-Nummer**
+statt an einer Uhr — damit trennt sich Server von Leitung von eigenem Prozess, ohne dass
+irgendeine Uhr verglichen werden muss:
+
+| 5 691 Ticks, die beide Sockets sahen, 300 s | |
+|---|---|
+| zu spät (≥ 100 ms) auf Socket A | 16 |
+| zu spät auf Socket B | 17 |
+| zu spät auf **beiden, am selben Tick** | **16** |
+| davon auf einem Fill-Tick | **1** |
+| Kontroll-Heartbeat (50 ms, selber Prozess) | max **59 ms**, 0 über 100 ms |
+
+Die Paare stimmen auf 1–3 ms überein (A301/B300, A226/B223, A193/B192). Zwei unabhängige
+TCP-Verbindungen können dieselbe Verzögerung am selben Tick nicht zufällig sehen — sie
+entsteht **vor** dem Fan-out. Zusammen mit der sauberen Kontrolle heisst das: **die
+Restlücken sind server-seitig, und sie sind nicht der Fill** (15 von 16 auf Ticks ohne
+Fill-Nachricht). Es sind 0,28 % der Ticks; 99 % kommen innerhalb von 67 ms.
+
+**Was das für „geht da noch was?" heisst.** Der Anteil, der diesem Projekt gehörte, ist weg.
+Was bleibt, ist von innen nicht einmal messbar: die Isolate-Uhr steht während synchroner
+Arbeit still (Timing-Angriffe, s. `tick-cost.ts`), eine Pro-Tick-Stoppuhr im DO kann es
+also gar nicht sehen. Signatur — periodisch, 100–300 ms, unkorreliert mit unserer Arbeit —
+liest sich nach GC oder Scheduling im Multi-Tenant-Isolate.
+
+**Der Hebel, der uns gehört, liegt im Client.** Während einer Serverpause extrapoliert der
+eigene Kopf weiter (Prediction) und wird danach zurückkorrigiert; **fremde Köpfe frieren
+ein**, weil `Interpolator.sample` auf den neuesten Puffer-Eintrag klemmt, und springen dann.
+Bei 300 ms sind das ~3 WU auf einen Schlag. Dead Reckoning entlang der Blickrichtung würde
+das überbrücken, ohne konstante Latenz zu kosten — im Gegensatz zu „Renderverzug erhöhen",
+das genau die Latenz zurückholt, die Ticket 17 abgebaut hat. Eigenes Ticket, falls es
+jemanden stört; bei 16 Ereignissen in 5 Minuten, die meisten 100–160 ms, ist die Frage
+offen, ob es überhaupt jemand sieht.
+
+Einschränkung: ein Client, ein Netz, ein Colo, ein Lauf.
