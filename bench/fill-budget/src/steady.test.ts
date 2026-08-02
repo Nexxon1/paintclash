@@ -78,8 +78,8 @@ describe('tick cost in the saturated steady state', () => {
             `so the drift below compares the wrong slices`,
         ).toBe(EXPECTED_HALF_WINDOW_SEC);
         expect(
-          run.fills,
-          `only ${String(run.fills)} fills in ${String(STEADY_SEC)} s — the bots barely ` +
+          run.closures,
+          `only ${String(run.closures)} loop closures in ${String(STEADY_SEC)} s — the bots barely ` +
             `painted, so there is no territory whose cost this run could describe`,
         ).toBeGreaterThan(100);
         // Names itself: without a plateau the numbers above describe the ramp.

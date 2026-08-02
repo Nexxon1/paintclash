@@ -60,7 +60,15 @@ export interface ArenaRun {
   steerMs: Float64Array;
   /** Total territory vertices, sampled once per simulated second. */
   verticesPerSecond: Int32Array;
-  fills: number;
+  /**
+   * Loop **closures**, not captures (CONTEXT.md, "Loop-Schluss ≠ Fang"). `step`
+   * records one per trail that came home, whether or not it painted anything —
+   * a capture below the sliver floor forfeits and still counts here. Named for
+   * what it counts, because reading it as "captures" is what let ticket 26's
+   * cost hide: the closure count held perfectly still across that change while
+   * the share of them that actually painted rose.
+   */
+  closures: number;
   deaths: number;
 }
 
@@ -85,7 +93,7 @@ export function runArena(options: ArenaRunOptions): ArenaRun {
   const tickMs = new Float64Array(ticks);
   const steerMs = new Float64Array(ticks);
   const verticesPerSecond = new Int32Array(seconds);
-  let fills = 0;
+  let closures = 0;
   let deaths = 0;
   for (let t = 0; t < ticks; t++) {
     const start = performance.now();
@@ -105,7 +113,7 @@ export function runArena(options: ArenaRunOptions): ArenaRun {
     const done = performance.now();
     tickMs[t] = done - start;
     steerMs[t] = steered - start;
-    fills += events.fills.length;
+    closures += events.fills.length;
     deaths += events.deaths.length;
     // Outside the stopwatch, once a second: walking every ring is cheap
     // against a fill, but not against a quiet tick.
@@ -116,7 +124,7 @@ export function runArena(options: ArenaRunOptions): ArenaRun {
       }
     }
   }
-  return { options, tickMs, steerMs, verticesPerSecond, fills, deaths };
+  return { options, tickMs, steerMs, verticesPerSecond, closures, deaths };
 }
 
 /**
@@ -175,10 +183,25 @@ export function saturationOf(
     earlyMeanVertices,
     lateMeanVertices,
     // An arena that painted nothing is trivially drift-free; that the bots
-    // painted at all is a separate premise (`fills`, `peakVertices`).
+    // painted at all is a separate premise (`closures`, `peakVertices`).
     driftFraction:
       earlyMeanVertices === 0 ? 0 : (lateMeanVertices - earlyMeanVertices) / earlyMeanVertices,
   };
+}
+
+/**
+ * How far a measured number sits from its recorded baseline, signed and
+ * relative: `(measured − baseline) / baseline`.
+ *
+ * The budget run gates on this rather than on a stopwatch, because the thing
+ * worth guarding — the vertex count the fill pays for — is a *deterministic*
+ * output of a pinned seed, while ms are not (ticket 28). A baseline of 0 has
+ * no scale to be relative to, so any non-zero measurement reads as infinite
+ * drift and a still-zero one as none.
+ */
+export function driftFrom(baseline: number, measured: number): number {
+  if (baseline === 0) return measured === 0 ? 0 : Infinity;
+  return (measured - baseline) / baseline;
 }
 
 export interface RunStats {
@@ -276,7 +299,7 @@ export function report(run: ArenaRun, stats: RunStats): string {
       (stats.firstOverTick === -1
         ? ''
         : `, first at t=${(stats.firstOverTick / TICK_HZ).toFixed(1)} s`),
-    `  peak vertices ${String(stats.peakVertices)} · ${String(run.fills)} fills · ` +
+    `  peak vertices ${String(stats.peakVertices)} · ${String(run.closures)} closures · ` +
       `${String(run.deaths)} deaths`,
     `  DO-derated (×${String(DO_HARDWARE_FACTOR)}): ` +
       `p95 ${(stats.p95Ms * DO_HARDWARE_FACTOR).toFixed(2)} ms · ` +

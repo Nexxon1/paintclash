@@ -128,6 +128,9 @@ braucht 3**; wer nur den berichteten Freeze wegbekommen will, kommt mit 1 (+2) w
       Diagnose-Instrumentierung, die dahin geführt hat, ist restlos entfernt (s. oben).
       → [`bench/fill-budget`](../../../bench/fill-budget/); `grep -rn "DEBUG-a91c\|DEBUG-b4e2"`
       → 0 Treffer. **Mit der Einschränkung, dass die 200-WU-Kurve weiter steigt** (Ticket 23).
+      **Seit Ticket 28 überholt:** die Zusicherung „jeder Tick unter dem Budget" gilt bei
+      200 WU nicht mehr und galt dort nie über die 5 Minuten hinaus (s. Kasten unter der
+      Zahlen-Tabelle); der Bench sichert dort jetzt die Vertex-Zahl zu.
 - [x] Property-Tests aus §9.2 bleiben grün (Summe + neutral = 100 %, Disjunktheit, kein Loch);
       Golden-Replay **nicht** rotiert — Ansatz 3 wurde nicht gefahren, und 1 + 2 sind
       beweisbar semantik-identisch. **Aber:** der Golden-Replay ist hier *kein* Wächter
@@ -198,6 +201,22 @@ steht als Kommentar dort.
 | p95 | — | 12,4 ms | — | 6,4 ms |
 | max | **189 ms** | **36–43 ms** | **106 ms** | **23–25 ms** |
 | Ticks > 50 ms | 269 | **0** | 9 | **0** |
+
+> **Überholt seit [Ticket 28](28-fill-kosten-regression-seit-t22.md) (2026-08-02).** Die
+> „nachher"-Spalten beschreiben `main` nicht mehr: bei 200 WU liegt der Lauf heute bei
+> mean 3,7 ms, p95 25,6 ms und **52–62 Ticks über Budget** ab t ≈ 172 s. Auch die
+> 50-WU-Spalte ist überholt, wenn auch harmlos: der `max` streut dort heute über 27,7–49,5 ms
+> statt 23–25 ms — 0 Ticks über Budget bleiben es trotzdem. Ursache sind
+> **zwei erwünschte** Änderungen — Ticket 19 (Bots sterben nicht mehr am eigenen Trail:
+> 6 → 1 Tode, Vertices +26,5 %) und Ticket 26 (31 der 66 leer ausgehenden Loop-Schlüsse
+> greifen jetzt: Vertices +11,7 %) — deren Kosten nie gemessen wurden. Kein Rückbau.
+>
+> Damit ist auch die **Akzeptanz-Zusicherung selbst** hinfällig, und zwar rückwirkend:
+> die „0 Ticks über Budget" bei 200 WU galten nur, weil der Lauf bei t = 300 s endet und
+> der erste Überlauf damals bei t = 355 s lag (Ticket 23 mass über 30 min **1 860**
+> Überläufe am selben Stand). Der Bench sichert seit Ticket 28 darum die **Vertex-Zahl**
+> gegen eine aufgezeichnete Basislinie zu statt der Stoppuhr; die Budget-Frage bei 200 WU
+> gehört Ticket 23. Aktuelle Zahlen: [`bench/fill-budget/README.md`](../../../bench/fill-budget/README.md).
 
 Die Hochrechnung des Tickets für Ansatz 1 (−48 % der Ops ⇒ −43 % Zeit) war zu
 vorsichtig: gemessen waren bei 200 WU **97,5 %** der Carve-Ops bbox-getrennt und trugen

@@ -23,7 +23,8 @@ Fall, der ausbricht.
 
 **Blocked by:** —
 
-**Status:** needs-triage
+**Status:** resolved (2026-08-02) — zwei Commits, beide erwünscht, kein Rückbau; der Halt
+sichert jetzt die Vertex-Zahl statt der Stoppuhr zu. S. Answer.
 
 ## Warum das mehr ist als „der Bench schwankt"
 
@@ -81,13 +82,15 @@ braucht einen vollständigen Worktree auf dem alten Commit samt eigenem `pnpm in
 
 ## Auftrag
 
-- [ ] Den Commit bestimmen, ab dem der 5-Minuten-Bench rot wird (voller Worktree je
-      Kandidat, `bench` bei 200 WU, ~40 s je Lauf).
-- [ ] Entscheiden, ob das **erwünschtes Verhalten** ist. Ticket 26 hat eine echte Lücke
+- [x] Den Commit bestimmen, ab dem der 5-Minuten-Bench rot wird (voller Worktree je
+      Kandidat, `bench` bei 200 WU, ~40 s je Lauf). → **Zwei** Commits, nicht einer:
+      `3e2682b` (T19) und `b167439` (T26), je 3 Läufe.
+- [x] Entscheiden, ob das **erwünschtes Verhalten** ist. Ticket 26 hat eine echte Lücke
       geschlossen — mehr gelingende Fills sind Spielinhalt, nicht Fehler. Dann ist nicht
       der Commit das Problem, sondern dass die Kosten dieses Spielinhalts nie gemessen
       wurden, und der Fund gehört als neue Basislinie in Ticket 23 statt als Rückbau.
-- [ ] Die Akzeptanzzahlen in `bench/fill-budget/README.md` und Ticket 22 auf den dann
+      → **Ja, beide.** Kein Rückbau.
+- [x] Die Akzeptanzzahlen in `bench/fill-budget/README.md` und Ticket 22 auf den dann
       gültigen Stand bringen — im Moment beschreiben sie einen Zustand, den `main` nicht
       mehr hat.
 
@@ -102,5 +105,107 @@ Drift über die zweite Hälfte des Laufs statt −1,8 %).
 _Referenz: spec §2.2, §6.2, §9.2; ADR-0007; [Ticket 22](22-fill-kosten-tickbudget.md)
 (Akzeptanz), [Ticket 23](23-fill-vertexzahl-wachstum.md) (Kommentar 2026-08-02),
 [Ticket 26](26-gerade-gap-kreuzung-fuellt-nie.md), [Ticket 19](19-selbstschnitt-praezision.md)._
+
+## Answer
+
+**Es sind zwei Commits, nicht einer, und beide tun genau das, wofür sie gebaut wurden.
+Kein Rückbau.** Was fehlte, war nie ein Wächter gegen diese Änderungen — es war ein
+Wächter, der die richtige Grösse misst.
+
+### Die Bisektion
+
+Volle Worktrees je Kandidat samt eigenem `pnpm install` (die Falle oben umgangen), **drei
+Läufe je Commit**, 200 WU · 8 Bots · 5 min · Seed 20260730:
+
+| Commit | mean | p95 | Ticks > 50 ms | Peak-Vertices | Schlüsse | leer | Tode |
+|---|---|---|---|---|---|---|---|
+| `b786fb6` (T22) | 1,90 ms | 13,9 ms | 0, 0, 2 | 5 244 | 1 222 | 62 | 6 |
+| `3e2682b` (T19) | 3,12 ms | 20,6 ms | 15, 21, 23 | 6 635 | 1 368 | 66 | **1** |
+| `b167439` (T26) | 3,68 ms | 24,9 ms | 40, 45, 63 | **7 408** | 1 368 | **35** | 1 |
+| `c43ea08` (HEAD) | 3,72 ms | 25,6 ms | 52, 53, 62 | 7 408 | 1 368 | 35 | 1 |
+
+„Schlüsse" sind Loop-**Schlüsse**, nicht Fänge: `step` zählt jeden heimgekehrten Trail,
+auch den, der nichts holt. Genau diese Verwechslung liess die Kosten von T26 unsichtbar
+bleiben — die Zahl stand bei 1 368 still, während sich darunter etwas bewegte. Die Spalte
+„leer" (Schlüsse, die nichts malten) ist eigens dafür nachgemessen worden, über die
+Identität von `p.territory`: ein verfallener Fang lässt die Referenz stehen. Der Begriff
+steht jetzt in CONTEXT.md („Loop-Schluss ≠ Fang"), und der Bench nennt das Feld
+`ArenaRun.closures` — es hiess `fills`, was genau die Lesart nahelegte, die den Fund
+verzögert hat.
+
+**Zwei Beiträge, sauber getrennt:**
+
+1. **Ticket 19** (`3e2682b`) — Bots hören auf, am eigenen Trail zu sterben: **6 → 1 Tode**
+   in 5 min. Das ist kein Nebeneffekt, sondern der ausgeschriebene Preis des Tickets
+   (CONTEXT.md: „0,2 WU neben der eigenen Linie herzufahren überlebt"). Sie überleben,
+   malen weiter — **29,5 % → 39,4 %** der Karte —, und Tode sind laut Ticket 23 der
+   **einzige** Mechanismus, der die Vertex-Zahl deckelt. Folge: Vertices **+26,5 %**,
+   mean **+64 %**. Der grössere der beiden Beiträge.
+2. **Ticket 26** (`b167439`) — von 1 368 Schlüssen gehen **31 weniger** leer aus (66 → 35)
+   bei unveränderter Schluss-Zahl. Das ist das Dichtband, das tut, wofür es gebaut wurde:
+   Fänge, die vorher verfielen, greifen. Folge: Vertices **+11,7 %**, mean **+18 %**.
+   Die bemalte Fläche *sinkt* dabei (39,4 % → 37,7 %), was zunächst wie ein Widerspruch
+   aussieht und keiner ist: ab dem ersten geretteten Fang fliegen die Bots einen anderen
+   Pfad, und danach sind die beiden Läufe nicht mehr punktweise vergleichbar. Der
+   Mechanismus ist es — gleiche Schluss-Zahl, 31 Schlüsse weniger leer.
+3. **`e11ab96` (T20) und `c43ea08`** sind zusammen die letzte Zeile: der erste fasst
+   `geometry.ts` mit vier Zeilen an, der zweite nur Tests. Beide sind **gemessen**
+   folgenlos, nicht bloss als harmlos eingeschätzt — die Geometrie ist gegen `b167439`
+   bit-identisch. Der Verdächtigenkreis des Tickets ist damit vollständig abgearbeitet.
+
+Die Hypothese des Tickets („die naheliegende Hypothese ist Ticket 26") war damit **halb**
+richtig: T26 trägt bei, aber T19 trägt mehr, und die dort vermutete Kausalkette („ein Bot,
+der seinen Loop schliesst, stirbt nicht auf dem Rückweg") war die falsche — die Tode fielen
+schon vor T26 weg, an der Selbstschnitt-Regel selbst.
+
+**Eine Einschränkung, die niemand übersehen soll:** die Ticket-22-Zahlen reproduzieren auf
+dieser Maschine **auch bei `b786fb6` nicht** (max 47–56 ms statt 36–43 ms, 0–2 Überläufe
+statt 0). Ein Teil des berichteten Abstands ist Umgebung, nicht Code. Die im Ticket oben
+notierten 103,20 ms / 57 Ticks sind aus demselben Grund nicht wiederholbar; wiederholbar
+sind mean, p95 — und die Geometrie.
+
+### Warum die alte Zusicherung nicht zu retten war
+
+`max < 50 ms` bei 200 WU zurückzuerobern hiesse, eines der beiden Tickets zurückzubauen.
+Sie stattdessen auf einen höheren Wert zu heben hiesse zu behaupten, das Budget halte —
+es hält nicht: `bench:steady` mass am selben Stand **1 860** Überläufe über 30 min. Und
+sie war schon vorher keine Eigenschaft, sondern ein **Fensterzufall**: die „0 Ticks über
+Budget" galten, weil der Lauf bei t = 300 s endet und der erste Überlauf bei t = 355 s
+lag. T19 und T26 haben den Bruch auf t ≈ 172 s vorgezogen — der Halt wurde rot an einem
+bekannten Fund, der in sein Fenster wanderte, nicht an einem neuen.
+
+Dazu kommt, dass `max` an dieser Stelle gar nicht messbar ist: bei 50 WU landete er in
+vier Läufen auf **vier verschiedenen Ticks** (t = 60,2 / 30,0 / 141,3 / 126,8 s) und
+streute 27,7–49,5 ms gegen die 50-ms-Grenze — auf bit-identischer Geometrie. Ein
+Ausreisser, der wandert, während die Arbeit feststeht, ist die Laufzeit. Der Halt war also
+auch bei 50 WU ein Münzwurf, nur einer, der bisher gewonnen hat.
+
+### Was gebaut wurde
+
+`bench` sichert die **Vertex-Zahl** gegen eine aufgezeichnete Basislinie zu (±5 %,
+`driftFrom` in `harness.ts`, reine Funktion mit Unit-Tests neben `saturationOf` — Regel 8)
+und dazu **Schlüsse und Tode exakt** — die sind Zählwerte, da ist jede Abweichung schon ein
+anderer geflogener Pfad. Die Zeiten druckt er weiter, ohne sie zu beurteilen. Das ist **schärfer** als vorher: die
+Vertex-Zahl ist deterministisch (ein passender Build liest exakt 0,0 %), sie *ist* der
+Kostentreiber der Union, und die beiden bisectierten Effekte liegen bei +26,5 % und
++11,7 % — beide hätten den Halt am Tag ihres Landens gerissen, in 20 Sekunden, mit einer
+Meldung, die Schlüsse und Tode gleich mitnennt. Gegengeprüft: der neue Halt läuft gegen
+`b786fb6` (−29,2 %) und `3e2682b` (−10,4 %) **rot**, gegen HEAD grün.
+
+Was er bewusst **nicht** tut: die Budget-Frage bei 200 WU beantworten. Die gehört Ticket
+23 und ist dort menschlich begatet; sie hier als dauerhaft roten Bench zu führen, würde
+dasselbe Signal zerstören, das dieses Ticket wiederherstellt (dieselbe Begründung, die der
+README schon für `bench:steady` notiert).
+
+### Folgen
+
+- Ticket 22: Zahlen-Tabelle und Akzeptanz-Haken als überholt markiert, mit dem Grund.
+- `bench/fill-budget/README.md`: neuer Abschnitt „Stand auf `main`" mit der Basislinie,
+  der Bisektions-Tabelle und der Trennung deterministisch / gestreut; die alte Tabelle
+  bleibt als *historisch* stehen.
+- **Ticket 23 ist entblockt.** Die Basislinie ist verstanden: der +33,3 %-Drift, der dessen
+  Umfangs-Argument („NUR Ansatz 1", weil die Kurve sättigt) untergrub, ist kein Rätsel mehr,
+  sondern die Folge der auf 1 gefallenen Todeszahl. Das Argument selbst hält damit aber
+  **nicht** mehr — s. Kommentar dort.
 
 ## Comments

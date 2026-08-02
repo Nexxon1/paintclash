@@ -42,10 +42,9 @@ töten einander kaum (31 Tode in 30 min). Die 50-WU-Arena mit 96 Toden in 5 min 
 ~1 200 Vertices. Eine Arena mit echten Menschen liegt also unter diesem Plateau — aber
 darauf zu bauen heisst, die Performance von der Sterberate abhängig zu machen.
 
-**Blocked by:** 28 (seit 2026-08-02 — die Basislinie, gegen die hier gemessen würde, stammt
-aus einer unverstandenen Kosten-Regression; s. Kommentar unten. T16 misst daneben die
-Populationsgrenze gegen echte Infrastruktur und liefert den Härtetest für das hier
-Entschiedene.)
+**Blocked by:** — (28 ist **erledigt** seit 2026-08-02: die Basislinie ist verstanden, s.
+Kommentar unten. T16 misst daneben die Populationsgrenze gegen echte Infrastruktur und
+liefert den Härtetest für das hier Entschiedene.)
 
 **Status:** needs-triage
 
@@ -278,3 +277,33 @@ dem 31.07. und heute — der 5-Minuten-Akzeptanzbench aus Ticket 22 ist auf `mai
 Engine-Tausch, sondern Ticket 28: solange die Kosten aus einer unverstandenen Regression
 stammen, misst jeder Vorher/Nachher-Vergleich der Engine gegen eine Basislinie, die selbst
 kaputt ist.
+
+### Kommentar 2026-08-02 (nach [Ticket 28](28-fill-kosten-regression-seit-t22.md)) — entblockt, aber die Prämisse ist weg
+
+Die Regression ist bisectiert und **erwünscht**: Ticket 19 (Bots sterben nicht mehr am
+eigenen Trail, 6 → 1 Tode, Vertices +26,5 %) und Ticket 26 (31 von 66 leer ausgehenden
+Loop-Schlüssen greifen jetzt, Vertices +11,7 %). Kein Rückbau, und damit ist die Basislinie
+**gültig**: `main` malt 7 408 Peak-Vertices bei 200 WU, und das ist ab jetzt im Bench
+festgenagelt (`ARENAS` in `budget.test.ts`).
+
+**Was das Gate hier angeht:** die Sättigungs-Annahme, auf der der Umfang „NUR Ansatz 1"
+steht, ist damit nicht gerettet, sondern **erklärt** — und dadurch erst recht widerlegt.
+Die Kurve sättigte am 31.07., weil Bots einander und sich selbst töteten; seit Ticket 19
+töten sie sich fast nicht mehr (1 Tod in 5 min, 25 in 30 min). Genau der Mechanismus, den
+dieses Ticket als „mildernd, aber nicht verlässlich" notiert hat, ist weggefallen — und das
+Plateau mit ihm. Die 6 500 Vertices, gegen die ein 10× „für immer" reichen sollte, sind
+kein Fixpunkt der Geometrie, sondern waren ein Fixpunkt der Sterberate.
+
+Zwei Konsequenzen für den nächsten Schritt, beide vor dem Engine-Tausch zu entscheiden:
+
+1. Der Engine-Tausch bleibt messbar und lohnend (Union ist ~70 % der Fill-Zeit), aber
+   er ist gegen eine **steigende** Kurve ein Aufschub, kein Abschluss. Das war das
+   Argument, mit dem [Ticket 24](24-raster-gebiet-konzeptwechsel.md) ursprünglich
+   geöffnet und dann zurückgestellt wurde; es ist wieder offen.
+2. Die Bot-Sterberate ist jetzt ein **Kosten-Parameter**, nicht nur ein Balance-Thema.
+   Ob eine Arena mit Menschen die Vertex-Zahl deckelt, ist eine Frage, die dieser Bench
+   per Konstruktion nicht beantworten kann (er kennt nur Bots).
+
+**Status bleibt `needs-triage`, das Gate bleibt zu** — jetzt aber aus dem Grund, aus dem
+das Ticket es aufgestellt hat (die Entscheidung gehört einem Menschen), nicht mehr wegen
+einer unverstandenen Messung.

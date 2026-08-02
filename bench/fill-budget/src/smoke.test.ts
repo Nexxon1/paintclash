@@ -1,7 +1,7 @@
 import type { Ring } from '@paintclash/shared';
 import { describe, expect, it } from 'vitest';
 
-import { runArena, saturationOf, statsOf, totalVertices } from './harness.js';
+import { driftFrom, runArena, saturationOf, statsOf, totalVertices } from './harness.js';
 
 /**
  * The harness' own premise, in seconds rather than minutes (README rule 2 of
@@ -11,7 +11,7 @@ import { runArena, saturationOf, statsOf, totalVertices } from './harness.js';
 describe('fill-budget harness', () => {
   it('paints: bots fill, territories grow vertices', () => {
     const run = runArena({ arenaSizeWU: 200, bots: 8, seconds: 20, seed: 20260730 });
-    expect(run.fills).toBeGreaterThan(10);
+    expect(run.closures).toBeGreaterThan(10);
     const stats = statsOf(run);
     // A 6×6 start block is 4 vertices — anything above 8 bots × 4 is fill.
     expect(stats.peakVertices).toBeGreaterThan(32);
@@ -35,6 +35,30 @@ describe('fill-budget harness', () => {
     expect(totalVertices([[[triangle, hole]]])).toBe(7);
     // Two territories count independently.
     expect(totalVertices([[[triangle]], [[triangle]]])).toBe(6);
+  });
+});
+
+/**
+ * The budget run's gate, as arithmetic rather than a five-minute wait — same
+ * rule as `saturationOf` below.
+ */
+describe('driftFrom', () => {
+  it('reads a measurement on its baseline as no drift', () => {
+    expect(driftFrom(7408, 7408)).toBe(0);
+  });
+
+  it('signs growth positive and shrinkage negative', () => {
+    // The two effects ticket 28 bisected, as this function sees them.
+    expect(driftFrom(5244, 6635)).toBeCloseTo(0.2653, 4);
+    expect(driftFrom(6635, 7408)).toBeCloseTo(0.1165, 4);
+    expect(driftFrom(7408, 5244)).toBeCloseTo(-0.2921, 4);
+  });
+
+  it('calls any drift off a zero baseline infinite rather than dividing by it', () => {
+    // An arena that painted nothing has no scale — better an unmissable
+    // failure than a 0 that reads like a match.
+    expect(driftFrom(0, 1)).toBe(Infinity);
+    expect(driftFrom(0, 0)).toBe(0);
   });
 });
 
