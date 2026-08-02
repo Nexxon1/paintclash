@@ -256,3 +256,28 @@ aber kein bewusster Loop, sondern Lenk-Rauschen. Zu klären wäre, ob der Boden 
 **ohne eingeschlossene Tasche** höher liegen müsste. Bewusst nicht in diesem Ticket
 mitgenommen: es wäre eine Balance-Änderung mit Playtest-Bedarf, und dieses Ticket ist eine
 Geometrie-Korrektur.
+
+### 2026-08-02 — die Toleranz im Dichtband-Property-Test war zu eng hergeleitet (CI rot)
+
+`polylineBand > survives the snap lattice at the width the fill actually uses` fiel in CI
+mit `expected 0.0000018862760711566627 to be greater than 0.0000019` (Seed 1533032924).
+Nicht jedes Mal — fast-check würfelt pro Lauf neu, und der Fehlschlag braucht eine
+**diagonale** Richtung. Grob jeder dritte Lauf.
+
+**Der Produktionscode ist in Ordnung; die Rechnung im Test war es nicht.** Der Test erlaubte
+der Banddicke eine Abweichung von *einer* Gitterzelle (1e-7) von den 2e-6. Die vier Ecken
+werden aber **einzeln** gerastert: jede der beiden Längskanten kann sich damit um eine halbe
+Zelle in x *und* eine halbe in y verschieben — √2/2 · 1e-7 ≈ 7,07e-8 — und beide Kanten
+können gleichzeitig in dieselbe Richtung wandern. Die richtige Schranke ist also **√2
+Zellen** (1,414e-7). Eine Zelle war der achsenparallele Sonderfall.
+
+Gemessen statt geschätzt: über 1,4 Mio. Richtungen × sieben Längen (0,01 bis 200 WU) liegt
+die grösste tatsächliche Abweichung bei **1,262e-7** — innerhalb der neuen Schranke, ausserhalb
+der alten. Die Schranke ist damit beweisbar und nicht bloss „gross genug für diesen Seed";
+der Seed bleibt darum **ungepinnt** (kein anderer Property-Test im Repo pinnt einen), denn ein
+korrekt hergeleiteter Test kann hier nicht mehr zufällig fallen. Verifiziert: rot mit dem
+CI-Seed reproduziert, grün nach der Korrektur mit demselben Seed, danach 5 × `test:coverage`
+ungepinnt grün.
+
+Das Dichtband selbst (1e-6 Halbbreite, ADR-0007-Nachtrag) wird vom Snapping nie flachgedrückt
+— genau das, was es zusichern sollte.

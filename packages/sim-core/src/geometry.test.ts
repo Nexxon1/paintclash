@@ -412,10 +412,20 @@ describe('polylineBand', () => {
           const area = Math.abs(ringArea(band[0] ?? []));
           // Never flat: a flat band seals nothing, which is the whole point.
           expect(area).toBeGreaterThan(0);
-          // Thickness = area / length, within one lattice cell of 2e-6.
+          // Thickness = area / length, within √2 lattice cells of 2e-6.
+          //
+          // Not one cell: the band's four corners are snapped independently,
+          // so each of the two long edges can shift perpendicular by half a
+          // cell in x AND half a cell in y — √2/2 · 1e-7 ≈ 7,07e-8 — and both
+          // edges can move the same way at once. One cell was the axis-aligned
+          // worst case; a diagonal segment beats it, which is why this
+          // property failed roughly one CI run in three (seed 1533032924:
+          // 1,886e-6 against a 1,9e-6 floor). Swept over 1,4 M directions and
+          // seven lengths, the true worst case measures 1,262e-7 — inside this
+          // bound, outside the old one.
           const thickness = area / Math.hypot(b[0] - a[0], b[1] - a[1]);
-          expect(thickness).toBeGreaterThan(2e-6 - 1e-7);
-          expect(thickness).toBeLessThan(2e-6 + 1e-7);
+          expect(thickness).toBeGreaterThan(2e-6 - Math.SQRT2 * 1e-7);
+          expect(thickness).toBeLessThan(2e-6 + Math.SQRT2 * 1e-7);
         },
       ),
       { numRuns: 300 },
