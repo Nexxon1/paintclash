@@ -9,10 +9,18 @@ laufen: die Kosten hängen an der **bemalten Fläche**, nie an der Historie.
 **Blocked by:** ~~23~~ — erledigt am 2026-08-02, s. Kommentar unten. War echt, nicht formal: T23 misst, ob ein blosser Engine-Tausch
 reicht. Reicht er, ist dieses Ticket **wontfix**; siehe „Warum das warten muss".
 
-**Status:** needs-triage — und bleibt es. Dieses Ticket wird **nie** ohne ausdrückliche
-menschliche Entscheidung gebaut: es kippt eine begründet gelockte Spec-Entscheidung (§2.2),
-ersetzt ADR-0007, ändert Wire-Format und Look, und Punkt 2 der Nachteile ist eine
-Regeländerung. Der wahrscheinlichste Ausgang ist `wontfix` — s. „Empfehlung".
+**Status:** **wontfix** (2026-08-02, menschliche Entscheidung) — der Engine-Tausch aus
+[Ticket 23](23-fill-vertexzahl-wachstum.md) hat die Lags im laufenden Spiel deutlich
+gesenkt, damit wird dieser Konzeptwechsel nicht mehr gebraucht. Das ist der Ausgang, den
+die „Empfehlung" unten für genau diesen Fall vorzeichnet. Das Ticket bleibt als
+Entscheidungs-Archiv stehen; die eine Zeile, die den Tausch überlebt hat, ist die
+**Bandbreite** und die ist jetzt [Ticket 29](29-gebiets-deltas-statt-vollbild.md).
+
+Bedingung für ein Wiederaufmachen (bewusst benannt, damit es nicht aus dem Bauch passiert):
+Die CPU-Begründung dieses Tickets kommt nur zurück, wenn `bench:steady` bei 200 WU über
+4 h **wieder** ein Plateau verfehlt *oder* Ticks über Budget zeigt — beides misst der Bench
+heute und beides steht dort auf 0. Alles andere (Look, Disjunktheit als Struktur,
+`pointInTerritory` in O(1)) sind Vorteile, aber keine Not.
 
 ## Warum das warten muss (das Argument hat sich umgedreht)
 
@@ -159,16 +167,20 @@ der nächste Schritt, bevor irgendjemand das Raster ernsthaft erwägt.
 Die Bandbreiten-Zeile ist inzwischen das eigene Ticket, das die „Empfehlung" unten für
 diesen Fall vorsieht: [Ticket 29](29-gebiets-deltas-statt-vollbild.md).
 
-**Warum der Status trotzdem `needs-triage` bleibt und nicht `wontfix` wird.** Das Gate von
-Ticket 23 schreibt wörtlich vor: „Reicht der Faktor: Ticket auflösen und Ticket 24 auf
-`wontfix`." Der Faktor reicht — und der Status wird trotzdem nicht gesetzt, ausdrücklich
-als Abweichung und nicht aus Versehen: der Mensch hat am selben Tag, beim Öffnen jenes
-Gates, Interesse an diesem Ansatz geäussert („paper.io sieht auch sehr smooth aus … dann
-wäre vielleicht Ticket 24 die nachhaltigste Lösung"). Ein Ticket zuzuklappen, während
-danach gefragt wird, ist keine Entscheidung, die ein Implementierungslauf treffen sollte.
+**Der Status blieb zunächst `needs-triage`, obwohl das Gate von Ticket 23 wörtlich
+vorschreibt: „Reicht der Faktor: Ticket auflösen und Ticket 24 auf `wontfix`."** Der Faktor
+reichte — der Status wurde trotzdem nicht gesetzt, weil der Mensch am selben Tag, beim
+Öffnen jenes Gates, Interesse an dem Ansatz geäussert hatte („paper.io sieht auch sehr
+smooth aus … dann wäre vielleicht Ticket 24 die nachhaltigste Lösung"). Ein Ticket
+zuzuklappen, während danach gefragt wird, ist keine Entscheidung für einen
+Implementierungslauf.
 
-Was zu entscheiden bleibt, ist damit **nur noch** eine Geschmacks- und Prioritätsfrage,
-keine technische: die Kosten sind kein Argument mehr, die Bandbreite gehört Ticket 29, und
-was übrig bleibt, ist der Look. Wenn das jemand ernsthaft erwägt, gehört als Erstes ein
-`/prototype` des Raster-Looks daneben (hohe Zellauflösung, gerundete Ecken, Trail-Rinne) —
-Nachteil 1 und 2 sind an einem Bild in Minuten zu beurteilen und an diesem Text gar nicht.
+**Nachgereicht am selben Tag: der Mensch hat entschieden.** Nach dem Spielen gegen den
+getauschten Stand — „Dieser Commit hat die Lags deutlich minimiert" — lautet die Ansage
+`won't do`, „weil wir es nicht mehr benötigen". Der Status oben ist entsprechend gesetzt.
+Was damit ausdrücklich **nicht** entschieden ist: dass Raster der schlechtere Entwurf wäre.
+Er wird nur nicht mehr gebraucht — die Kosten sind kein Argument mehr, die Bandbreite
+gehört Ticket 29, und was übrig bliebe, wäre der Look. Würde das jemand später doch
+angehen, gehörte als Erstes ein `/prototype` daneben (hohe Zellauflösung, gerundete Ecken,
+Trail-Rinne): Nachteil 1 und 2 sind an einem Bild in Minuten zu beurteilen und an diesem
+Text gar nicht.
