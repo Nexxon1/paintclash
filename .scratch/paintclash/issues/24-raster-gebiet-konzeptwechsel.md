@@ -6,7 +6,7 @@ statt als Multipolygon: `ownerId` je Zelle, Fill = Scanline-Flood-Fill der einge
 Region. Das ist, was paper.io/splix tun, und der Grund, warum die stundenlang gleichmässig
 laufen: die Kosten hängen an der **bemalten Fläche**, nie an der Historie.
 
-**Blocked by:** 23 — und zwar echt, nicht formal. T23 misst, ob ein blosser Engine-Tausch
+**Blocked by:** ~~23~~ — erledigt am 2026-08-02, s. Kommentar unten. War echt, nicht formal: T23 misst, ob ein blosser Engine-Tausch
 reicht. Reicht er, ist dieses Ticket **wontfix**; siehe „Warum das warten muss".
 
 **Status:** needs-triage — und bleibt es. Dieses Ticket wird **nie** ohne ausdrückliche
@@ -133,3 +133,42 @@ als ein Konzeptwechsel und sollte vorher geprüft werden.)
 
 _Referenz: spec §2.2, §4.1/4.2, §9.2, §10.5; ADR-0004, ADR-0007. Zahlen aus Ticket 22/23
 (`bench/fill-budget`, 30-min-Lauf, Seed 20260730)._
+
+## Comments
+
+### 2026-08-02 (nach [Ticket 23](23-fill-vertexzahl-wachstum.md)) — der Blocker ist weg, und mit ihm das CPU-Argument
+
+Ticket 23 ist **resolved**: der Engine-Tausch ist gebaut und gemessen. Damit greift die
+Reihenfolge, die die „Empfehlung" unten vorzeichnet, Punkt 2 — mit einer Präzisierung.
+
+**Was erledigt ist.** Der Dauerzustand hält das Budget: 200 WU, 8 Bots, **vier Stunden**,
+**0–2 Ticks über 50 ms von 288 000** (vorher 2 389 über 30 min). Und der Satz weiter oben
+in diesem Ticket — „gegen ein *beschränktes* Plateau ist ein ausreichend grosser
+konstanter Faktor eine **dauerhafte** Lösung" — steht wieder, weil das Plateau steht: über
+4 h driftet die Vertex-Zahl **−3,2 %**. Die zwischenzeitliche Gegenmessung (+33,3 %) war
+ein zu schmales Vergleichsfenster gegen einen Sägezahn mit Perioden von Dutzenden Minuten,
+kein Wachstum.
+
+**Was nicht erledigt ist.** Die **Bandbreiten-Zeile** — ~31 KB/s je Client, ~0,9 GB pro
+Stunde und Arena, weil `encodeTerritory` bei jedem Fill das komplette Gebiet an jeden
+Client schickt. Kein Clipper berührt das. Sie ist damit das **einzige** verbliebene
+Argument dieses Tickets, und sie hat eine viel billigere Antwort als ein Konzeptwechsel:
+**Gebiets-Deltas statt Vollbild**. Dafür gibt es weiterhin kein eigenes Ticket; es wäre
+der nächste Schritt, bevor irgendjemand das Raster ernsthaft erwägt.
+
+Die Bandbreiten-Zeile ist inzwischen das eigene Ticket, das die „Empfehlung" unten für
+diesen Fall vorsieht: [Ticket 29](29-gebiets-deltas-statt-vollbild.md).
+
+**Warum der Status trotzdem `needs-triage` bleibt und nicht `wontfix` wird.** Das Gate von
+Ticket 23 schreibt wörtlich vor: „Reicht der Faktor: Ticket auflösen und Ticket 24 auf
+`wontfix`." Der Faktor reicht — und der Status wird trotzdem nicht gesetzt, ausdrücklich
+als Abweichung und nicht aus Versehen: der Mensch hat am selben Tag, beim Öffnen jenes
+Gates, Interesse an diesem Ansatz geäussert („paper.io sieht auch sehr smooth aus … dann
+wäre vielleicht Ticket 24 die nachhaltigste Lösung"). Ein Ticket zuzuklappen, während
+danach gefragt wird, ist keine Entscheidung, die ein Implementierungslauf treffen sollte.
+
+Was zu entscheiden bleibt, ist damit **nur noch** eine Geschmacks- und Prioritätsfrage,
+keine technische: die Kosten sind kein Argument mehr, die Bandbreite gehört Ticket 29, und
+was übrig bleibt, ist der Look. Wenn das jemand ernsthaft erwägt, gehört als Erstes ein
+`/prototype` des Raster-Looks daneben (hohe Zellauflösung, gerundete Ecken, Trail-Rinne) —
+Nachteil 1 und 2 sind an einem Bild in Minuten zu beurteilen und an diesem Text gar nicht.

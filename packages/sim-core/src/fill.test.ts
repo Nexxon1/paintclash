@@ -1,5 +1,11 @@
 import { BALANCE, type Point, type Territory } from '@paintclash/shared';
 import fc from 'fast-check';
+// polyclip-ts is deliberately NOT the engine under test any more (ticket 23
+// swapped the sim to `polygon-clipping`) — it stays as a dev dependency for
+// exactly this: an INDEPENDENT oracle. The properties below recompute the
+// definitions they guard with a different Martinez implementation, one that
+// runs on arbitrary precision, so agreement is evidence about the geometry
+// rather than a sweep agreeing with itself.
 import { difference, intersection } from 'polyclip-ts';
 import { describe, expect, it } from 'vitest';
 

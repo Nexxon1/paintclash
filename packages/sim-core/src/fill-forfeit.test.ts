@@ -4,8 +4,10 @@ import { describe, expect, it, vi } from 'vitest';
 import { closeLoop, spawnTerritory } from './fill.js';
 import { squareRing } from './geometry.js';
 
-// Own file so the mock never leaks into the real-clipper fill tests.
-vi.mock('polyclip-ts', () => ({
+// Own file so the mock never leaks into the real-clipper fill tests. It
+// targets the seam (`clipper.js`), not the vendor: what is under test is the
+// forfeit, which must hold whichever engine ADR-0007 currently names.
+vi.mock('./clipper.js', () => ({
   union: (): never => {
     throw new Error('unable to complete output ring');
   },
@@ -14,9 +16,9 @@ vi.mock('polyclip-ts', () => ({
   },
 }));
 
-// The lattice removed every known natural trigger (spike-verified), but
-// polyclip's failure modes are not provably empty — the tick must survive
-// one deterministically.
+// The lattice removed every known natural trigger (spike-verified), but a
+// Martinez sweep's failure modes are not provably empty — the tick must
+// survive one deterministically.
 describe('clipper failure', () => {
   it('closeLoop forfeits the capture instead of crashing the tick', () => {
     const territory: Territory = [[squareRing(5, 5, 3)]];

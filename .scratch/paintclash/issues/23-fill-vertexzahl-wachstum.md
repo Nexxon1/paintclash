@@ -46,7 +46,7 @@ darauf zu bauen heisst, die Performance von der Sterberate abhängig zu machen.
 Kommentar unten. T16 misst daneben die Populationsgrenze gegen echte Infrastruktur und
 liefert den Härtetest für das hier Entschiedene.)
 
-**Status:** needs-triage
+**Status:** resolved (2026-08-02) — s. `## Answer` am Ende
 
 ## Wo die Zeit im Gleichgewicht hingeht
 
@@ -307,3 +307,128 @@ Zwei Konsequenzen für den nächsten Schritt, beide vor dem Engine-Tausch zu ent
 **Status bleibt `needs-triage`, das Gate bleibt zu** — jetzt aber aus dem Grund, aus dem
 das Ticket es aufgestellt hat (die Entscheidung gehört einem Menschen), nicht mehr wegen
 einer unverstandenen Messung.
+
+## Answer
+
+**Das Gate wurde am 2026-08-02 vom Menschen geöffnet** („Ticket 23 jetzt"), mit einer
+Ergänzung zum Akzeptanzkriterium, die das Ticket so nicht hatte: das Spiel soll **dauerhaft
+flüssig** laufen, nicht mit der Zeit immer laggier werden. Der Auslöser war eine
+Beobachtung an der deployten Version — „ab ca. 3 min wirkt es laggy, und die Bewegung
+entspricht nicht immer dem Input". Das ist genau die Kurve dieses Tickets: ein Tick, der
+120–250 ms braucht, liefert keinen Snapshot; der Client rechnet weiter und wird beim
+verspäteten Snapshot zurückkorrigiert. Kein Input-Bug, sondern die Rückkorrektur danach.
+
+### 1. Ansatz 1 ist gebaut: `polyclip-ts` → `polygon-clipping`
+
+Der Aufruf liegt jetzt hinter einer Naht (`sim-core/src/clipper.ts`) statt in einer
+Import-Zeile in `fill.ts` — die Engine ist eine Entscheidung, und die Fehler-Injektions-
+Tests (`fill-forfeit`, `fill-corrupt`) mocken ab jetzt die Naht statt eines
+Herstellernamens. ADR-0007 hat einen Nachtrag mit der vollen Begründung.
+
+Der Auftrag verlangte, drei Dinge zu prüfen. **Korruptions-Tests und der
+Bowtie-/Spiral-Fall:** grün ohne eine einzige Anpassung (173 sim-core-Tests, 740 im
+Root-Lauf, 48 Szenario-Tests in workerd, 22 E2E). **Die „mismatched builds":** real, und
+mit demselben Interop-Shim erschlagen, den `carve.ts` seit Ticket 06 trägt — er hat jetzt
+eigene Tests (`clipper.test.ts`), weil ein Testlauf immer nur *eine* der beiden Bundle-
+Formen sieht und der Zweig, der in Produktion zählt, sonst ungetestet bliebe. **Dass das
+Paket unmaintained ist:** getragen von drei Dingen, nicht von Optimismus — die Version ist
+gepinnt, die Naht macht einen weiteren Tausch zu einer Änderung an einer Stelle, und
+`polyclip-ts` bleibt als Dev-Abhängigkeit installiert und prüft in `fill.test.ts` gegen.
+**Clipper2-WASM** war damit nicht nötig und bleibt der dokumentierte Ausweg.
+
+**Die Gitterweite bleibt 1e-7** — gemessen im Sinne von ADR-0007s Auflage, aber
+entschieden aus einem Grund, der nichts mit Geschwindigkeit zu tun hat: das **Dichtband**
+aus Ticket 26 muss eine Grössenordnung über dem Gitter liegen, um das Snapping zu
+überleben, und weit unter dem Fill-Boden bleiben. Bei 1e-7 ist das breiteste Band
+4e-4 WU² gegen einen Boden von 0,01 WU²; bei 1e-6 wären es 40 % des Bodens — eine
+Regeländerung, kein Tuning. Der Client darf 1e-4 fahren, weil er kein Band hat.
+
+### 2. Die Messung: Vorher/Nachher, beide auf derselben Maschine
+
+| 200 WU · 8 Bots · 30 min | vorher        | nachher  | Faktor |
+| ------------------------ | ------------- | -------- | ------ |
+| mean                     | 9,00 ms       | 1,13 ms  | 8,0×   |
+| p95                      | 59,36 ms      | 6,52 ms  | 9,1×   |
+| p99                      | 98,98 ms      | 11,45 ms | 8,6×   |
+| max                      | 569,72 ms     | 33,36 ms | 17×    |
+| Ticks über 50 ms         | 2 389 (6,6 %) | **0**    | —      |
+
+Die 8,7×/10,2× aus dem Op-Spike vom 31.07. bestätigen sich damit an der ganzen Sim.
+
+### 3. Die Prämisse dieses Tickets war ein Messartefakt — die Kurve sättigt doch
+
+Das ist der eigentliche Fund, und er kippt die Begründung, mit der dieses Ticket zuletzt
+auf `needs-triage` stand („die Kurve steigt, ein Faktor ist nur Aufschub").
+
+Über **vier Stunden** Arena-Zeit gemessen (200 WU, 8 Bots, Seed 20260730, 288 000 Ticks):
+
+- **Kein Aufwärtstrend.** Dieselbe `saturationOf`-Rechnung, die über 30 Minuten +33,3 %
+  bzw. +19,1 % las, liest über 4 h **−3,2 %**. Die Vertex-Zahl pendelt trendfrei zwischen
+  ~5 000 und ~10 500.
+- **Warum die 30-Minuten-Messung log:** die Vertex-Zahl ist ein **Sägezahn** mit einer
+  Periode von Dutzenden von Minuten. Ein 30-Minuten-Lauf halbiert seinen Schwanz in zwei
+  **11-Minuten**-Fenster — weniger als eine Periode. Verglichen wurde ein Tal gegen einen
+  Berg. Das erklärt auch, warum am 31.07. −1,8 % und am 02.08. +33,3 % herauskam: beide
+  Male dasselbe zu schmale Fenster, nur eine andere Phase.
+- **Die Kosten werden über die Zeit nicht schlechter.** Letzte der vier Stunden:
+  p95 6,78 ms, p99 11,39 ms, **0** Überläufe — eher besser als der Gesamtlauf.
+- Über drei Vier-Stunden-Läufe: **0, 1 bzw. 2** Ticks über 50 ms von 288 000.
+
+Die Konsequenz für den Umfang „NUR Ansatz 1" ist damit die ursprünglich gedachte, nicht
+die zuletzt befürchtete: gegen ein beschränktes Plateau ist der Faktor eine **dauerhafte**
+Lösung. Ehrliche Einschränkung: **ein** Seed, **eine** Population, **Bots** statt Menschen.
+Der Sägezahn hängt an der Sterberate, und Bots sterben selten (124 Tode in 4 h) — eine
+Arena mit Menschen liegt unter diesem Plateau, nicht darüber.
+
+Nicht nachgemessen: dass die alte Engine über 4 h dieselbe Kurve gezeigt hätte (das wären
+~53 min Wanduhr). Belegt ist es indirekt und stark genug: über 5 min ist die Geometrie
+zwischen beiden Engines **bit-identisch**, über 30 min fast (10 499 vs. 10 502 Vertices).
+Die Vertex-Kurve ist eine Eigenschaft der Regeln, nicht der Engine.
+
+### 4. Was anders kam, als das Ticket ankündigte
+
+- **Der Golden-Replay-Hash rotiert NICHT.** Das Gitter rastet die Ausgaben beider Engines
+  auf dieselben Punkte.
+- **Die `ARENAS`-Basislinie in `budget.test.ts` rotiert NICHT** — 7 408 / 1 368 / 1 und
+  1 750 / 2 527 / 79 kommen auf die Einheit gleich heraus. Es war also nichts
+  neu aufzunehmen.
+- **Property-Tests §9.2 sind nicht nur grün, sie sind schärfer geworden:** `polyclip-ts`
+  bleibt als _dev_-Abhängigkeit liegen und rechnet in `fill.test.ts` die Definitionen nach.
+  Aus der Engine ist ein **unabhängiges Orakel mit anderer Arithmetik** geworden.
+
+### 5. Zwei Änderungen am Bench, die dazugehören
+
+- **`bench:steady` misst 4 h statt 30 min** (`STEADY_SEC`, `SETTLE_SEC = 1800`). Das ist
+  eine **bewusste Abweichung** vom Auftrag oben, der wörtlich eine „1 800-s-Variante"
+  verlangt: die gibt es im Baum nicht mehr. Der Grund ist der Fund aus Punkt 3 — ein Lauf,
+  dessen Vergleichsfenster schmaler ist als die Sägezahn-Periode, beantwortet die Frage
+  nicht, die er stellt, und der Auftrag wollte eine belastbare Dauerzustands-Messung, nicht
+  die Zahl 1 800. Die 30-Minuten-Zahlen für Vorher **und** Nachher, die der Auftrag
+  ebenfalls verlangt, stehen trotzdem hier und im Bench-README; reproduzierbar sind sie
+  über `STEADY_SEC`. Läuft ~8 min, beide Arenen grün.
+- **`runArena` gibt den Event-Loop je simulierter Sekunde zurück.** Der lange Lauf
+  blockierte ihn am Stück, Vitests Reporter-RPC lief aus, und der Befehl endete mit
+  Exit-Code 1, obwohl beide Tests grün waren. Bei 30 min war das die im README notierte
+  „bekannte Kosmetik"; bei 4 h wäre es ein Bench, dessen Exit-Code nichts mehr bedeutet.
+
+### 6. Was offen bleibt
+
+- **Die Bandbreite** — ~31 KB/s je Client, weil jeder Fill das komplette Gebiet an jeden
+  Client schickt. Kein Engine-Tausch berührt das. Ticket 24s „Empfehlung" sieht für genau
+  diesen Fall vor, dass daraus „ein eigenes, kleines Ticket (Gebiets-Deltas)" wird — das ist
+  jetzt [Ticket 29](29-gebiets-deltas-statt-vollbild.md).
+- **Die Bestätigung gegen Produktion.** Lokal 0 Überläufe heisst mit dem 4×-Faktor:
+  p95 ~29 ms von 50 (passt), p99 ~53 ms (auf der Linie), einzelne `max` darüber. Vorher
+  waren dieselben Zahlen 237 ms und 396 ms. Ob der Faktor stimmt, sagt nur eine Messung
+  gegen `paintclash.secure-data.workers.dev` — `bench/prod-arena` liegt dafür bereit, und
+  der nächste Deploy ist der Anlass.
+- **[Ticket 24](24-raster-gebiet-konzeptwechsel.md) steht auf `needs-triage`, obwohl das
+  Gate oben „Ticket 24 auf `wontfix`" vorschreibt.** Zweite bewusste Abweichung, und die
+  einzige, die eine Entscheidung offen lässt. Die Bedingung ist erfüllt (der Faktor reicht),
+  das CPU-Argument von Ticket 24 ist damit erledigt — aber zwei Dinge sprechen gegen ein
+  automatisches Zuklappen: die **Bandbreiten-Zeile** überlebt den Engine-Tausch und ist der
+  eine Posten, den Ticket 24 allein für sich beanspruchen konnte; und der Mensch hat heute,
+  beim Öffnen dieses Gates, ausdrücklich Interesse an dem Raster-Ansatz geäussert
+  („vielleicht die nachhaltigste Lösung"). Ein Ticket auf `wontfix` zu setzen, während der
+  Mensch am selben Tag danach fragt, wäre eine Entscheidung, die diesem Lauf nicht gehört.
+  Sie steht als offener Punkt in Ticket 24s Kommentar.

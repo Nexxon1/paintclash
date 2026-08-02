@@ -83,8 +83,18 @@ export function totalVertices(territories: readonly Territory[]): number {
   return total;
 }
 
-/** Simulate `seconds` of arena time, timing every tick. */
-export function runArena(options: ArenaRunOptions): ArenaRun {
+/**
+ * Simulate `seconds` of arena time, timing every tick.
+ *
+ * Async only to hand the event loop back once per simulated second. A four-hour
+ * run is ~7 minutes of solid arithmetic, and a worker that never yields stops
+ * answering Vitest's reporter RPC — which surfaces as
+ * `Timeout calling "onTaskUpdate"` and a non-zero exit on a run whose tests all
+ * passed. A bench that always exits 1 is a bench nobody reads. The yield sits
+ * OUTSIDE the per-tick stopwatch, next to the vertex sample, and costs ~1,5 s
+ * over those seven minutes.
+ */
+export async function runArena(options: ArenaRunOptions): Promise<ArenaRun> {
   const { arenaSizeWU, bots, seconds, seed } = options;
   const state = createSimState(seed, arenaSizeWU);
   const pilots = new Map<number, BotPilot>();
@@ -122,6 +132,7 @@ export function runArena(options: ArenaRunOptions): ArenaRun {
       if (second < seconds) {
         verticesPerSecond[second] = totalVertices(state.players.map((p) => p.territory));
       }
+      await new Promise((resolve) => setImmediate(resolve));
     }
   }
   return { options, tickMs, steerMs, verticesPerSecond, closures, deaths };

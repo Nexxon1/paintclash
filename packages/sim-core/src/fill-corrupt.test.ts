@@ -5,8 +5,9 @@ import { closeLoop, spawnTerritory } from './fill.js';
 import { squareRing } from './geometry.js';
 
 // Own file: this mock RETURNS corrupt topology (a "hole" outside its outer
-// ring — the verified pre-lattice failure shape) instead of throwing.
-vi.mock('polyclip-ts', () => {
+// ring — the verified pre-lattice failure shape) instead of throwing. Mocks
+// the seam, not the vendor — see `fill-forfeit.test.ts`.
+vi.mock('./clipper.js', () => {
   const corrupt = (): Territory => [
     [
       [

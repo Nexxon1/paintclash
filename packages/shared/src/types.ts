@@ -34,8 +34,9 @@ export interface LifeCounters {
 
 /**
  * Continuous-world geometry (spec §2.2: polygon-based fill). The shapes are
- * polyclip-ts-compatible so sim-core's boolean ops consume them verbatim;
- * `protocol` and `client` share them without depending on sim-core.
+ * structurally a Martinez clipper's MultiPolygon, so sim-core's boolean ops
+ * consume them verbatim (`sim-core/clipper.ts`); `protocol` and `client` share
+ * them without depending on sim-core.
  */
 
 /** One vertex in WU. */

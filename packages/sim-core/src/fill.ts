@@ -1,9 +1,9 @@
 /**
  * Loop closing → polygon fill (spec §2.2, strictly server-only per §6.1 —
  * only the authoritative tick ever calls this; clients merely receive the
- * result). Boolean geometry runs on polyclip-ts (Martinez sweep with exact
- * predicates): deterministic pure float math, verified in the ticket-04
- * spike against shared edges, chord overlaps, bowties and garbage rings.
+ * result). Boolean geometry runs on a Martinez sweep behind `clipper.ts`
+ * (ADR-0007): deterministic pure math, verified in the ticket-04 spike
+ * against shared edges, chord overlaps, bowties and garbage rings.
  *
  * Capture semantics (stealing since ticket 06):
  *
@@ -40,8 +40,8 @@
  */
 
 import { BALANCE, type Point, type Ring, type Territory } from '@paintclash/shared';
-import { difference, union } from 'polyclip-ts';
 
+import { difference, union } from './clipper.js';
 import {
   boundsSeparated,
   polylineBand,
@@ -152,7 +152,7 @@ export function closeLoop(
       updatedOthers.push(stolen < DEBRIS_AREA_WU2 ? other : carvedOther);
     }
   } catch {
-    // polyclip could not resolve the geometry. Deterministic for identical
+    // The clipper could not resolve the geometry. Deterministic for identical
     // inputs — replay-safe.
     return null;
   }
@@ -190,8 +190,8 @@ export function closeLoop(
  * land, and the clipper resolves such a ring to exactly that land (the spiral
  * case in `fill.test.ts`). Adding the band can only ever add; replacing the
  * ring could silently drop a capture. A degenerate ring costs the clipper
- * nothing — polyclip resolves it to the empty set, verified for both the
- * two-point and the collinear-three-point case.
+ * nothing — it resolves to the empty set, verified for both the two-point and
+ * the collinear-three-point case, on both engines ADR-0007 has run.
  *
  * The chord needs no seal of its own: a ring this thin has its chord lying
  * along the trail it closes, so the band already covers it.

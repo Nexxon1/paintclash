@@ -3,6 +3,11 @@
 Status: Angenommen (2026-07-21)
 Kontext-Tickets: [Bau-Ticket 04 — Trail + Loop-Schluss → Fill](../../.scratch/paintclash/issues/04-trail-loop-fill.md); Spec §2.2, §6.1, §9.2; ADR-0002/0003 (Determinismus-Disziplin des `sim-core`)
 
+> **Die Engine-Zeile dieser ADR ist seit 2026-08-02 überholt.** Der `sim-core`
+> fährt `polygon-clipping` statt `polyclip-ts`; das Gitter, die Fehler-Semantik
+> und die Gebiets-Repräsentation gelten unverändert. Siehe
+> [Nachtrag (2026-08-02, Ticket 23)](#nachtrag-2026-08-02-ticket-23--engine-getauscht-gitter-behalten).
+
 ## Kontext
 
 Der Fill ist **polygonbasiert** (Spec §2.2, kein Zell-Flood-Fill). Loop-Schluss heißt: Vereinigung von Gebiet und Loop-Polygon, Löcher füllen, fremdes Gebiet ausstanzen — robuste boolesche Polygon-Operationen im deterministischen `sim-core`. Selbstgebaute Clipping-Algorithmen sind ein bekanntes Robustheits-Grab (Shared Edges, Berührpunkte, kollineare Ketten sind hier der *Normalfall*: die Sehne des Loops liegt im eigenen Gebiet, Ausstanzungen erzeugen gemeinsame Kanten).
@@ -72,3 +77,85 @@ Land, das §2.2 nicht „eingeschlossen" nennt, im Extremfall (200 WU Trail) 4e-
 drei Grössenordnungen unter dem Sliver-Boden und dieselbe Art von Handel wie die ≤ 5e-8 WU,
 um die das Gitter jede Grenze verschiebt; die Disjunktheit bleibt gewahrt, weil Gewinner und
 Verlierer denselben Streifen aus derselben Geometrie sehen.
+
+## Nachtrag (2026-08-02, Ticket 23) — Engine getauscht, Gitter behalten
+
+Die Engine-Entscheidung oben wird ersetzt: der `sim-core` rechnet ab jetzt mit
+**`polygon-clipping`** (derselbe Martinez-Sweep in Float, MIT, pure JS) statt mit
+`polyclip-ts`. Alles andere dieser ADR — Snap-Gitter, Verwirkung statt Absturz,
+Topologie-Wächter, Multipolygon mit Löchern — bleibt Wort für Wort gültig. Der
+Aufruf liegt jetzt hinter einer eigenen Naht, `sim-core/src/clipper.ts`: die
+Engine ist eine Entscheidung, keine Import-Zeile, und die Fehler-Injektions-Tests
+(`fill-forfeit`, `fill-corrupt`) mocken die Naht statt eines Herstellernamens.
+
+**Warum.** Nicht Robustheit, sondern Kosten. `union(territory, loop)` ist ~70 %
+einer Fill-Zeit, und ihr Preis hängt allein an der Vertex-Zahl des eigenen
+Gebiets — arbitrary-precision-Arithmetik zahlt ihn mit einem konstanten Faktor.
+Gemessen an einer gesättigten 200-WU-Arena über 30 Minuten Arena-Zeit:
+
+| 200 WU · 8 Bots · 30 min | `polyclip-ts` | `polygon-clipping` | Faktor |
+| ------------------------ | ------------- | ------------------ | ------ |
+| mean                     | 9,00 ms       | **1,13 ms**        | 8,0×   |
+| p95                      | 59,36 ms      | **6,52 ms**        | 9,1×   |
+| p99                      | 98,98 ms      | **11,45 ms**       | 8,6×   |
+| max                      | 569,72 ms     | **33,36 ms**       | 17×    |
+| Ticks über 50 ms         | 2 389 (6,6 %) | **0**              | —      |
+
+**Determinismus ist unberührt.** ADR-0003 verlangt „gleiche Eingaben ⇒ gleiche
+Ausgaben", nicht Bit-Exaktheit über Maschinen hinweg. Float-Martinez ist eine
+reine Funktion seiner Eingaben: keine Uhr, kein Zufall, keine Iteration über
+Hash-Reihenfolge. Exakte Prädikate kaufen **Robustheit** gegen fast-entartete
+Geometrie, nicht Reproduzierbarkeit — und genau diese Robustheit ist das, wofür
+das Gitter oben da ist.
+
+**Die Gitterweite bleibt 1e-7, und das ist begründet, nicht übernommen.** Der
+Nachtrag von Ticket 25 warnt zu Recht, dass die ideale Weite je Engine anders
+liegt (für `polygon-clipping` war im Client ausgerechnet 1e-7 die langsamste).
+Sie überträgt sich hier trotzdem nicht, aus einem Grund, der mit Geschwindigkeit
+nichts zu tun hat: `fill.ts` dichtet entartete Loops mit einem Band von
+`SEAL_HALF_WIDTH_WU` ab, das **eine Größenordnung über** dem Gitter liegen muss,
+um das Snapping zu überleben, und **weit unter** dem Fill-Boden, um nie selbst zu
+einem Fang zu führen. Bei 1e-7 ist das breiteste mögliche Band 4e-4 WU² gegen
+einen Boden von 0,01 WU²; ein 1e-6-Gitter machte daraus 40 % des Bodens — eine
+Regeländerung. Der Client darf 1e-4 fahren, weil er kein solches Band hat.
+Wovor das Mahlen im Client wirklich warnte, war **ungerasterte** Eingabe, und
+hier liegt jeder Operand per Konstruktion auf dem Gitter.
+
+**Was die Robustheit belegt.** Die Suite hat den Tausch ohne eine einzige
+Anpassung überstanden — 173 `sim-core`-Tests, 740 im Root-Lauf. Wesentlich dabei:
+
+- Die **Property-Tests in `fill.test.ts` rechnen ihre Definitionen mit
+  `polyclip-ts` nach.** Das Paket bleibt genau dafür als _dev_-Abhängigkeit
+  liegen: es ist jetzt ein **unabhängiges Orakel** mit anderer Arithmetik statt
+  der Engine selbst. Disjunktheit, Flächenerhaltung und die
+  `gainedRegion`-Identität sind damit gegen eine zweite Implementierung geprüft.
+- Der **Bowtie-/Spiral-Fall** (2 000-Punkte-Selbstüberlappung, roh der
+  „unable to complete output ring"-Fall des Ticket-04-Spikes) löst sich auf dem
+  Gitter sauber auf.
+- Die **Verwirkungs- und Korruptionspfade** laufen unverändert über die Naht.
+
+**Zwei Ergebnisse, die anders ausfielen als erwartet** — Ticket 23 hatte beide
+als Kosten des Tauschs angekündigt:
+
+1. **Der Golden-Replay-Hash rotiert NICHT.** Erwartet war das Gegenteil (andere
+   Engine ⇒ andere Schnittpunkt-Koordinaten). Nach dem Zurück-Rasten auf das
+   Gitter fallen die Ausgaben beider Engines auf dieselben Punkte.
+2. **Die Arena malt über fünf Minuten dieselbe Geometrie**, auf die Einheit:
+   7 408 Peak-Vertices, 1 368 Loop-Schlüsse, 1 Tod — identisch zur
+   aufgezeichneten Basislinie. Erst im 30-Minuten-Lauf laufen die Pfade
+   auseinander (10 499 statt 10 502 Vertices, 26 statt 25 Tode): irgendwann
+   kippt ein letztes Bit eine Entscheidung. Das ist erwartbar und kein
+   Determinismus-Bruch — _ein_ Lauf reproduziert sich weiterhin exakt.
+
+**Was der Tausch NICHT ändert:** die Vertex-Zahl selbst. Sie ist eine Eigenschaft
+der Spielregeln, nicht der Engine — dass beide Engines über fünf Minuten
+dieselbe Geometrie malen, ist genau dieser Satz als Messung. Was der Faktor
+kauft, ist der Preis je Vertex, und das reicht: über vier Stunden Arena-Zeit
+plateaut die Vertex-Zahl (−3,2 % Drift) und die Arena hält das Budget mit 0–2
+Überläufen von 288 000 Ticks. Die Zahlen und die Einschränkungen dazu (ein Seed,
+Bots statt Menschen) stehen in Ticket 23.
+
+**Was der Tausch NICHT löst:** die **Bandbreite**. Jeder Fill schickt das
+komplette Gebiet an jeden Client (~31 KB/s je Client); das skaliert mit
+derselben Vertex-Zahl und keine Boolean-Engine berührt es. Eigener Fund, eigenes
+Ticket.

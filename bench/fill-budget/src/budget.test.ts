@@ -65,8 +65,8 @@ const ARENAS = [
 describe('fill cost under a saturating load', () => {
   for (const arena of ARENAS) {
     const { arenaSizeWU, peakVertices, closures, deaths } = arena;
-    it(`${String(arenaSizeWU)} WU · 8 bots · 5 min paints its recorded ${String(peakVertices)} vertices`, () => {
-      const run = runArena({ arenaSizeWU, bots: 8, seconds: 300, seed: 20260730 });
+    it(`${String(arenaSizeWU)} WU · 8 bots · 5 min paints its recorded ${String(peakVertices)} vertices`, async () => {
+      const run = await runArena({ arenaSizeWU, bots: 8, seconds: 300, seed: 20260730 });
       const stats = statsOf(run);
       const drift = driftFrom(peakVertices, stats.peakVertices);
       const driftPct = `${(drift * 100).toFixed(1)} %`;

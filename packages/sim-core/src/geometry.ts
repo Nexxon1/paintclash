@@ -21,9 +21,11 @@ const COLLINEAR_EPS_WU = 1e-9;
  * Boolean geometry runs on a fixed 1e-7 WU lattice (Clipper-style): every
  * coordinate entering or leaving the clipper is snapped. Near-coincident
  * float garbage collapses to *exact* coincidence — which the clipper handles
- * robustly — and subnormal doubles (a verified polyclip corruption trigger:
- * `difference` emitted a hole outside its outer ring) cannot occur at all.
- * 200 WU × 1e7 < 2^53, so the lattice is exact in doubles.
+ * robustly — and subnormal doubles (a corruption trigger verified against the
+ * engine of the day: `difference` emitted a hole outside its outer ring)
+ * cannot occur at all. 200 WU × 1e7 < 2^53, so the lattice is exact in
+ * doubles. Why this width survived the ticket-23 engine swap unchanged, when
+ * ADR-0007 says widths do not transfer between engines: see `clipper.ts`.
  */
 const LATTICE_INV_WU = 1e7;
 

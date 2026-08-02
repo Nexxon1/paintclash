@@ -6,16 +6,20 @@
  * shade correctly. Pure polygon math, no three.js — render-only, never part
  * of the simulation truth.
  *
- * Cost model (all numbers measured): the sim's clipper, polyclip-ts, runs
- * on arbitrary-precision arithmetic — a one-shot band difference costs ~1 s
- * at 500 trail points and froze the frame while crossing enemy land. Here
- * cosmetics beat exactness, so this module uses `polygon-clipping` (same
- * Martinez sweep, float + robust predicates, ~10× faster; the sim keeps
- * polyclip-ts for its determinism guarantees) and `PlateauCarver` keeps the
- * per-update work small on top: grooves are monotone while a trail lives,
- * so each update clips ONLY the segments added since the last one, against
- * ONLY the carved pieces they touch — a decimated full recarve runs just
- * when the base plateau or a crossing trail is replaced.
+ * Cost model (all numbers measured): the sim's clipper USED to be polyclip-ts,
+ * which runs on arbitrary-precision arithmetic — a one-shot band difference
+ * costs ~1 s at 500 trail points and froze the frame while crossing enemy
+ * land. Here cosmetics beat exactness, so this module took `polygon-clipping`
+ * instead (same Martinez sweep, float + robust predicates, ~10× faster), and
+ * `PlateauCarver` keeps the per-update work small on top: grooves are monotone
+ * while a trail lives, so each update clips ONLY the segments added since the
+ * last one, against ONLY the carved pieces they touch — a decimated full
+ * recarve runs just when the base plateau or a crossing trail is replaced.
+ *
+ * Ticket 23 moved the SIM onto the same engine for the same factor
+ * (`sim-core/clipper.ts`), so the two are no longer split by precision — only
+ * by lattice width, which stays a per-caller decision: 1e-4 here, 1e-7 there
+ * (see below, and `clipper.ts` for why the sim cannot follow).
  *
  * Float speed is bought with float robustness, and that bill came due in
  * ticket 25: unsnapped inputs made the sweep grind for SECONDS on geometry

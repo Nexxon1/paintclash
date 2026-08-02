@@ -9,8 +9,8 @@ import { driftFrom, runArena, saturationOf, statsOf, totalVertices } from './har
  * budget run below would measure an empty arena and pass for the wrong reason.
  */
 describe('fill-budget harness', () => {
-  it('paints: bots fill, territories grow vertices', () => {
-    const run = runArena({ arenaSizeWU: 200, bots: 8, seconds: 20, seed: 20260730 });
+  it('paints: bots fill, territories grow vertices', async () => {
+    const run = await runArena({ arenaSizeWU: 200, bots: 8, seconds: 20, seed: 20260730 });
     expect(run.closures).toBeGreaterThan(10);
     const stats = statsOf(run);
     // A 6×6 start block is 4 vertices — anything above 8 bots × 4 is fill.

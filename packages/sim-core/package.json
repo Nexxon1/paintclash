@@ -12,6 +12,9 @@
   },
   "dependencies": {
     "@paintclash/shared": "workspace:*",
+    "polygon-clipping": "^0.15.7"
+  },
+  "devDependencies": {
     "polyclip-ts": "^0.16.8"
   }
 }

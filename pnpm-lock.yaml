@@ -228,6 +228,10 @@ importers:
       '@paintclash/shared':
         specifier: workspace:*
         version: link:../shared
+      polygon-clipping:
+        specifier: ^0.15.7
+        version: 0.15.7
+    devDependencies:
       polyclip-ts:
         specifier: ^0.16.8
         version: 0.16.8
