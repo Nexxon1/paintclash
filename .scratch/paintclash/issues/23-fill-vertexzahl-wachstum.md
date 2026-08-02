@@ -432,3 +432,38 @@ Die Vertex-Kurve ist eine Eigenschaft der Regeln, nicht der Engine.
   („vielleicht die nachhaltigste Lösung"). Ein Ticket auf `wontfix` zu setzen, während der
   Mensch am selben Tag danach fragt, wäre eine Entscheidung, die diesem Lauf nicht gehört.
   Sie steht als offener Punkt in Ticket 24s Kommentar.
+
+### Nachtrag 2026-08-02 — gegen Produktion bestätigt
+
+Der offene Punkt aus Punkt 6 der Answer ist erledigt: der Mensch hat deployt und gespielt
+(„dieser Commit hat die Lags deutlich minimiert"), und die Messung dazu liegt jetzt vor.
+
+**Das Symptom, gemessen wie Ticket 25 es gemessen hat** — Snapshot-Lücken an einem echten
+Socket gegen die Produktions-Arena (1 Client + Bots, also der todarme Fall):
+
+| Snapshot-Lücken, 300 s        | Ticket 25 (vorher, 210 s) | **heute (300 s)** |
+| ----------------------------- | ------------------------- | ----------------- |
+| Lücken ≥ 100 ms               | 36 (120–250 ms)           | **11**            |
+| davon ≥ 200 ms                | viele                     | **0**             |
+| grösste Lücke                 | ~250 ms                   | **185 ms**        |
+| in der letzten Minute         | **26 von 36**             | **2 von 11**      |
+| Verlauf                       | **zunehmend ab t ≈ 147 s** | **kein Trend**    |
+| ausgelassene Ticks            | —                         | **0 von 6 552**   |
+
+Das Muster ist damit weg, nicht nur die Zahl: vorher verdichteten sich die Hänger zum Ende
+hin, heute liegen die elf verstreut und der letzte Abschnitt ist der ruhigste. p50 45 ms,
+p90 54 ms, p99 67 ms.
+
+**Ein Instrumentenfehler kam dabei ans Licht und ist behoben.** Die erste Fassung dieser
+Messung nutzte `Date.now()` und meldete „~3-s-Aussetzer alle ~35 s". Eine Kontrolle im
+selben Prozess (50-ms-Heartbeat) zeigte, dass die Aussetzer **nicht existieren**: p99
+54 ms, null Aussetzer auf `performance.now()`. Es war die WSL2-Wanduhr. Derselbe Fehler
+steckte in `bench/prod-arena` und hat die Ticket-16-Zahlen verfälscht — Details und
+Korrektur in [Ticket 18](18-prod-tickrate-anomalie.md) und
+[`docs/benchmarks/do-cpu-benchmark.md`](../../../docs/benchmarks/do-cpu-benchmark.md).
+Ohne die Kontrolle hätte diese Answer sechs Server-Stalls behauptet, die es nicht gab.
+
+**Eine Zahl, die dabei abfällt und dieses Ticket betrifft:** die Arena tickt real mit
+~21,8 Hz, ein Tick hat also **~45,8 ms** statt 50 ms. Das Budget ist ~8 % enger als
+überall angeschrieben. Gegen p99 12,5 ms lokal ist das folgenlos; in eine künftige
+Budget-Rechnung gehört es.

@@ -16,17 +16,31 @@ import { SimClient } from '@paintclash/sim-client';
 import { LoopPilot, type Pose } from './pilot.js';
 
 /**
- * The newest server tick a client has seen, stamped with the local wall clock.
+ * The newest server tick a client has seen, stamped with the local MONOTONIC
+ * clock.
  *
  * This is the production stopwatch, and on Cloudflare it is the ONLY one. The
  * arena's own clock is slaved to its timer schedule — it reports a perfect
  * 50.00 ms cadence no matter what a tick really cost (ticket 16/18, see
  * `tick-cost.ts`). Snapshots arriving out here cannot be faked that way: if a
  * tick overruns, the next snapshot is simply late, and the rate drops.
+ *
+ * `performance.now()`, not `Date.now()`, and that is not a detail — it is the
+ * bug this file shipped with until ticket 23. `Date.now()` follows the host's
+ * wall clock, and under WSL2 that clock is re-synced in jumps: measured on the
+ * dev machine, a same-process 50 ms heartbeat read a clean p99 of 54 ms on the
+ * monotonic clock while `Date.now()` invented **~3 s stalls every ~35 s** and
+ * over-reported a 120 s span as 132 s. An 8 % inflated denominator turns a real
+ * 21,9 Hz into a reported 20,1 Hz — which is exactly the "the anomaly did not
+ * occur" that ticket 16 recorded and ticket 18 could not reconcile with
+ * `tests/soak/tickrate-probe.mjs`. That probe used `performance.now()` all
+ * along and was right.
+ *
+ * Anything here that divides by elapsed time must use the monotonic clock.
  */
 interface TickMark {
   tick: number;
-  atMs: number;
+  atMonoMs: number;
 }
 
 export interface ProbeOptions {
@@ -82,7 +96,7 @@ interface Painter {
 /** Server ticks per real second between two marks; `null` if there is no span. */
 function rateBetween(from: TickMark | null, to: TickMark | null): number | null {
   if (!from || !to) return null;
-  const seconds = (to.atMs - from.atMs) / 1000;
+  const seconds = (to.atMonoMs - from.atMonoMs) / 1000;
   if (seconds <= 0 || to.tick <= from.tick) return null;
   return (to.tick - from.tick) / seconds;
 }
@@ -123,7 +137,7 @@ async function connect(baseUrl: string, name: string): Promise<Painter> {
   client.onSnapshot = (snapshot) => {
     // Stamped for EVERY snapshot, before anything can bail out: this pair is
     // the only honest stopwatch a deployed arena has (see `TickMark`).
-    painter.mark = { tick: snapshot.tick, atMs: Date.now() };
+    painter.mark = { tick: snapshot.tick, atMonoMs: performance.now() };
     const id = client.playerId;
     const size = client.arenaSizeWU;
     if (id === null || size === null) return;
@@ -165,8 +179,8 @@ export async function runLoad(options: ProbeOptions): Promise<ProbeResult> {
     }
     // Everyone spawned before the clock starts: a sample taken while the arena
     // is still filling up would average an empty arena into the result.
-    const spawnDeadline = Date.now() + 20_000;
-    while (Date.now() < spawnDeadline && painters.some((p) => p.client.self() === null)) {
+    const spawnDeadline = performance.now() + 20_000;
+    while (performance.now() < spawnDeadline && painters.some((p) => p.client.self() === null)) {
       await sleep(100);
     }
     const joined = painters.filter((p) => p.client.self() !== null).length;
@@ -181,14 +195,14 @@ export async function runLoad(options: ProbeOptions): Promise<ProbeResult> {
         null,
       );
 
-    const started = Date.now();
+    const started = performance.now();
     samples.push({ atSeconds: 0, stats: await fetchStats(baseUrl), mark: newestMark() });
     for (;;) {
-      const elapsed = (Date.now() - started) / 1000;
+      const elapsed = (performance.now() - started) / 1000;
       if (elapsed >= seconds) break;
       await sleep(Math.min(sampleEverySeconds, seconds - elapsed) * 1000);
       samples.push({
-        atSeconds: Math.round((Date.now() - started) / 1000),
+        atSeconds: Math.round((performance.now() - started) / 1000),
         stats: await fetchStats(baseUrl),
         mark: newestMark(),
       });
@@ -284,8 +298,8 @@ export function report(result: ProbeResult): string {
     // accumulated overrun, in ms — the one quantity that survives both the
     // frozen in-DO clock and network jitter, because it is measured over
     // minutes at the far end of the wire.
-    if (first && final && final.atMs > first.atMs) {
-      const elapsedMs = final.atMs - first.atMs;
+    if (first && final && final.atMonoMs > first.atMonoMs) {
+      const elapsedMs = final.atMonoMs - first.atMonoMs;
       const nominal = elapsedMs / TICK_DT_MS;
       const delivered = final.tick - first.tick;
       const deficit = nominal - delivered;

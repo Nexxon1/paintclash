@@ -54,3 +54,51 @@ Option 1 („akzeptieren + dokumentieren") wird noch billiger — es gäbe dann 
 kalibrieren, sondern nur etwas zu beobachten. Ein wiederholbares Messwerkzeug liegt jetzt
 vor; `pnpm --filter @paintclash/bench-prod-arena bench` gegen Produktion reicht für den
 nächsten Eintrag.
+
+### 2026-08-02 (Ticket 23) — Eintrag 2 der Messreihe, und er kippt Eintrag 1: die Anomalie ist bestätigt
+
+Gemessen gegen `paintclash.secure-data.workers.dev` nach dem Deploy des Engine-Tauschs:
+
+| Lauf                                            | Dauer | gelieferte Ticks | Rate         |
+| ----------------------------------------------- | ----- | ---------------- | ------------ |
+| 16 Clients (Populationsgrenze), `bench/prod-arena` | 300 s | 6 538            | **21,79 Hz** |
+| 1 Client + Bots (Produktions-Default), Sonde     | 300 s | 6 553            | **21,85 Hz** |
+| 1 Client + Bots, Kontrolllauf                    | 120 s | 2 624            | **21,87 Hz** |
+
+Damit liegt die Rate **genau im Band der Erstmessung vom 2026-07-21 (21,79–22,20 Hz)**. Die
+Anomalie ist **nicht transient**. Und sie ist nicht Tick-Arbeit: über den 16er-Lauf blieben
+die 30-s-Fenster bei 21,28–22,08 Hz, während die Vertices von 167 auf 4 600 stiegen —
+flach über den ganzen Lastbereich, wie schon 2026-08-01 argumentiert. Der Server liess
+dabei **keinen einzigen Snapshot aus**: über 6 552 Lücken stieg die Tick-Nummer immer um
+genau 1.
+
+**Eintrag 1 war ein Instrumentenfehler, kein Datenpunkt.** Der Kommentar vom 2026-08-01
+meldete 20,09/20,10 Hz und schloss daraus „das Symptom war an diesem Tag nicht vorhanden".
+Beide Läufe kamen aus `bench/prod-arena`, und der stempelte seine Tick-Marken mit
+**`Date.now()`**. Unter WSL2 wird diese Uhr in Sprüngen nachgezogen; im selben Prozess
+gemessen erfand sie **~3-s-Aussetzer alle ~35 s** und meldete eine 120-s-Spanne als 132 s,
+während ein 50-ms-Heartbeat auf `performance.now()` gleichzeitig p99 54 ms und **null**
+Aussetzer las. Ein um ~8 % zu grosser Nenner macht aus 21,9 Hz gemeldete 20,1 Hz — die
+Differenz ist vollständig erklärt.
+
+`tests/soak/tickrate-probe.mjs`, die Sonde der Erstmessung, rechnete von Anfang an mit
+`performance.now()`. **Die beiden Instrumente widersprachen sich, weil eines kaputt war,
+und das kaputte war das jüngere.** `probe.ts` ist seit Ticket 23 monoton
+(`TickMark.atMonoMs`); der Nachtrag in
+[`docs/benchmarks/do-cpu-benchmark.md`](../../../docs/benchmarks/do-cpu-benchmark.md)
+korrigiert die Ticket-16-Tabelle.
+
+**Was das für die Optionen heisst.** Option 1 („akzeptieren + dokumentieren") wird dadurch
+nicht teurer, aber die Begründung ändert sich: nicht „war ohnehin nur ein Ausrutscher",
+sondern „gilt dauerhaft, betrifft alle in einer Arena gleich, und wir schreiben das
+Spieltempo entsprechend auf". Konkret unaufgeschrieben und ab jetzt zu wissen:
+
+- Das Kopftempo liegt real bei ~9,8 statt 9 WU/s, alle Balance-Werte aus Ticket 11 sind
+  auf Produktion um ~9 % skaliert.
+- **Ein Tick hat real ~45,8 ms statt 50 ms Zeit.** Das Tick-Budget ist ~8 % enger als
+  überall angeschrieben — bei den Fill-Kosten nach Ticket 23 (lokal p99 12,5 ms) folgenlos,
+  aber es gehört in jede künftige Budget-Rechnung.
+
+Die Akzeptanz verlangt „≥ 3 Tage/Colos". Dies ist Eintrag 2, gemessen an **einem** Tag aus
+**einem** Colo — die Reihe ist noch nicht voll. Was sie jetzt schon leistet: die Frage ist
+nicht mehr „tritt es auf?", sondern nur noch „wie konstant ist der Faktor?".

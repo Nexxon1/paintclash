@@ -415,3 +415,56 @@ verlangt. Sie verliert keine Zeit an die Arbeit; sie läuft ~0,5 % vor.
 | raster/grid | 64 | 0,101 | 0,116 | 0,116 | 934 | 12,8 |
 | raster/grid | 96 | 0,193 | 0,224 | 0,224 | 1 627 | 19,2 |
 | raster/grid | 128 | 0,282 | 0,320 | 0,320 | 2 867 | 25,6 |
+
+## Nachtrag (2026-08-02, Bau-Ticket 23) — der Ticket-16-Nachtrag las die falsche Uhr
+
+> **⚠ Korrektur.** Zwei Zahlen des Nachtrags von Ticket 16 sind falsch, und zwar aus einem
+> Instrumentenfehler: `bench/prod-arena` stempelte seine Tick-Marken mit **`Date.now()`**.
+> Betroffen sind die gemessene Rate (**20,09/20,10 Hz** — richtig ist **~21,8 Hz**) und der
+> daraus abgeleitete Satz „die Anomalie aus Ticket 18 trat in diesen Läufen nicht auf".
+> Die **Schlussfolgerungen** des Nachtrags überleben die Korrektur, teils verstärkt; s. u.
+
+### Was der Fehler war
+
+`Date.now()` folgt der Wanduhr des Hosts, und die wird unter WSL2 in Sprüngen nachgezogen.
+Gemessen auf derselben Maschine, im selben Prozess, gleichzeitig:
+
+| 50-ms-Heartbeat, 120 s | `performance.now()` |
+| ---------------------- | ------------------- |
+| p50                    | 50 ms               |
+| p99                    | 54 ms               |
+| max                    | 77 ms               |
+| Aussetzer ≥ 1 s        | **0**               |
+
+Derselbe Lauf mit `Date.now()` gemessen erfand **~3-s-Aussetzer alle ~35 s** und meldete
+eine 120-s-Spanne als 132 s. Ein um ~8 % aufgeblähter Nenner macht aus real 21,9 Hz
+gemeldete 20,1 Hz — exakt die Differenz, die im Raum stand.
+
+`tests/soak/tickrate-probe.mjs` rechnete von Anfang an mit `performance.now()`. **Die Sonde
+hatte recht, der Bench hatte unrecht** — und dass beide sich widersprachen, war der
+sichtbare Teil dieses Fehlers, der ein Jahr lang als „die Anomalie ist transient" gelesen
+wurde. Seit Ticket 23 ist `probe.ts` monoton (`TickMark.atMonoMs`).
+
+### Die korrigierte Messung (2026-08-02, nach dem Engine-Tausch)
+
+| Lauf                                | Entities | Vertices (Ende) | Fills | Tode | gelieferte Ticks / 300 s | Rate          |
+| ----------------------------------- | -------- | --------------- | ----- | ---- | ------------------------ | ------------- |
+| An der Populationsgrenze            | 16       | 4 600           | 1 373 | 13   | 6 538                    | **21,79 Hz**  |
+| Produktions-Default (1 Mensch + Bots) | 8      | —               | —     | —    | 6 553                    | **21,85 Hz**  |
+
+Fenster-Raten über den 16er-Lauf: 21,28–22,08 Hz, während die Vertices von 167 auf 4 600
+stiegen. **Flach über den ganzen Lastbereich** — das Argument des Ticket-16-Nachtrags gilt
+unverändert, nur um den richtigen Mittelwert herum: ein lastabhängiger Anteil wäre sichtbar,
+also gehört der Versatz dem Timer und nicht der Arbeit.
+
+### Was sich dadurch ändert — und was nicht
+
+- **Populationsgrenze 16: weiterhin bestätigt**, sogar deutlicher. Bei doppelter Population
+  und 4,6 Fills/s bleibt die Kadenz flach.
+- **Der 4×-Hardware-Faktor bleibt als Worst Case widerlegt** — die Arena verliert keine
+  Ticks; sie liefert 8,9 % **mehr** als das nominelle Raster.
+- **Neu und unangenehm:** ein Tick hat auf Produktion real nur **~45,9 ms** statt 50 ms
+  Zeit. Das Budget ist also ~8 % enger als überall angeschrieben. Bei den Kosten nach
+  Ticket 23 (lokal p99 12,5 ms) ist das folgenlos, aber die Zahl gehört korrekt notiert.
+- **Ticket 18 ist damit nicht transient, sondern bestätigt** — und sein „Eintrag 1", der
+  das Gegenteil sagte, war dieses Instrument. Details dort.
