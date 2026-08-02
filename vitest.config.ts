@@ -9,10 +9,16 @@ import { defineConfig } from 'vitest/config';
  * file, so a module with real logic in it cannot inherit the exemption.
  * Scenario/E2E tests live
  * outside this config (`tests/scenario`, `tests/e2e`) and do not count toward %.
+ *
+ * The one exception is `tests/scenario/lib/`: the pure measures a choreography
+ * is written in terms of (ticket 27). They are unit tests by CONTEXT.md's own
+ * definition — no server, no socket — so they run here in milliseconds rather
+ * than starting workerd. They are test scaffolding, not shipped code, so like
+ * every other `*.test.ts` they stay out of the coverage numerator (below).
  */
 export default defineConfig({
   test: {
-    include: ['packages/**/*.test.ts'],
+    include: ['packages/**/*.test.ts', 'tests/scenario/lib/**/*.test.ts'],
     // `.only` fails the run unless explicitly allowed (spec §9.6).
     allowOnly: false,
     coverage: {

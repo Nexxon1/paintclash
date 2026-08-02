@@ -9,6 +9,7 @@ import {
 import { SimClient, type DeathUpdate } from '@paintclash/sim-client';
 import { pointInTerritory } from '@paintclash/sim-core';
 import { describe, expect, it } from 'vitest';
+import { longestRePassWU, wallSlides } from './lib/wall-slide';
 
 /** Head travel per tick — 0.45 WU at the spec §10 start values. */
 const STEP_WU = BALANCE.movement.speedWuPerSec * TICK_DT_SEC;
@@ -54,8 +55,14 @@ async function until<T>(
   }
 }
 
-async function connect(name: string): Promise<{ client: SimClient; ws: WebSocket }> {
-  const response = await SELF.fetch('https://arena/ws', {
+interface Joined {
+  client: SimClient;
+  ws: WebSocket;
+}
+
+/** A joined sim-client on a socket to `url`, on its own caller address. */
+async function openSocket(url: string, name: string): Promise<Joined> {
+  const response = await SELF.fetch(url, {
     headers: { Upgrade: 'websocket', 'CF-Connecting-IP': freshCaller() },
   });
   const ws = response.webSocket;
@@ -75,6 +82,50 @@ async function connect(name: string): Promise<{ client: SimClient; ws: WebSocket
   });
   client.join();
   return { client, ws };
+}
+
+/** A player in the public arena, which every test in this file shares. */
+function connect(name: string): Promise<Joined> {
+  return openSocket('https://arena/ws', name);
+}
+
+/**
+ * A private room holding exactly one player — a started game, not a lobby.
+ *
+ * Ticket 27: a choreography in the shared arena starts wherever the seeded spawn
+ * sequence has got to, and that depends on who joined before it. The wall test
+ * below passed as the fourth test in this file and failed every single time it
+ * was run alone — a test nobody can iterate on, because the one way to run it in
+ * isolation is the one way it does not work. Its own room is its own Arena DO
+ * (ADR-0004): same worker, same wire, same rules, but the head is alone in it and
+ * spawns in the same place whether this file runs whole or filtered.
+ */
+async function soloRoom(name: string, mapSizeWU: number): Promise<Joined> {
+  const response = await SELF.fetch('https://arena/api/rooms', {
+    method: 'POST',
+    headers: { 'CF-Connecting-IP': freshCaller() },
+    // `playerLimit: 2` is the smallest room the spec allows
+    // (`BALANCE.room.playerLimitMin`); only the host ever joins, so the arena
+    // holds exactly one head. Bots off explicitly (README rule 5) even though
+    // that is already the default: entities painting through the scene would
+    // make this a maneuver that mostly works, which is what this ticket was
+    // about.
+    body: JSON.stringify({ playerLimit: 2, mapSizeWU, botTarget: 0 }),
+  });
+  if (response.status !== 200) {
+    throw new Error(
+      `the room endpoint refused a creation (${String(response.status)}) — is this ` +
+        `call sharing a caller address?`,
+    );
+  }
+  const room = (await response.json()) as { code: string; hostToken: string };
+  const search = new URLSearchParams({ room: room.code, host: room.hostToken });
+  const host = await openSocket(`https://arena/ws?${search.toString()}`, name);
+  // A room opens as a lobby; only the host's start turns members into players
+  // (spec §2.6). Here the host is the only member, so the start is immediate.
+  await until(() => host.client.lobby, `the lobby of room ${room.code}`);
+  host.client.startRoom();
+  return host;
 }
 
 interface Pose {
@@ -200,32 +251,6 @@ class WaypointPilot {
     const cy = Math.min(this.arenaSizeWU, Math.max(0, target[1]));
     return Math.hypot(cx - self.x, cy - self.y) < 2;
   }
-}
-
-/**
- * Spans of a coordinate series between its direction reversals. The trail
- * itself is not on the wire past the join-time world sync (trails derive from
- * the snapshots), so a wall re-pass is measured from where the head went: two
- * long runs in opposite directions cover the same stretch twice.
- */
-function monotonicRuns(series: readonly number[]): number[] {
-  const runs: number[] = [];
-  let direction = 0;
-  let start = series[0] ?? 0;
-  let previous = start;
-  for (const value of series) {
-    const step = Math.sign(value - previous);
-    if (step !== 0) {
-      if (direction !== 0 && step !== direction) {
-        runs.push(Math.abs(previous - start));
-        start = previous;
-      }
-      direction = step;
-    }
-    previous = value;
-  }
-  runs.push(Math.abs(previous - start));
-  return runs;
 }
 
 /** A death stamped with the newest tick known when its frame arrived. */
@@ -528,18 +553,51 @@ describe('death over the real wire (ticket 05)', () => {
 });
 
 describe('the soft barrier stays soft (ticket 19, spec §2.4)', () => {
+  /**
+   * The map this choreography gets its own room on. Big enough that a 16 WU
+   * slide fits beside the start block with `CLEAR_WU` to spare and `EDGE_WU` off
+   * the side walls wherever the spawn lands; small enough that the drive to the
+   * near wall is a few seconds. It is a real size off the spec §10.4 ladder
+   * (4 players), not a number invented for the test.
+   */
+  const MAP_WU = 140;
+  /** Slide length. The pilot turns ~2 WU short of each end (its reach radius). */
+  const LEG_WU = 16;
+  /** How far out of the start block the slide stays, in x. */
+  const CLEAR_WU = 20;
+  /** How far off the side walls both ends of the slide stay. */
+  const EDGE_WU = 12;
+  /**
+   * No reversal shorter than four ticks of head travel counts as one.
+   *
+   * A head pressed into the wall saws back and forth by a fraction of a step
+   * while it slides — that is what ticket 27 was: the sawtooth read as reversals
+   * chopped every ~6 WU leg into `3.8/0.1/0.8/0.1/0.8/…`, and the premise failed
+   * with the maneuver working fine. Four ticks is well above the retreats
+   * observed (≤ 0.8 WU ≈ 2 ticks) and well below a leg (~14 WU ≈ 31 ticks).
+   */
+  const SAWTOOTH_DEADBAND_WU = 4 * STEP_WU;
+  /**
+   * The self-cut grace ticket 19 removed: 4.5 WU of path behind the head were
+   * forgiven, and every re-pass beyond that was a death at distance 0. A re-pass
+   * has to be LONGER than that window or this test watches over nothing — the
+   * old rule would have forgiven it too. `BALANCE.trail.selfCutGraceWU` is gone;
+   * the number lives on here as the yardstick the premise is measured against.
+   */
+  const REMOVED_GRACE_WU = 4.5;
+
   it(
     'jittering along the wall never kills, however often the head re-passes its own line',
-    // Budget = the drive to the wall (≤ 100 WU at 9 WU/s ≈ 12 s) plus 120
-    // pinned ticks (6 s), with the generous wall-clock ceiling README rule 3
-    // asks for: a slow runner makes this slower, not red.
+    // Budget = the drive to the wall (≤ 70 WU at 9 WU/s ≈ 8 s) plus 120 pinned
+    // ticks (6 s), with the generous wall-clock ceiling README rule 3 asks for:
+    // a slow runner makes this slower, not red.
     { timeout: 90_000 },
     async () => {
-      const flyer = await connect('wallflower');
+      const flyer = await soloRoom('wallflower', MAP_WU);
       try {
         await until(() => flyer.client.self(), 'spawn');
         const selfId = flyer.client.playerId ?? -1;
-        const size = flyer.client.arenaSizeWU ?? BALANCE.arena.sizeWU;
+        const size = flyer.client.arenaSizeWU ?? MAP_WU;
         const deaths = trackDeaths(flyer.client);
 
         // Slide back and forth along the nearer horizontal wall, so the head
@@ -554,18 +612,18 @@ describe('the soft barrier stays soft (ticket 19, spec §2.4)', () => {
         // clamp stays engaged and only slides the head sideways, and the
         // heading can never drift out to wall-parallel (bearing stays within
         // atan2(LIFT, ±LEG) of straight-on) the way a held turn would.
-        const LEG_WU = 9;
         const LIFT_WU = 10;
         const LEGS = 8;
         const home = centerOf(
           bounds(await until(() => flyer.client.territories.get(selfId), 'the start block')),
         );
         const wallY = home[1] > size / 2 ? size : 0;
-        // Clear of home in x, so a leg cannot re-enter the block and close a
-        // loop — a fill would reset the trail this test is about.
-        const near =
-          home[0] < size / 2 ? Math.min(size - 12, home[0] + 25) : Math.max(12, home[0] - 25);
-        const far = near + (near < size / 2 ? LEG_WU : -LEG_WU);
+        // The slide runs AWAY from home in x and both its ends stay `CLEAR_WU`
+        // out, so no leg can re-enter the start block and close a loop — a fill
+        // would reset the trail this test is about.
+        const away = home[0] < size / 2 ? 1 : -1;
+        const near = home[0] + away * CLEAR_WU;
+        const far = near + away * LEG_WU;
         const pilot = new WaypointPilot(size);
         pilot.fly(
           Array.from({ length: LEGS }, (_, i): Point => [
@@ -573,42 +631,70 @@ describe('the soft barrier stays soft (ticket 19, spec §2.4)', () => {
             wallY === 0 ? -LIFT_WU : size + LIFT_WU,
           ]),
         );
+        // Clamping either end into the arena instead would quietly shorten the
+        // slide and leave the re-pass below its threshold for a reason nothing
+        // in the failure would name (README rule 2).
+        const fit =
+          `the slide does not fit beside the start block at x=${home[0].toFixed(1)} ` +
+          `(${near.toFixed(1)}…${far.toFixed(1)}, needs ${String(EDGE_WU)} WU off both ` +
+          `side walls of a ${String(size)} WU map)`;
+        expect(Math.min(near, far), fit).toBeGreaterThanOrEqual(EDGE_WU);
+        expect(Math.max(near, far), fit).toBeLessThanOrEqual(size - EDGE_WU);
 
         const PINNED_TICKS = 120;
         let pinnedTicks = 0;
-        const wallXs: number[] = [];
+        // One entry per UNBROKEN stay on the wall. Two x values from either side
+        // of an excursion say nothing about driving back over one's own line, so
+        // they must not be measured as if they did.
+        const wallStays: number[][] = [[]];
         flyer.client.onSnapshot = (snapshot) => {
           const self = snapshot.players.find((p) => p.id === selfId);
           if (!self) return;
+          const stay = wallStays[wallStays.length - 1];
           if (self.y === wallY) {
             pinnedTicks += 1;
-            wallXs.push(self.x);
+            stay?.push(self.x);
+          } else if (stay?.length) {
+            wallStays.push([]);
           }
           flyer.client.queueTurn(pilot.steer(self));
           flyer.client.flush();
         };
 
         const jittered = await waitFor(() => pinnedTicks >= PINNED_TICKS, 60_000);
+
+        // The rule comes FIRST, before the premises that qualify it. A death is
+        // a positive observation and needs no premise to mean something; the
+        // premises below exist only to prove that an EMPTY list means something.
+        // Ordered the other way round, the old grace semantics take this test
+        // down on "the head never drove back over its own line" — true, but only
+        // because it kept dying halfway through and respawning, which is the
+        // finding, not the symptom to report (ticket 27).
+        expect(deaths).toEqual([]);
+
         // Every premise names itself (README rule 2): "it did not work" costs
         // the next session a debugging round.
         expect(
           jittered,
           `the head never held the wall for ${String(PINNED_TICKS)} ticks (best ${String(pinnedTicks)}, wall y=${String(wallY)})`,
         ).toBe(true);
-        // …and it really RE-passed: two long slides in opposite directions
-        // over one stretch of wall. Length is the point — a short reversal is
-        // just the head-glued tip touching itself, which was always forgiven.
-        // These runs are half a leg or more, i.e. beyond anything a grace
-        // window on path length used to cover.
-        const passes = monotonicRuns(wallXs).filter((run) => run > LEG_WU / 2);
+        // …and it really RE-passed: it drove back over a stretch of wall it had
+        // already laid trail on, and a stretch longer than the removed grace —
+        // otherwise the old rule would have forgiven this run too and the green
+        // above would say nothing.
+        const slidesPerStay = wallStays.map((stay) => wallSlides(stay, SAWTOOTH_DEADBAND_WU));
+        const rePassWU = Math.max(...slidesPerStay.map(longestRePassWU));
         expect(
-          passes.length,
-          `the head never slid a full leg back over its own line (runs ${monotonicRuns(wallXs)
-            .map((r) => r.toFixed(1))
-            .join('/')} WU along y=${String(wallY)})`,
-        ).toBeGreaterThanOrEqual(2);
-
-        expect(deaths).toEqual([]);
+          rePassWU,
+          `the head drove back over only ${rePassWU.toFixed(1)} WU of its own wall line, ` +
+            `and needs more than ${String(REMOVED_GRACE_WU)} WU to have out-run the removed ` +
+            `grace (slides ${slidesPerStay
+              .map((slides) =>
+                slides.map((slide) => `${slide.from.toFixed(1)}→${slide.to.toFixed(1)}`).join(' '),
+              )
+              .filter(Boolean)
+              .join(' | ')} along y=${String(wallY)})`,
+        ).toBeGreaterThan(REMOVED_GRACE_WU);
       } finally {
         flyer.client.onSnapshot = null;
         flyer.ws.close();

@@ -56,3 +56,20 @@ Drei der vier hängen daran, dass eine Orientierung **exakt** 0 wird — und das
 **Nicht angefasst:** `spec.md` (gelockt) sagt in §10.4 weiter „Kollisionsradius 0,5 WU für Trail-Schnitt". Das gilt jetzt nur noch für _fremde_ Trails. Wie bei der Neu-Tarierung von `minFillAreaWU2` in Ticket 04 steht die Abweichung begründet im Code (`balance.ts`) und in `CONTEXT.md`, nicht als Edit in der gelockten Spec.
 
 ## Comments
+
+### 2026-08-02 (Ticket 27) — der Szenario-Test misst den Re-Pass jetzt anders
+
+Der oben unter DoD 5 beschriebene Test („the soft barrier stays soft") steht unverändert und
+prüft dieselbe Regel, aber zwei Angaben in diesem Answer sind überholt:
+
+- **`monotonicRuns` gibt es nicht mehr.** Die Funktion schnitt an jedem Vorzeichenwechsel und
+  zerlegte damit ein echtes Bein in Krümel, sobald der wandgepresste Kopf beim Gleiten sägte —
+  siehe [Ticket 27](27-wandgezappel-praemisse.md). Ersetzt durch ein totband-gefiltertes
+  Beinschneiden plus die **Überlappung** zweier Gegenrichtungs-Beine
+  (`tests/scenario/lib/wall-slide.ts`).
+- **Nicht mehr „12 Zyklen, ~7 WU je Halbzyklus" in der öffentlichen Arena**, sondern längere
+  Beine in einem **eigenen privaten Raum**, damit die Choreografie auch einzeln fährt. Gemessene
+  Rückpassage: 11,2 WU gegen die 4,5 WU, die die entfernte Karenz gedeckt hätte.
+
+Die Regel selbst — Selbstschnitt = transversale Kreuzung, Wand-Gleiten überlebt — ist unberührt;
+der Test ist gegen die alte Karenz-Semantik neu rot verifiziert.

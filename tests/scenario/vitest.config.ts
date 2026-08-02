@@ -9,8 +9,14 @@ export default defineWorkersConfig({
   test: {
     // `bots.test.ts` is excluded on purpose: it needs an arena env with the
     // population switched ON and runs from `vitest.bots.config.ts`.
+    //
+    // `lib/` holds the pure measures the choreographies are written in terms of
+    // (ticket 27). A scenario test is a stack-spanning integration test by
+    // definition (CONTEXT.md, "Szenario-Test" — "abgegrenzt gegen Unit-Test"),
+    // so those unit tests run in the root Vitest project instead of spinning up
+    // workerd for arithmetic.
     include: ['**/*.test.ts'],
-    exclude: ['bots.test.ts', 'node_modules/**'],
+    exclude: ['bots.test.ts', 'lib/**', 'node_modules/**'],
     allowOnly: false,
     testTimeout: 30_000,
     // NO retry, deliberately (unlike `playwright.config.ts`, which retries
