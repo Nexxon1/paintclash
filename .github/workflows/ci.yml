@@ -60,6 +60,11 @@ jobs:
       - run: pnpm --filter @paintclash/bench-do-cpu test
       - run: pnpm --filter @paintclash/bench-fill-budget test
       - run: pnpm --filter @paintclash/bench-carve-budget test
+      # territory-bandwidth's smoke test guards the same premise plus one more:
+      # that the tolerance sweep actually decimates. A sweep whose "after"
+      # column silently equals its "before" column is the one failure its own
+      # table could not reveal, because both numbers look plausible.
+      - run: pnpm --filter @paintclash/bench-territory-bandwidth test
       # prod-arena's smoke test is its autopilot flown offline: it opens no
       # socket and needs no deployment, and it is what keeps the manual
       # production run from measuring an arena where nothing ever fills.
